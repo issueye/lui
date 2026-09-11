@@ -2055,6 +2055,161 @@ begin
   end;
 end;
 
+{ ---------- M6 P2：定时器宏任务 ---------- }
+
+// 内核级：ui.setTimeout/setInterval/clear/delay/now 与宏任务泵（人造时间推进）
+procedure TestScriptTimers;
+var
+  interp: TXuiJsInterp;
+  prog: TXuiJsProgram;
+  sink: TScriptSink;
+  src: string;
+  baseline: Int64;
+  i: Integer;
+  progs: TObjectList;   // AST 须存活到泵执行之后（闭包引用函数体节点）
+
+  procedure Run(const ACode: string);
+  begin
+    prog := XuiJsParse(ACode, 'test.ts');
+    progs.Add(prog);
+    interp.Run(prog.Root);
+  end;
+
+  // 人造时间推进 + 泵到期定时器
+  procedure AdvanceAndPump(ADeltaMs: Int64);
+  begin
+    interp.SetClockMs(interp.NowMs + ADeltaMs);
+    interp.PumpTimers;
+  end;
+
+begin
+  WriteLn('--- M6 P2 定时器宏任务 ---');
+  sink := TScriptSink.Create;
+  interp := TXuiJsInterp.Create;
+  progs := TObjectList.Create(True);
+  try
+    interp.OnLog := @sink.HandleLog;
+    interp.OnUnhandledRejection := @sink.HandleUnhandled;
+    interp.OnCallbackError := @sink.HandleUnhandled;
+
+    // setTimeout(0)：下一次泵执行；同期到期按注册序
+    sink.Log.Clear;
+    Run(
+      'ui.setTimeout(function () { console.log("a"); }, 0);' + #10 +
+      'ui.setTimeout(function () { console.log("b"); }, 0);');
+    Check(interp.HasDueTimers, 'setTimeout(0) 注册即到期待执行');
+    Check(interp.PumpTimers = 2, '泵返回执行的宏任务数');
+    Check((Pos('a', sink.Log.Text) > 0) and
+      (Pos('a', sink.Log.Text) < Pos('b', sink.Log.Text)),
+      'setTimeout(0) 泵内执行且按注册序');
+    Check(not interp.HasDueTimers, '执行后无到期定时器');
+
+    // 到期顺序按延迟排序（不同期不按注册序）
+    sink.Log.Clear;
+    Run(
+      'ui.setTimeout(function () { console.log("late"); }, 50);' + #10 +
+      'ui.setTimeout(function () { console.log("soon"); }, 10);');
+    AdvanceAndPump(10);
+    Check((Pos('soon', sink.Log.Text) > 0) and (Pos('late', sink.Log.Text) = 0),
+      '仅到期定时器执行');
+    AdvanceAndPump(40);
+    Check(Pos('soon', sink.Log.Text) < Pos('late', sink.Log.Text),
+      '到期顺序按延迟先后');
+
+    // clearTimeout：取消不执行，表项回收
+    sink.Log.Clear;
+    Run(
+      'const id = ui.setTimeout(function () { console.log("nope"); }, 30);' + #10 +
+      'ui.clearTimeout(id);' + #10 +
+      'ui.setTimeout(function () { console.log("yes"); }, 30);');
+    Check(interp.TimersPending = 1, 'clearTimeout 回收表项');
+    AdvanceAndPump(30);
+    Check((Pos('yes', sink.Log.Text) > 0) and (Pos('nope', sink.Log.Text) = 0),
+      '已取消的定时器不执行');
+
+    // setInterval 重复 + clearInterval 停止
+    sink.Log.Clear;
+    Run(
+      'let n = 0;' + #10 +
+      'const id = ui.setInterval(function () { n += 1; console.log("tick" + n);' + #10 +
+      '  if (n >= 3) { ui.clearInterval(id); } }, 10);');
+    for i := 1 to 5 do
+      AdvanceAndPump(10);
+    Check((Pos('tick3', sink.Log.Text) > 0) and (Pos('tick4', sink.Log.Text) = 0),
+      'setInterval 重复执行且 clearInterval 停止');
+
+    // setInterval(,0) 钳制为 1ms：泵在有限时钟内终止
+    sink.Log.Clear;
+    Run(
+      'let n2 = 0;' + #10 +
+      'const id2 = ui.setInterval(function () { n2 += 1;' + #10 +
+      '  if (n2 >= 3) { ui.clearInterval(id2); console.log("z" + n2); } }, 0);');
+    AdvanceAndPump(5);
+    Check(Pos('z3', sink.Log.Text) > 0, '零间隔 setInterval 钳制且可停止');
+
+    // 微任务优先于下一宏任务（经典顺序断言）
+    sink.Log.Clear;
+    Run(
+      'ui.setTimeout(function () { console.log("macro"); }, 0);' + #10 +
+      'Promise.resolve().then(function () { console.log("micro"); });' + #10 +
+      'console.log("sync");');
+    interp.DrainMicrotasks;
+    Check(Pos('macro', sink.Log.Text) = 0, '定时器不因排水而提前执行');
+    AdvanceAndPump(0);
+    Check(Pos('micro', sink.Log.Text) < Pos('macro', sink.Log.Text),
+      '微任务先于下一宏任务');
+
+    // 回调额外参数
+    sink.Log.Clear;
+    Run('ui.setTimeout(function (a, b) { console.log("args" + a + b); }, 5, "x", 7);');
+    AdvanceAndPump(5);
+    Check(Pos('argsx7', sink.Log.Text) > 0, '定时器回调接收额外参数');
+
+    // ui.delay(ms): Promise 到点 resolve；ui.now() 返回注入时钟
+    interp.SetClockMs(0);   // 时钟在前面的用例中已推进，归零便于断言
+    sink.Log.Clear;
+    Run('ui.delay(20).then(function (v) { console.log("delayed" + v + "@" + ui.now()); });');
+    Check(interp.TimersPending = 1, 'ui.delay 基于定时器表');
+    AdvanceAndPump(20);
+    Check(Pos('delayedundefined@20', sink.Log.Text) > 0,
+      'ui.delay 到点 resolve(undefined)，ui.now 为相对时钟');
+
+    // 宏任务回调抛错：上报且不中断后续定时器
+    sink.Unhandled.Clear;
+    sink.Log.Clear;
+    Run(
+      'ui.setTimeout(function () { throw "cb-error"; }, 0);' + #10 +
+      'ui.setTimeout(function () { console.log("after-err"); }, 0);');
+    Check(interp.PumpTimers = 2, '异常后泵继续执行后续定时器');
+    Check(Pos('cb-error', sink.Unhandled.Text) > 0, '宏任务回调异常上报');
+    Check(Pos('after-err', sink.Log.Text) > 0, '异常不中断后续定时器');
+
+    // 宏任务死循环：预算拦截 + 后续定时器继续
+    interp.MaxSteps := 50000;
+    sink.Unhandled.Clear;
+    sink.Log.Clear;
+    Run(
+      'ui.setTimeout(function () { let i = 0; while (true) { i++; } }, 0);' + #10 +
+      'ui.setTimeout(function () { console.log("ok-after-budget"); }, 0);');
+    interp.PumpTimers;
+    Check(Pos('步数超出预算', sink.Unhandled.Text) > 0, '宏任务死循环超预算上报');
+    Check(Pos('ok-after-budget', sink.Log.Text) > 0, '超预算不中断后续定时器');
+    interp.MaxSteps := 2000000;
+
+    // GC：定时器表持有回调（挂起对象不被回收）
+    interp.ForceCollectGarbage;
+    baseline := interp.ObjectCount;
+    Run('ui.setTimeout(function () { return 1; }, 100000);');
+    interp.ForceCollectGarbage;
+    Check(interp.ObjectCount > baseline, '定时器表中的回调不被回收');
+    interp.ClearTimer(999999); // 不存在的 Id：无副作用
+  finally
+    progs.Free;
+    interp.Free;
+    sink.Free;
+  end;
+end;
+
 // 集成：脚本经引擎操作 DOM（桥 + 事件第二来源 + 动态绑定 + 错误路由）
 procedure TestScriptIntegration;
 var
@@ -2205,6 +2360,81 @@ begin
       script.CallGlobal('FireLoop', []);
       Check(sink.Errors = 1, '微任务超预算上报');
       Check(sink.LastErrorStage = ssBudget, '微任务预算超限归类为 budget');
+    finally
+      bridge.Free;
+    end;
+  finally
+    sink.Free;
+    script.Free;
+    engine.Free;
+  end;
+end;
+
+// P2 集成：引擎 Tick 驱动定时器（NeedsTick / 相对时钟 / delay-Promise / 宏任务错误分类）
+procedure TestScriptTimersIntegration;
+var
+  engine: TXuiEngine;
+  fake: TFakeRenderer;
+  script: TXuiScript;
+  bridge: TXuiDomBridge;
+  sink: TScriptSink;
+begin
+  WriteLn('--- M6 P2 定时器集成（Tick 泵 / NeedsTick）---');
+  engine := NewTestEngine(fake);
+  script := TXuiScript.Create;
+  sink := TScriptSink.Create;
+  try
+    bridge := TXuiDomBridge.Create(engine, script);
+    try
+      bridge.Install;
+      engine.AttachScript(script);
+      script.OnError := @sink.HandleError;
+
+      engine.LoadFromString('<window><label id="out" text="init"/></window>');
+      DrawEngine(engine);
+
+      script.Run(
+        'ui.setTimeout(function () { document.find("out").text = "t:" + ui.now(); }, 100);' + #10 +
+        'ui.delay(200).then(function () { document.find("out").text = "delayed"; });',
+        'timers.ts');
+      Check(script.ErrorCount = 0, '定时器脚本求值无错误');
+      Check(engine.NeedsTick, '定时器表非空 NeedsTick 为真');
+
+      engine.Tick(1000);   // 首个 Tick 建立时钟零点（相对时钟 0）
+      Check(engine.Document.FindElementById('out').Text = 'init', '未到期不执行');
+
+      engine.Tick(1100);   // 相对时钟 100：setTimeout 到期
+      DrawEngine(engine);
+      Check(engine.Document.FindElementById('out').Text = 't:100',
+        'Tick 到期触发且 ui.now 为相对时钟');
+      Check(engine.NeedsTick, 'delay(200) 仍挂起时 NeedsTick 保持');
+
+      engine.Tick(1200);   // 相对时钟 200：delay resolve → then 改 DOM（随泵排水）
+      DrawEngine(engine);
+      Check(engine.Document.FindElementById('out').Text = 'delayed',
+        'ui.delay 到点后 Promise 回调改 DOM');
+      Check(not engine.NeedsTick, '定时器全部完成后 NeedsTick 为假');
+
+      // 宏任务回调异常：经 OnError 上报（stage=runtime），不中断应用
+      script.Run('function Boom() { ui.setTimeout(function () { throw "timer-boom"; }, 5); }',
+        'boom2.ts');
+      sink.Errors := 0;
+      sink.LastError := '';
+      script.CallGlobal('Boom', []);
+      engine.Tick(1210);   // 相对时钟 210：到点执行抛错回调
+      Check(sink.Errors = 1, '宏任务回调异常上报');
+      Check(Pos('timer-boom', sink.LastError) > 0, '宏任务异常消息含脚本值');
+      Check(sink.LastErrorStage = ssRuntime, '宏任务异常阶段为运行时');
+
+      // 宏任务死循环：预算超限归类 budget，应用不崩
+      script.Run('function LoopTimer() {' +
+        ' ui.setTimeout(function () { let i = 0; while (true) { i++; } }, 5); }', 'loopt.ts');
+      sink.Errors := 0;
+      sink.LastError := '';
+      script.CallGlobal('LoopTimer', []);
+      engine.Tick(1220);
+      Check(sink.Errors = 1, '宏任务死循环上报');
+      Check(sink.LastErrorStage = ssBudget, '宏任务预算超限归类为 budget');
     finally
       bridge.Free;
     end;
@@ -2523,8 +2753,10 @@ begin
 
     TestScriptCore;
     TestScriptAsync;
+    TestScriptTimers;
     TestScriptIntegration;
     TestScriptPromiseIntegration;
+    TestScriptTimersIntegration;
 
     WriteLn;
     WriteLn(Format('结果: %d 通过, %d 失败', [PassCount, FailCount]));

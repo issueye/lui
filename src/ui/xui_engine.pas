@@ -965,7 +965,14 @@ begin
   if FTransitions.Advance(ANowMs) then
     DoChange;
 
-  SafePoint; // Tick 内安全点：排空微任务（P1；P2 起到期定时器也在此之后处理）
+  // P2：到期定时器按宏任务执行（每个回调后排水微任务，见 M6-异步设计 §3/§6）
+  if FScript <> nil then
+  begin
+    FScript.SetClockMs(ANowMs - FScriptClockBase);
+    FScript.PumpTimers;
+  end;
+
+  SafePoint; // Tick 内安全点：再排一次微任务（通常已由泵排空）
 
   blink := FHostActive and FocusWantsCaret;
   if not blink then
@@ -997,7 +1004,9 @@ end;
 
 function TXuiEngine.NeedsTick: Boolean;
 begin
-  Result := FHotReload or FTransitions.HasActive or (FHostActive and FocusWantsCaret);
+  // P2：定时器表非空时保持 Tick（宿主 Timer 按需启停，无需改宿主）
+  Result := FHotReload or FTransitions.HasActive or (FHostActive and FocusWantsCaret) or
+    ((FScript <> nil) and (FScript.TimersPending > 0));
 end;
 
 procedure TXuiEngine.InvalidateStyles;

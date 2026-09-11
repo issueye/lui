@@ -59,6 +59,8 @@ type
     procedure ReportException(const AFile: string; E: Exception);
     // 未处理 Promise 拒绝（Interp 排水末回调）：预算超限归类为 budget
     procedure HandleUnhandledRejection(const AMessage: string);
+    // 定时器宏任务回调内未捕获异常（Interp 泵回调）：预算超限归类为 budget
+    procedure HandleCallbackError(const AMessage: string);
   public
     constructor Create;
     destructor Destroy; override;
@@ -81,6 +83,11 @@ type
     // 排空微任务队列（安全点调用：切片退出 / Tick / 文档加载后；
     // 末尾对未处理拒绝上报一次，见 M6-异步设计 §4）
     procedure DrainMicrotasks;
+
+    // P2 定时器宿主接口（引擎 Tick 驱动；时钟相对应用零点）
+    procedure SetClockMs(ANowMs: Int64);   // 注入当前脚本时钟
+    function PumpTimers: Integer;          // 执行到期定时器（每个宏任务切片后排微任务）
+    function TimersPending: Integer;       // 未取消定时器数（引擎 NeedsTick 计入）
 
     // 全局作用域查询/调用（事件绑定的"脚本第二来源"）
     function HasGlobalFunction(const AName: string): Boolean;
@@ -135,6 +142,7 @@ begin
   FUnits := TObjectList.Create(True);
   FSliceDepth := 0;
   FInterp.OnUnhandledRejection := @HandleUnhandledRejection;
+  FInterp.OnCallbackError := @HandleCallbackError;
 end;
 
 destructor TXuiScript.Destroy;
@@ -186,6 +194,17 @@ var
   stage: TXuiScriptStage;
 begin
   stage := ssUnhandledRejection;
+  if Pos('步数超出预算', AMessage) > 0 then
+    stage := ssBudget;
+  Report('', AMessage, 0, 0, stage);
+end;
+
+// 定时器宏任务回调内未捕获异常（不中断后续定时器与应用）
+procedure TXuiScript.HandleCallbackError(const AMessage: string);
+var
+  stage: TXuiScriptStage;
+begin
+  stage := ssRuntime;
   if Pos('步数超出预算', AMessage) > 0 then
     stage := ssBudget;
   Report('', AMessage, 0, 0, stage);
@@ -312,6 +331,23 @@ end;
 procedure TXuiScript.DrainMicrotasks;
 begin
   FInterp.DrainMicrotasks;
+end;
+
+{ ---- P2 定时器宿主接口 ---- }
+
+procedure TXuiScript.SetClockMs(ANowMs: Int64);
+begin
+  FInterp.SetClockMs(ANowMs);
+end;
+
+function TXuiScript.PumpTimers: Integer;
+begin
+  Result := FInterp.PumpTimers;
+end;
+
+function TXuiScript.TimersPending: Integer;
+begin
+  Result := FInterp.TimersPending;
 end;
 
 function TXuiScript.HasGlobalFunction(const AName: string): Boolean;

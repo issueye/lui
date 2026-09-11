@@ -455,7 +455,7 @@ begin
   FDocumentObj := doc;
   FScript.RegisterValue('document', FScript.Interp.ObjectValue(doc));
 
-  // ui.version（ui.now / 定时器在 P2 接入）
+  // ui.version（ui.now / ui.setTimeout 等定时器已由运行时在 P2 注册，此处并入同对象）
   FScript.RegisterValue('ui.version', FScript.Str('lui M6'));
 
   // 引擎事件钩子（动态绑定）

@@ -10,14 +10,16 @@ unit xui_js_runtime;
   - 语句与表达式求值；throw/try/catch/finally；指令预算（防死循环，按切片重置）
   - Promise 与微任务队列（P1）：then/catch/finally、resolve/reject/all/allSettled/race、
     new Promise(executor)、thenable 采纳；每个微任务是独立预算切片
-  - 标记-清除 GC：根集 = 全局环境 + 宿主注册的根 + 微任务队列 + 未处理拒绝表
+  - 定时器宏任务（P2）：ui.setTimeout/setInterval/clearTimeout/clearInterval/delay/now，
+    表项 {Id, Callback, DueMs, Interval, Cancelled}；Tick 泵执行；宏任务也是独立预算切片
+  - 标记-清除 GC：根集 = 全局环境 + 宿主注册的根 + 微任务队列 + 未处理拒绝表 + 定时器表
 
   刻意语义偏差（见设计方案 §3）：
   - string.length 与索引按 UTF-8 码点计数（非 UTF-16 code unit）
   - 事件处理器内 this 不绑定（顶层函数调用 this 为 undefined）
 
   不支持：正则、Date、BigInt、Map/Set、Proxy/Reflect/Symbol、get/set 访问器、生成器；
-  async/await（P3）、定时器（P2）、真实 I/O（P4） }
+  async/await（P3）、真实 I/O（P4） }
 
 interface
 
@@ -57,6 +59,9 @@ type
 
   // 未处理 Promise 拒绝上报（门面接 OnScriptError；v1 每次排水结束检查一次）
   TXuiJsUnhandledProc = procedure(const AMessage: string) of object;
+
+  // 宏任务回调内未捕获异常上报（门面接 OnScriptError；文本含"步数超出预算"时归类 budget）
+  TXuiJsErrorProc = procedure(const AMessage: string) of object;
 
   // 宿主对象的动态属性（DOM 桥：node.text 等）
   TXuiJsNativePropGet = function(AObj: TXuiJsObject; const AName: string;
@@ -182,6 +187,17 @@ type
     Index: Integer;
   end;
 
+  // 定时器表项（P2，ADR 17）：setInterval 的 Interval>0；Cancelled 待泵回收
+  TXuiJsTimer = class
+  public
+    Id: Integer;
+    Callback: TXuiJsValue;
+    Args: TXuiJsValueArray;
+    DueMs: Int64;
+    Interval: Int64;             // 固定间隔重排（不做漂移补偿）
+    Cancelled: Boolean;
+  end;
+
   TXuiJsInterp = class
   private
     FAllObjects: TObjectList;   // 全部对象（GC 扫描用）
@@ -197,6 +213,7 @@ type
     FCollectThreshold: Integer;
     FLog: TXuiJsLogProc;
     FOnUnhandledRejection: TXuiJsUnhandledProc;
+    FOnCallbackError: TXuiJsErrorProc;
     FDepth: Integer;
     FCurrentEnv: TXuiJsEnv;
     // Promise / 微任务（P1）
@@ -204,6 +221,11 @@ type
     FAggregates: TObjectList;    // TXuiJsAggregate（自有，任务跑完即回收）
     FUnhandled: TObjectList;     // 已拒绝且无人处理的 Promise（非拥有，排水末上报一次）
     FDraining: Boolean;          // 排水重入防护
+    // 定时器 / 宏任务（P2）
+    FTimers: TObjectList;        // TXuiJsTimer（自有；Cancelled 的在泵内回收）
+    FClockMs: Int64;             // 脚本时钟（宿主 Tick 注入；测试可人造推进）
+    FTimerSeq: Integer;          // 定时器 Id 分配器
+    FPumping: Boolean;           // 宏任务泵重入防护
     // 执行
     function EvalExpr(ANode: TXuiJsNode; AEnv: TXuiJsEnv): TXuiJsValue;
     function EvalMemberChain(ANode: TXuiJsNode; AEnv: TXuiJsEnv): TXuiJsValue;
@@ -281,6 +303,9 @@ type
       const AArgs: TXuiJsValueArray): TXuiJsValue;
     function NativePromiseStatics(AFn: TXuiJsFunction; AThis: TXuiJsValue;
       const AArgs: TXuiJsValueArray): TXuiJsValue;
+    // ui.* 定时器（按函数名分派：setTimeout/setInterval/clearTimeout/clearInterval/delay/now）
+    function NativeUiTimer(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
     // Promise / 微任务
     function NewPromise: TXuiJsPromise;
     function IsPromise(const AValue: TXuiJsValue): Boolean;
@@ -297,6 +322,7 @@ type
     procedure RunMicroTaskSlice;   // 执行一个微任务（独立切片：预算重置）
     procedure CleanupAggregates;
     procedure ScanUnhandledRejections;
+    procedure RunTimerSlice(ATimer: TXuiJsTimer);  // 执行一个到期定时器（宏任务切片）
     // GC
     procedure MarkValue(const AValue: TXuiJsValue);
     procedure MarkObject(AObj: TXuiJsObject);
@@ -325,6 +351,17 @@ type
     // 重入安全；结束时对"已拒绝且无人处理"的 Promise 上报一次 OnUnhandledRejection
     procedure DrainMicrotasks;
     function MicroTaskCount: Integer;
+    // P2：定时器与宏任务（ADR 17：引擎侧表 + Tick 泵；时钟可注入以便人造时间测试）
+    procedure SetClockMs(ANowMs: Int64);   // 注入当前脚本时钟（宿主 Tick 驱动）
+    function NowMs: Int64;
+    function SetTimeout(const ACallback: TXuiJsValue; ADelayMs: Int64;
+      const AArgs: TXuiJsValueArray): Integer;
+    function SetInterval(const ACallback: TXuiJsValue; ADelayMs: Int64;
+      const AArgs: TXuiJsValueArray): Integer;
+    procedure ClearTimer(AId: Integer);    // clearTimeout / clearInterval 共用
+    function PumpTimers: Integer;          // 执行到期定时器（宏任务切片；每回调后排微任务）
+    function TimersPending: Integer;       // 未取消定时器数（NeedsTick 计入）
+    function HasDueTimers: Boolean;
     // 测试 / 宿主诊断
     procedure ForceCollectGarbage;
     function ObjectCount: Integer;
@@ -366,6 +403,8 @@ type
     property OnLog: TXuiJsLogProc read FLog write FLog;
     property OnUnhandledRejection: TXuiJsUnhandledProc
       read FOnUnhandledRejection write FOnUnhandledRejection;
+    property OnCallbackError: TXuiJsErrorProc
+      read FOnCallbackError write FOnCallbackError;
     property MaxSteps: Int64 read FMaxSteps write FMaxSteps;
     property CollectThreshold: Integer read FCollectThreshold write FCollectThreshold;
     // 当前切片已消耗的步数（测试预算行为用）
@@ -798,11 +837,15 @@ begin
   FMicroTasks := TObjectList.Create(True);
   FAggregates := TObjectList.Create(True);
   FUnhandled := TObjectList.Create(False);
+  FTimers := TObjectList.Create(True);
   FSteps := 0;
   FMaxSteps := 2000000;
   FCollectThreshold := 50000;
   FDepth := 0;
   FDraining := False;
+  FPumping := False;
+  FClockMs := 0;
+  FTimerSeq := 0;
   FGlobalEnv := TXuiJsEnv.Create(nil);
   FGlobalEnv.IsFunctionScope := True;
   FGlobal := TXuiJsObject.Create;
@@ -812,6 +855,7 @@ end;
 
 destructor TXuiJsInterp.Destroy;
 begin
+  FTimers.Free;
   FUnhandled.Free;
   FAggregates.Free;
   FMicroTasks.Free;
@@ -1620,6 +1664,219 @@ begin
   Result := FAllObjects.Count;
 end;
 
+{ ---- 定时器与宏任务（P2，ADR 17）---- }
+
+procedure TXuiJsInterp.SetClockMs(ANowMs: Int64);
+begin
+  FClockMs := ANowMs;
+end;
+
+function TXuiJsInterp.NowMs: Int64;
+begin
+  Result := FClockMs;
+end;
+
+function TXuiJsInterp.SetTimeout(const ACallback: TXuiJsValue; ADelayMs: Int64;
+  const AArgs: TXuiJsValueArray): Integer;
+var
+  t: TXuiJsTimer;
+begin
+  if not IsCallable(ACallback) then
+    raise EXuiJsRuntime.Create('setTimeout 的第一个参数必须是函数');
+  Inc(FTimerSeq);
+  t := TXuiJsTimer.Create;
+  t.Id := FTimerSeq;
+  t.Callback := ACallback;
+  t.Args := Copy(AArgs, 0, System.Length(AArgs));
+  if ADelayMs < 0 then
+    ADelayMs := 0;
+  t.DueMs := FClockMs + ADelayMs;
+  FTimers.Add(t);
+  Result := t.Id;
+end;
+
+function TXuiJsInterp.SetInterval(const ACallback: TXuiJsValue; ADelayMs: Int64;
+  const AArgs: TXuiJsValueArray): Integer;
+begin
+  // 间隔下限 1ms：setInterval(fn, 0) 否则会在一次泵内无限循环
+  if ADelayMs < 1 then
+    ADelayMs := 1;
+  Result := SetTimeout(ACallback, ADelayMs, AArgs);
+  TXuiJsTimer(FTimers[FTimers.Count - 1]).Interval := ADelayMs;
+end;
+
+procedure TXuiJsInterp.ClearTimer(AId: Integer);
+var
+  i: Integer;
+begin
+  for i := 0 to FTimers.Count - 1 do
+    if TXuiJsTimer(FTimers[i]).Id = AId then
+    begin
+      TXuiJsTimer(FTimers[i]).Cancelled := True;   // 泵内回收（可能正待执行）
+      Exit;
+    end;
+end;
+
+function TXuiJsInterp.TimersPending: Integer;
+var
+  i: Integer;
+begin
+  Result := 0;
+  for i := 0 to FTimers.Count - 1 do
+    if not TXuiJsTimer(FTimers[i]).Cancelled then
+      Inc(Result);
+end;
+
+function TXuiJsInterp.HasDueTimers: Boolean;
+var
+  i: Integer;
+  t: TXuiJsTimer;
+begin
+  for i := 0 to FTimers.Count - 1 do
+  begin
+    t := TXuiJsTimer(FTimers[i]);
+    if (not t.Cancelled) and (t.DueMs <= FClockMs) then
+      Exit(True);
+  end;
+  Result := False;
+end;
+
+// 取最早已到期的未取消定时器（同为到期时按表中序 = 注册序）
+function FindDueTimerIn(AList: TObjectList; AClockMs: Int64): TXuiJsTimer;
+var
+  i: Integer;
+  t: TXuiJsTimer;
+begin
+  Result := nil;
+  for i := 0 to AList.Count - 1 do
+  begin
+    t := TXuiJsTimer(AList[i]);
+    if t.Cancelled then
+      Continue;
+    if (t.DueMs <= AClockMs) and
+       ((Result = nil) or (t.DueMs < Result.DueMs)) then
+      Result := t;
+  end;
+end;
+
+// 单个宏任务 = 独立预算切片；回调后排水微任务（微任务优先于下一宏任务）。
+// 回调内未捕获的脚本异常经 OnCallbackError 上报，不中断后续定时器。
+procedure TXuiJsInterp.RunTimerSlice(ATimer: TXuiJsTimer);
+var
+  owned: Boolean;
+begin
+  // 出表（一次性）或固定间隔重排（先改表再执行：回调内注册/清除语义一致）
+  owned := ATimer.Interval <= 0;
+  if owned then
+    FTimers.Extract(ATimer)
+  else
+    ATimer.DueMs := ATimer.DueMs + ATimer.Interval;
+
+  FSteps := 0;
+  Inc(FDepth);
+  try
+    CallFunction(ATimer.Callback, MakeUndefined, ATimer.Args);
+  except
+    // 宏任务回调内未捕获异常只上报不扩散：不中断后续定时器、不崩应用
+    on E: EXuiJsThrow do
+      if Assigned(FOnCallbackError) then
+        FOnCallbackError(ToStringValue(E.Value));
+    on E: Exception do
+      if Assigned(FOnCallbackError) then
+        FOnCallbackError(E.Message);
+  end;
+  Dec(FDepth);
+
+  if owned then
+    ATimer.Free;
+  DrainMicrotasks;
+  CleanupAggregates;
+  MaybeCollect;
+end;
+
+function TXuiJsInterp.PumpTimers: Integer;
+var
+  t: TXuiJsTimer;
+  i: Integer;
+begin
+  Result := 0;
+  if FPumping or FDraining then
+    Exit;   // 重入防护：回调内再触发泵无效（宿主驱动模型，不递归执行）
+  FPumping := True;
+  try
+    // 先回收已取消的表项（clearTimeout 可能发生在注册后的任意时刻）
+    for i := FTimers.Count - 1 downto 0 do
+      if TXuiJsTimer(FTimers[i]).Cancelled then
+        FTimers.Delete(i);
+    while True do
+    begin
+      t := FindDueTimerIn(FTimers, FClockMs);
+      if t = nil then
+        Break;
+      RunTimerSlice(t);
+      Inc(Result);
+    end;
+  finally
+    FPumping := False;
+  end;
+end;
+
+// ui.setTimeout / ui.setInterval / ui.clearTimeout / ui.clearInterval / ui.delay / ui.now
+function TXuiJsInterp.NativeUiTimer(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+var
+  id: Integer;
+  ms: Int64;
+  extra: TXuiJsValueArray;
+  i: Integer;
+  p: TXuiJsPromise;
+  res: TXuiJsFunction;
+begin
+  if AFn.Name = 'now' then
+    Exit(MakeNumber(FClockMs));
+  if (AFn.Name = 'clearTimeout') or (AFn.Name = 'clearInterval') then
+  begin
+    ClearTimer(ArgInt(AArgs, 0));
+    Exit(MakeUndefined);
+  end;
+
+  if AFn.Name = 'delay' then
+  begin
+    // ui.delay(ms): Promise —— 定时器到点后 resolve(undefined)
+    ms := ArgInt(AArgs, 0);
+    if ms < 0 then
+      ms := 0;
+    p := NewPromise;
+    res := NewFunction;
+    res.Name := 'resolve';
+    res.Native := @NativePromiseCtl;
+    res.Tag := p;
+    SetTimeout(FunctionValue(res), ms, nil);
+    Exit(ObjectValue(p));
+  end;
+
+  // setTimeout / setInterval：额外参数作为回调实参
+  if System.Length(AArgs) > 2 then
+  begin
+    SetLength(extra, System.Length(AArgs) - 2);
+    for i := 2 to System.Length(AArgs) - 1 do
+      extra[i - 2] := AArgs[i];
+  end
+  else
+    SetLength(extra, 0);
+  if AFn.Name = 'setTimeout' then
+  begin
+    ms := ArgInt(AArgs, 1);
+    id := SetTimeout(ArgAt(AArgs, 0), ms, extra);
+  end
+  else
+  begin
+    ms := ArgInt(AArgs, 1);
+    id := SetInterval(ArgAt(AArgs, 0), ms, extra);
+  end;
+  Result := MakeNumber(id);
+end;
+
 function TXuiJsInterp.CreateHostObject(const AJsClass: string): TXuiJsObject;
 begin
   Result := NewObject(AJsClass);
@@ -1721,6 +1978,15 @@ var
       MarkObject(TXuiJsAggregate(ATask.Aggregate).Results);
   end;
 
+  procedure MarkTimer(ATimer: TXuiJsTimer);
+  var
+    k: Integer;
+  begin
+    MarkValue(ATimer.Callback);
+    for k := 0 to System.Length(ATimer.Args) - 1 do
+      MarkValue(ATimer.Args[k]);
+  end;
+
 begin
   // 标记
   for i := 0 to FAllObjects.Count - 1 do
@@ -1745,6 +2011,9 @@ begin
     MarkObject(TXuiJsObject(FUnhandled[i]));
   for i := 0 to FAggregates.Count - 1 do
     MarkObject(TXuiJsAggregate(FAggregates[i]).Results);
+  // P2 根扩展：定时器表（回调与参数）
+  for i := 0 to FTimers.Count - 1 do
+    MarkTimer(TXuiJsTimer(FTimers[i]));
   // 清扫
   for i := FAllEnvs.Count - 1 downto 0 do
     if not TXuiJsEnv(FAllEnvs[i]).Marked then
@@ -3032,7 +3301,8 @@ end;
 
 procedure TXuiJsInterp.InitGlobals;
 var
-  mathObj, jsonObj, consoleObj, objCtor, arrCtor, strCtor, numCtor, boolCtor: TXuiJsObject;
+  mathObj, jsonObj, consoleObj, objCtor, arrCtor, strCtor, numCtor, boolCtor,
+    uiObj: TXuiJsObject;
   promiseCtor: TXuiJsFunction;
   fn: TXuiJsFunction;
 begin
@@ -3134,6 +3404,16 @@ begin
   DefineNative(promiseCtor, 'race', @NativePromiseStatics);
   promiseCtor.SetOwn('prototype', ObjectValue(FPromiseProto));
   FGlobal.SetOwn('Promise', FunctionValue(promiseCtor));
+
+  // ui：定时器宏任务（P2，ADR 17）；bridge 等后续注册的 ui.* 子键并入同一对象
+  uiObj := NewObject('Object');
+  DefineNative(uiObj, 'setTimeout', @NativeUiTimer);
+  DefineNative(uiObj, 'setInterval', @NativeUiTimer);
+  DefineNative(uiObj, 'clearTimeout', @NativeUiTimer);
+  DefineNative(uiObj, 'clearInterval', @NativeUiTimer);
+  DefineNative(uiObj, 'delay', @NativeUiTimer);
+  DefineNative(uiObj, 'now', @NativeUiTimer);
+  FGlobal.SetOwn('ui', ObjectValue(uiObj));
 
   // 原型方法（按名分派）
   DefineNative(FStringProto, 'charAt', @NativeStringProto);
