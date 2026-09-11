@@ -298,6 +298,86 @@ begin
   end;
 end;
 
+// transition: [all|<属性列表（逗号分隔，逗号后可留空格）>] <时长> [<时间函数>] [<延迟>]
+// v1 仅单条规格（不支持逗号分列的多组 transition）
+procedure ApplyTransition(AStyle: TXuiStyle; const AValue: string);
+var
+  value, propPart: string;
+  tokens: TStringList;
+  i, sp, timeCount: Integer;
+  props: TXuiAnimPropSet;
+  prop: TXuiAnimProp;
+  timing: TXuiTimingFunction;
+  times: array[0..1] of Single;
+
+  function ParseTime(const AToken: string; out ASeconds: Single): Boolean;
+  var
+    t: string;
+  begin
+    t := LowerCase(Trim(AToken));
+    ASeconds := -1;
+    if (t = '') or (t[Length(t)] <> 's') then
+      Exit(False);
+    if (Length(t) > 2) and (t[Length(t) - 1] = 'm') then
+      ASeconds := StrToFloatDef(Copy(t, 1, Length(t) - 2), -1) / 1000
+    else
+      ASeconds := StrToFloatDef(Copy(t, 1, Length(t) - 1), -1);
+    Result := ASeconds >= 0;
+  end;
+
+begin
+  value := Trim(AValue);
+  AStyle.TransitionProps := [];
+  AStyle.TransitionDuration := 0;
+  AStyle.TransitionDelay := 0;
+  AStyle.TransitionTiming := xtfEase;
+  if value = '' then
+    Exit;
+
+  value := StringReplace(value, ', ', ',', [rfReplaceAll]);
+  tokens := TStringList.Create;
+  try
+    ExtractStrings([' ', #9], [], PChar(value), tokens);
+    if tokens.Count = 0 then
+      Exit;
+
+    propPart := LowerCase(tokens[0]);
+    props := [];
+    if propPart = 'all' then
+      props := XuiAllAnimProps
+    else
+      while propPart <> '' do
+      begin
+        sp := Pos(',', propPart);
+        if sp = 0 then
+        begin
+          if XuiAnimPropByName(propPart, prop) then
+            Include(props, prop);
+          Break;
+        end;
+        if XuiAnimPropByName(Copy(propPart, 1, sp - 1), prop) then
+          Include(props, prop);
+        propPart := Copy(propPart, sp + 1, Length(propPart));
+      end;
+
+    timeCount := 0;
+    for i := 1 to tokens.Count - 1 do
+    begin
+      if (timeCount <= 1) and ParseTime(tokens[i], times[timeCount]) then
+        Inc(timeCount)
+      else if XuiTimingByName(tokens[i], timing) then
+        AStyle.TransitionTiming := timing;
+    end;
+    AStyle.TransitionProps := props;
+    if timeCount >= 1 then
+      AStyle.TransitionDuration := times[0];
+    if timeCount >= 2 then
+      AStyle.TransitionDelay := times[1];
+  finally
+    tokens.Free;
+  end;
+end;
+
 procedure ApplyDeclaration(AStyle: TXuiStyle; const AProp, AValue: string;
   AEmBase: Single);
 var
@@ -474,8 +554,139 @@ begin
     Exit;
   end;
 
-  // 以下属性接受但不处理（M3/M4 实现）：position / z-index / overflow /
-  // opacity / border-radius / box-sizing / visibility / min-width / min-height
+  if prop = 'position' then
+  begin
+    if vl = 'relative' then AStyle.Position := xposRelative
+    else if vl = 'absolute' then AStyle.Position := xposAbsolute
+    else AStyle.Position := xposStatic;
+    Exit;
+  end;
+
+  if prop = 'top' then begin AStyle.Inset.Top := ParseCssLength(AValue, AEmBase); Exit; end;
+  if prop = 'right' then begin AStyle.Inset.Right := ParseCssLength(AValue, AEmBase); Exit; end;
+  if prop = 'bottom' then begin AStyle.Inset.Bottom := ParseCssLength(AValue, AEmBase); Exit; end;
+  if prop = 'left' then begin AStyle.Inset.Left := ParseCssLength(AValue, AEmBase); Exit; end;
+
+  if prop = 'z-index' then
+  begin
+    AStyle.ZIndex := StrToIntDef(vl, 0); Exit;
+  end;
+
+  if prop = 'overflow' then
+  begin
+    if (vl = 'hidden') or (vl = 'scroll') or (vl = 'auto') then
+      AStyle.Overflow := xovHidden
+    else
+      AStyle.Overflow := xovVisible;
+    Exit;
+  end;
+
+  if prop = 'visibility' then
+  begin
+    if (vl = 'hidden') or (vl = 'collapse') then
+      AStyle.Visibility := xvisHidden
+    else
+      AStyle.Visibility := xvisVisible;
+    Exit;
+  end;
+
+  if prop = 'min-width' then begin AStyle.MinWidth := ParseCssLength(AValue, AEmBase); Exit; end;
+  if prop = 'min-height' then begin AStyle.MinHeight := ParseCssLength(AValue, AEmBase); Exit; end;
+
+  if prop = 'flex-direction' then
+  begin
+    // row-reverse / column-reverse 不在 v1 子集内：保持原值
+    if vl = 'column' then AStyle.FlexDirection := xfdColumn
+    else if vl = 'row' then AStyle.FlexDirection := xfdRow;
+    Exit;
+  end;
+
+  if prop = 'justify-content' then
+  begin
+    if vl = 'center' then AStyle.JustifyContent := xjcCenter
+    else if (vl = 'flex-end') or (vl = 'end') then AStyle.JustifyContent := xjcEnd
+    else if vl = 'space-between' then AStyle.JustifyContent := xjcSpaceBetween
+    else if vl = 'space-around' then AStyle.JustifyContent := xjcSpaceAround
+    else AStyle.JustifyContent := xjcStart;
+    Exit;
+  end;
+
+  if prop = 'align-items' then
+  begin
+    if vl = 'center' then AStyle.AlignItems := xaiCenter
+    else if (vl = 'flex-end') or (vl = 'end') then AStyle.AlignItems := xaiEnd
+    else if vl = 'stretch' then AStyle.AlignItems := xaiStretch
+    else AStyle.AlignItems := xaiStart;
+    Exit;
+  end;
+
+  if prop = 'gap' then
+  begin
+    words := TStringList.Create;
+    try
+      SplitValueWords(AValue, words);
+      if words.Count = 1 then
+      begin
+        AStyle.RowGap := ParseCssLength(words[0], AEmBase);
+        AStyle.ColumnGap := AStyle.RowGap;
+      end
+      else if words.Count >= 2 then
+      begin
+        AStyle.RowGap := ParseCssLength(words[0], AEmBase);
+        AStyle.ColumnGap := ParseCssLength(words[1], AEmBase);
+      end;
+    finally
+      words.Free;
+    end;
+    Exit;
+  end;
+  if prop = 'row-gap' then begin AStyle.RowGap := ParseCssLength(AValue, AEmBase); Exit; end;
+  if prop = 'column-gap' then begin AStyle.ColumnGap := ParseCssLength(AValue, AEmBase); Exit; end;
+
+  if prop = 'flex-grow' then
+  begin
+    AStyle.FlexGrow := StrToFloatDef(vl, AStyle.FlexGrow); Exit;
+  end;
+
+  if prop = 'flex-basis' then
+  begin
+    AStyle.FlexBasis := ParseCssLength(AValue, AEmBase); Exit;
+  end;
+
+  if prop = 'flex' then
+  begin
+    // 简写：单个数值 → flex-grow=n + flex-basis=0（等价 CSS 的 flex: n，占满剩余空间）
+    words := TStringList.Create;
+    try
+      SplitValueWords(AValue, words);
+      if words.Count = 1 then
+      begin
+        AStyle.FlexGrow := StrToFloatDef(words[0], AStyle.FlexGrow);
+        AStyle.FlexBasis := XuiLengthPx(0);
+      end;
+    finally
+      words.Free;
+    end;
+    Exit;
+  end;
+
+  if prop = 'border-radius' then
+  begin
+    // v1 仅单值（px/em）；百分比不支持，按 px 解析
+    AStyle.BorderRadius := Max(0, ParseCssLength(AValue, AEmBase).Value); Exit;
+  end;
+
+  if prop = 'opacity' then
+  begin
+    AStyle.Opacity := Min(1, Max(0, StrToFloatDef(vl, AStyle.Opacity))); Exit;
+  end;
+
+  if prop = 'transition' then
+  begin
+    ApplyTransition(AStyle, AValue); Exit;
+  end;
+
+  // 仍未实现（M5 后续）：box-sizing(content-box) / max-width / max-height / letter-spacing
 end;
 
 procedure ComputeNodeStyles(ANode: TXuiNode; ASheets: TObjectList;

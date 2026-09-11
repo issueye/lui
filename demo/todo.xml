@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<window title="待办清单" width="380" height="340">
+  <panel id="app" class="app">
+    <panel class="header">
+      <label class="title" text="待办清单"/>
+      <panel class="badge"><label id="count" text="4"/></panel>
+      <panel class="spacer"/>
+      <button id="theme" class="ghost" text="换肤" onclick="ThemeClick"/>
+    </panel>
+    <panel id="list" class="list">
+      <!-- M5 include：条目模板在 todo-items.xml，改文件 + watch 可热重载 -->
+      <include src="todo-items.xml"/>
+    </panel>
+    <panel class="footer">
+      <input id="new-todo" placeholder="输入后按 Enter" onenter="AddTodoSubmit"/>
+      <button id="add" class="primary" text="添加" onclick="AddTodoClick"/>
+      <button id="clear" class="ghost" text="清空" onclick="ClearClick"/>
+    </panel>
+  </panel>
+</window>

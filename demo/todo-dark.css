@@ -1,0 +1,180 @@
+/* lui M5 验收 —— Todo 小应用（深色）
+   输入框添加（Enter / 按钮）+ include 模板条目 + 过渡动画 + 滚动列表 */
+
+window {
+  background-color: #121212;
+}
+
+.app {
+  padding: 14px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  column-gap: 8px;
+  margin-bottom: 10px;
+}
+
+.title {
+  font-size: 16px;
+  font-weight: bold;
+  color: #eaeaea;
+  margin: 0;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  background-color: #1668dc;
+  border-radius: 10px;
+}
+
+.badge label {
+  color: #ffffff;
+  font-size: 12px;
+  margin: 0;
+}
+
+.list {
+  overflow: hidden;
+  height: 190px;
+  margin-bottom: 10px;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  column-gap: 10px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background-color: #1e1e1e;
+  border: 1px solid #333333;
+  border-radius: 6px;
+  transition: all 120ms ease;
+}
+
+.item:hover {
+  background-color: #262626;
+}
+
+.item:active {
+  background-color: #2e2e2e;
+}
+
+.check {
+  width: 16px;
+  height: 16px;
+  background-color: #1e1e1e;
+  border: 1px solid #4a4a4a;
+  border-radius: 4px;
+}
+
+.text {
+  flex: 1;
+  color: #eaeaea;
+  margin: 0;
+}
+
+.del {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  transition: all 120ms ease;
+}
+
+.del label {
+  color: #6e6e6e;
+  font-size: 14px;
+  margin: 0;
+}
+
+.del:hover {
+  background-color: #3a1f1f;
+}
+
+.del:hover label {
+  color: #ff7875;
+}
+
+.item.done {
+  background-color: #191919;
+}
+
+.item.done .check {
+  background-color: #1f8f5f;
+  border-color: #1f8f5f;
+}
+
+.item.done .text {
+  color: #6e6e6e;
+}
+
+.footer {
+  display: flex;
+  column-gap: 8px;
+}
+
+button {
+  height: 30px;
+  font-size: 13px;
+  border-radius: 5px;
+}
+
+.primary {
+  flex: 1;
+  background-color: #1668dc;
+  color: #ffffff;
+}
+
+.primary:hover {
+  background-color: #1a7ae8;
+}
+
+.primary:active {
+  background-color: #1157b8;
+}
+
+.ghost {
+  background-color: #1e1e1e;
+  color: #b8bcc4;
+  border: 1px solid #3a3a3a;
+}
+
+.ghost:hover {
+  background-color: #2a2a2a;
+}
+
+.ghost:disabled {
+  background-color: #1a1a1a;
+  color: #5a5a5a;
+  border-color: #2a2a2a;
+}
+
+/* M5：底部输入框（点击聚焦、Enter 添加；占位符由输入框行为绘制） */
+#new-todo {
+  flex: 1;
+  height: 30px;
+  margin: 0;
+  background-color: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 5px;
+  color: #eaeaea;
+  transition: all 150ms ease;
+}
+
+#new-todo:focus {
+  border-color: #1668dc;
+  background-color: #1f2430;
+}

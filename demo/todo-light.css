@@ -1,0 +1,182 @@
+/* lui M5 验收 —— Todo 小应用（浅色）
+   输入框添加（Enter / 按钮）+ include 模板条目 + 过渡动画 + 滚动列表 + 绝对定位角标 */
+
+window {
+  background-color: #eef1f5;
+}
+
+.app {
+  padding: 14px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  column-gap: 8px;
+  margin-bottom: 10px;
+}
+
+.title {
+  font-size: 16px;
+  font-weight: bold;
+  color: #1f1f1f;
+  margin: 0;
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* 计数角标：flex 双向居中 */
+.badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  background-color: #1677ff;
+  border-radius: 10px;
+}
+
+.badge label {
+  color: #ffffff;
+  font-size: 12px;
+  margin: 0;
+}
+
+/* 可滚动列表：overflow:hidden + 固定高度，滚轮滚动 */
+.list {
+  overflow: hidden;
+  height: 190px;
+  margin-bottom: 10px;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  column-gap: 10px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background-color: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  transition: all 120ms ease;
+}
+
+.item:hover {
+  background-color: #f4f7fb;
+}
+
+.item:active {
+  background-color: #e9eef6;
+}
+
+.check {
+  width: 16px;
+  height: 16px;
+  background-color: #ffffff;
+  border: 1px solid #c9cdd4;
+  border-radius: 4px;
+}
+
+.text {
+  flex: 1;
+  color: #1f1f1f;
+  margin: 0;
+}
+
+.del {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  transition: all 120ms ease;
+}
+
+.del label {
+  color: #b0b6c0;
+  font-size: 14px;
+  margin: 0;
+}
+
+.del:hover {
+  background-color: #ffe9e9;
+}
+
+.del:hover label {
+  color: #d4380d;
+}
+
+/* 完成态：加类名 done（SetClass）驱动 */
+.item.done {
+  background-color: #f6f8fa;
+}
+
+.item.done .check {
+  background-color: #21a366;
+  border-color: #21a366;
+}
+
+.item.done .text {
+  color: #9aa0a6;
+}
+
+.footer {
+  display: flex;
+  column-gap: 8px;
+}
+
+button {
+  height: 30px;
+  font-size: 13px;
+  border-radius: 5px;
+}
+
+.primary {
+  flex: 1;
+  background-color: #1677ff;
+  color: #ffffff;
+}
+
+.primary:hover {
+  background-color: #0f6ae8;
+}
+
+.primary:active {
+  background-color: #0b56c2;
+}
+
+.ghost {
+  background-color: #ffffff;
+  color: #4b5563;
+  border: 1px solid #d7dbe2;
+}
+
+.ghost:hover {
+  background-color: #f2f4f8;
+}
+
+.ghost:disabled {
+  background-color: #f2f3f5;
+  color: #b9bec7;
+  border-color: #e5e7eb;
+}
+
+/* M5：底部输入框（点击聚焦、Enter 添加；占位符由输入框行为绘制） */
+#new-todo {
+  flex: 1;
+  height: 30px;
+  margin: 0;
+  background-color: #ffffff;
+  border: 1px solid #c9cdd4;
+  border-radius: 5px;
+  transition: all 150ms ease;
+}
+
+#new-todo:focus {
+  border-color: #1677ff;
+  background-color: #f7faff;
+}

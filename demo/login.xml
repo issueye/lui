@@ -1,16 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<window title="登录" width="360" height="240">
-  <panel id="login-card" class="card">
+<window title="登录" width="360" height="300">
+  <panel id="login-card" class="card" onenter="LoginSubmit">
     <label class="title" text="登录 Aluka"/>
     <panel class="row">
       <label class="field-label" text="用户名："/>
-      <input id="username" class="textbox"/>
+      <input id="username" class="textbox" placeholder="请输入用户名" oninput="LoginInput"/>
     </panel>
     <panel class="row">
       <label class="field-label" text="密  码："/>
-      <input id="password" class="textbox" password="true"/>
+      <input id="password" class="textbox" password="true" placeholder="请输入密码"/>
     </panel>
-    <button id="btn-ok" class="primary-btn" text="登  录" onclick="BtnOkClick"/>
-    <label id="msg" class="error-label" text="M1 验收：XML 结构 + 默认样式渲染"/>
+    <panel class="actions">
+      <button id="btn-ok" class="primary-btn" text="登  录" onclick="BtnOkClick"/>
+      <button id="theme" class="ghost-btn" text="换肤" onclick="ThemeClick"/>
+    </panel>
+    <label id="msg" class="error-label" text="M5 验收：点输入框直接输入（支持中文输入法），Enter 提交；过渡动画见按钮/输入框"/>
   </panel>
 </window>

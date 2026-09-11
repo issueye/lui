@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- M5 include 模板：多条待办初始数据（<template> 根 → 展开为多个兄弟节点） -->
+<template>
+  <panel class="item" onclick="TodoToggleClick">
+    <panel class="check"/>
+    <label class="text" text="阅读 lui 设计方案"/>
+    <panel class="del" onclick="TodoDeleteClick"><label text="×"/></panel>
+  </panel>
+  <panel class="item" onclick="TodoToggleClick">
+    <panel class="check"/>
+    <label class="text" text="实现 M5：输入框 / 过渡 / include / 热重载"/>
+    <panel class="del" onclick="TodoDeleteClick"><label text="×"/></panel>
+  </panel>
+  <panel class="item done" onclick="TodoToggleClick">
+    <panel class="check"/>
+    <label class="text" text="完成 M4 交互（事件 / 伪类 / 滚动）"/>
+    <panel class="del" onclick="TodoDeleteClick"><label text="×"/></panel>
+  </panel>
+  <panel class="item" onclick="TodoToggleClick">
+    <panel class="check"/>
+    <label class="text" text="试试底部输入框：输入后按 Enter 添加"/>
+    <panel class="del" onclick="TodoDeleteClick"><label text="×"/></panel>
+  </panel>
+</template>

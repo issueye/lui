@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<window title="收件箱" width="420" height="330">
+  <panel id="page" class="page">
+    <label id="page-title" text="收件箱"/>
+    <panel id="list" class="list">
+      <!-- M5 include：条目模板在 list-items.xml，改文件 + watch 可热重载 -->
+      <include src="list-items.xml"/>
+    </panel>
+  </panel>
+</window>

@@ -33,6 +33,13 @@ type
   TXuiDisplay = (xdispBlock, xdispFlex, xdispNone);
   TXuiPosition = (xposStatic, xposRelative, xposAbsolute);
 
+  // M3：flex 子集与盒约束
+  TXuiFlexDirection = (xfdRow, xfdColumn);
+  TXuiJustify = (xjcStart, xjcCenter, xjcEnd, xjcSpaceBetween, xjcSpaceAround);
+  TXuiAlign = (xaiStart, xaiCenter, xaiEnd, xaiStretch);
+  TXuiOverflow = (xovVisible, xovHidden);
+  TXuiVisibility = (xvisVisible, xvisHidden);
+
   // 伪类状态（M2 仅用于选择器匹配；M4 接入交互状态机）
   TXuiPseudo = (xpHover, xpActive, xpFocus, xpDisabled);
   TXuiPseudoSet = set of TXuiPseudo;
@@ -43,6 +50,8 @@ type
 function XuiRGB(AR, AG, AB: Byte): TXuiColor; inline;
 function XuiRGBA(AR, AG, AB, AA: Byte): TXuiColor; inline;
 function XuiSameColor(const A, B: TXuiColor): Boolean; inline;
+// 颜色混合：结果 = A*(1-ARatio) + B*ARatio（占位符/选区等需要与背景混色时用，两后端表现一致）
+function XuiMixColor(const A, B: TXuiColor; ARatio: Single): TXuiColor;
 function XuiHexColor(const S: string): TXuiColor; // '#rgb' / '#rrggbb'
 function XuiLengthPx(AValue: Single): TXuiLength; inline;
 function XuiLengthPercent(AValue: Single): TXuiLength; inline;
@@ -89,6 +98,16 @@ begin
     Result.B := v and $FF;
     Result.A := 255;
   end;
+end;
+
+function XuiMixColor(const A, B: TXuiColor; ARatio: Single): TXuiColor;
+begin
+  if ARatio < 0 then ARatio := 0;
+  if ARatio > 1 then ARatio := 1;
+  Result.R := Round(A.R + (B.R - A.R) * ARatio);
+  Result.G := Round(A.G + (B.G - A.G) * ARatio);
+  Result.B := Round(A.B + (B.B - A.B) * ARatio);
+  Result.A := Round(A.A + (B.A - A.A) * ARatio);
 end;
 
 function XuiLengthPx(AValue: Single): TXuiLength;

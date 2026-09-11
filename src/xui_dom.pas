@@ -9,7 +9,7 @@ interface
 
 uses
   Classes, SysUtils, Contnrs, Types,
-  xui_types, xui_style;
+  xui_types, xui_style, xui_text;
 
 type
   TXuiNode = class
@@ -27,10 +27,16 @@ type
     Style: TXuiStyle;         // 计算样式
     Pseudos: TXuiPseudoSet;   // 伪类状态（:hover 等，M4 由交互状态机填充）
     BoxRect: TRect;           // 布局结果：border-box（绝对坐标）
+    TextLines: TXuiLineArray; // 布局期断行结果（绘制期直接使用，避免重复测量）
+    ContentHeight: Single;    // 布局期记录的自然内容高（滚动范围用）
+    ScrollTop: Single;        // 纵向滚动偏移（overflow 容器）
+    Bindings: TObjectList;    // TXuiEventBinding 列表（xui_events，节点拥有）
     Behavior: TObject;        // 元素行为（xui_widget，节点拥有；行为内 FNode 为弱引用）
     constructor Create(const ATag: string);
     destructor Destroy; override;
     procedure AddChild(AChild: TXuiNode);
+    procedure RemoveChild(AChild: TXuiNode); // 仅解除父子关系，不释放
+    function IndexOfChild(AChild: TXuiNode): Integer;
     property Count: Integer read GetCount;
     property Child[AIndex: Integer]: TXuiNode read GetChild; default;
     function HasClass(const AName: string): Boolean;
@@ -38,19 +44,24 @@ type
     function HasAttribute(const AName: string): Boolean;
     function FindById(const AId: string): TXuiNode; // 深度优先查找
     function Root: TXuiNode;
-    // 内容盒（border-box 减去 border 与 padding），须在布局后读取
-    function ContentRect: TRect;
-    function PaddingRect: TRect;
+    // 盒模型各层矩形（须在布局后读取）
+    function PaddingBox: TRect;  // border 之内（绝对定位包含块 / 裁剪区）
+    function ContentBox: TRect;  // border + padding 之内
   end;
 
   TXuiDocument = class
   private
     FRoot: TXuiNode;
     FTitle: string;
+    FSourceFile: string;      // XML 源文件（热重载用；来自字符串时为空）
+    FDependencies: TStringList; // 依赖文件（include 展开的全部来源；热重载监测）
   public
+    constructor Create;
     destructor Destroy; override;
     property Root: TXuiNode read FRoot write FRoot;
     property Title: string read FTitle write FTitle; // 来自 window/@title
+    property SourceFile: string read FSourceFile write FSourceFile;
+    property Dependencies: TStringList read FDependencies;
     function FindElementById(const AId: string): TXuiNode;
   end;
 
@@ -63,15 +74,19 @@ begin
   inherited Create;
   Tag := LowerCase(ATag);
   FChildren := TObjectList.Create(True);
+  Bindings := TObjectList.Create(True);
   Attributes := TStringList.Create;
   ClassList := TStringList.Create;
   Pseudos := [];
+  ScrollTop := 0;
+  ContentHeight := 0;
   Style := nil; // 由样式阶段填充
 end;
 
 destructor TXuiNode.Destroy;
 begin
   Behavior.Free; // 节点拥有行为对象，行为持有节点为弱引用
+  Bindings.Free;
   Style.Free;
   ClassList.Free;
   Attributes.Free;
@@ -83,6 +98,23 @@ procedure TXuiNode.AddChild(AChild: TXuiNode);
 begin
   AChild.Parent := Self;
   FChildren.Add(AChild);
+end;
+
+procedure TXuiNode.RemoveChild(AChild: TXuiNode);
+var
+  idx: Integer;
+begin
+  idx := FChildren.IndexOf(AChild);
+  if idx >= 0 then
+  begin
+    FChildren.Extract(AChild);
+    AChild.Parent := nil;
+  end;
+end;
+
+function TXuiNode.IndexOfChild(AChild: TXuiNode): Integer;
+begin
+  Result := FChildren.IndexOf(AChild);
 end;
 
 function TXuiNode.GetCount: Integer;
@@ -135,32 +167,40 @@ begin
     Result := Result.Parent;
 end;
 
-function TXuiNode.PaddingRect: TRect;
+function TXuiNode.PaddingBox: TRect;
+var
+  b: Integer;
 begin
-  Result := BoxRect;
-  Result.Left := Result.Left + Round(Style.BorderWidth);
-  Result.Top := Result.Top + Round(Style.BorderWidth);
-  Result.Right := Result.Right - Round(Style.BorderWidth);
-  Result.Bottom := Result.Bottom - Round(Style.BorderWidth);
-  Result.Left := Result.Left + Round(Style.Padding.Left.Resolve(0));
-  Result.Top := Result.Top + Round(Style.Padding.Top.Resolve(0));
-  Result.Right := Result.Right - Round(Style.Padding.Right.Resolve(0));
-  Result.Bottom := Result.Bottom - Round(Style.Padding.Bottom.Resolve(0));
+  b := Round(Style.BorderWidth);
+  Result := Types.Rect(BoxRect.Left + b, BoxRect.Top + b,
+    BoxRect.Right - b, BoxRect.Bottom - b);
 end;
 
-function TXuiNode.ContentRect: TRect;
+function TXuiNode.ContentBox: TRect;
 var
   r: TRect;
+  w: Single;
 begin
-  r := PaddingRect;
-  // M1 无独立内容偏移，padding box 即内容盒
-  Result := r;
+  r := PaddingBox;
+  w := BoxRect.Right - BoxRect.Left;
+  Result := Types.Rect(
+    r.Left + Round(Style.Padding.Left.Resolve(w)),
+    r.Top + Round(Style.Padding.Top.Resolve(w)),
+    r.Right - Round(Style.Padding.Right.Resolve(w)),
+    r.Bottom - Round(Style.Padding.Bottom.Resolve(w)));
 end;
 
 { TXuiDocument }
 
+constructor TXuiDocument.Create;
+begin
+  inherited Create;
+  FDependencies := TStringList.Create;
+end;
+
 destructor TXuiDocument.Destroy;
 begin
+  FDependencies.Free;
   FRoot.Free;
   inherited Destroy;
 end;

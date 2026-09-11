@@ -58,9 +58,13 @@ type
     function GetRuleCount: Integer; inline;
     function GetRule(AIndex: Integer): TCssRule; inline;
   public
+    SourceFile: string;   // 来源文件（热重载监测用；来自字符串时为空）
+    SourceMTime: Integer; // 加载时的文件时间戳（FileAge）
     constructor Create;
     destructor Destroy; override;
     procedure AddRule(ARule: TCssRule); // 获得所有权
+    // 清空全部规则（热重载就地重解析前调用）
+    procedure ClearRules;
     // 追加解析一段 CSS 文本（可多次调用合并多张表）
     procedure ParseStyleSheet(const AText: string);
     // 解析内联声明（style="" 属性）
@@ -158,6 +162,11 @@ end;
 procedure TCssStyleSheet.AddRule(ARule: TCssRule);
 begin
   FRules.Add(ARule);
+end;
+
+procedure TCssStyleSheet.ClearRules;
+begin
+  FRules.Clear;
 end;
 
 procedure TCssStyleSheet.ParseStyleSheet(const AText: string);

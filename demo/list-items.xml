@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- M5 include 模板：收件箱条目（<template> 根 → 展开为多个兄弟节点） -->
+<template>
+  <panel class="item">
+    <panel class="avatar avatar-a"><label text="Al"/></panel>
+    <panel class="body">
+      <label class="name" text="Alice"/>
+      <label class="desc" text="M3 布局引擎已就绪：flex 行布局、绝对定位角标、文本自动换行。"/>
+    </panel>
+    <panel class="badge"><label text="3"/></panel>
+  </panel>
+  <panel class="item">
+    <panel class="avatar avatar-b"><label text="Bo"/></panel>
+    <panel class="body">
+      <label class="name" text="Bob"/>
+      <label class="desc" text="短消息。"/>
+    </panel>
+  </panel>
+  <panel class="item">
+    <panel class="avatar avatar-c"><label text="Cy"/></panel>
+    <panel class="body">
+      <label class="name" text="Cindy"/>
+      <label class="desc" text="这是一条较长的说明文本，用于验证中英混排在受限宽度下按字符与空格自动换行的效果。"/>
+    </panel>
+    <panel class="badge"><label text="12"/></panel>
+  </panel>
+</template>

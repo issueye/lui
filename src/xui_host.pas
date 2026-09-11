@@ -3,23 +3,60 @@ unit xui_host;
 {$mode objfpc}{$H+}
 
 { TXuiHost — 引擎在 Lazarus 窗体上的宿主控件（整个引擎唯一的原生控件入口）。
-  负责：接收系统绘制/尺寸消息并转发给引擎；提供 XML 文件装载入口。 }
+  负责：
+  - 转发系统绘制/尺寸/鼠标/键盘消息给引擎；
+  - 以按需启停的 Timer 驱动引擎 Tick（光标闪烁；M5 后续：过渡动画、热重载轮询）；
+  - Windows 下用 imm32 把 IME 组合窗定位到引擎光标处（上屏文本走 LCL 的 UTF8KeyPress）。 }
 
 interface
 
 uses
-  Classes, SysUtils, Controls, Graphics, Forms,
-  xui_types, xui_style, xui_dom, xui_engine;
+  Classes, SysUtils, Types, Controls, Graphics, Forms, ExtCtrls, LCLType, LMessages,
+  xui_types, xui_style, xui_dom, xui_engine, xui_render, xui_events;
+
+const
+  // Windows IME 消息号（自带常量，避免接口段依赖 Windows 单元）
+  XuiWMIMEStartComposition = $010D;
+  XuiWMIMEComposition = $010F;
 
 type
   TXuiHost = class(TCustomControl)
   private
     FEngine: TXuiEngine;
+    FTimer: TTimer;
     procedure SetXmlFile(const AValue: string);
+    procedure SetBackend(const AValue: TXuiBackend);
+    function GetBackend: TXuiBackend;
+    function GetEventTarget: TObject;
+    procedure SetEventTarget(const AValue: TObject);
+    procedure HandleEngineChange(Sender: TObject);
+    procedure HandleTimer(Sender: TObject);
+    // 引擎是否需要周期 Tick → 启停 Timer（避免空转）
+    procedure SyncTimer;
+    {$IFDEF WINDOWS}
+    procedure PositionImeWindow;
+    {$ENDIF}
   protected
     procedure Paint; override;
     procedure Resize; override;
     procedure Loaded; override;
+    procedure DoEnter; override;
+    procedure DoExit; override;
+    // 输入转发（M4 鼠标 / M5 键盘）
+    procedure MouseMove(Shift: TShiftState; X, Y: Integer); override;
+    procedure MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Integer); override;
+    procedure MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: Integer); override;
+    procedure MouseLeave; override;
+    function DoMouseWheel(Shift: TShiftState; WheelDelta: Integer;
+      MousePos: TPoint): Boolean; override;
+    procedure KeyDown(var Key: Word; Shift: TShiftState); override;
+    procedure KeyUp(var Key: Word; Shift: TShiftState); override;
+    procedure UTF8KeyPress(var UTF8Key: TUTF8Char); override;
+    {$IFDEF WINDOWS}
+    // IME：组合开始时把系统组合窗/候选窗移到引擎光标处
+    procedure WMImeStartComposition(var Msg: TLMessage); message XuiWMIMEStartComposition;
+    procedure WMImeComposition(var Msg: TLMessage); message XuiWMIMEComposition;
+    {$ENDIF}
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
@@ -27,6 +64,9 @@ type
     // 依据根元素 width/height 属性调整宿主尺寸（demo 用）
     procedure FitToDocumentDefaultSize;
     property Engine: TXuiEngine read FEngine;
+    // 事件绑定的宿主对象：XML 里 onclick="MethodName" 解析到它的 published 方法
+    property EventTarget: TObject read GetEventTarget write SetEventTarget;
+    property Backend: TXuiBackend read GetBackend write SetBackend;
   published
     property XmlFile: string write SetXmlFile;
     property Align;
@@ -37,6 +77,9 @@ type
     property OnDblClick;
     property OnEnter;
     property OnExit;
+    property OnKeyDown;
+    property OnKeyPress;
+    property OnKeyUp;
     property OnMouseDown;
     property OnMouseMove;
     property OnMouseUp;
@@ -44,6 +87,52 @@ type
   end;
 
 implementation
+
+{$IFDEF WINDOWS}
+uses
+  Windows;
+
+const
+  CFS_POINT = $0002;         // 组合窗定位方式：锚点
+  GCS_COMPSTR = $0008;       // 组合中字符串变更
+  Imm32Dll = 'imm32.dll';
+
+type
+  // FPC 的 Windows 单元未声明 IME 相关类型，这里按 Win32 定义补齐
+  HIMC = THandle;
+
+  TImmCompositionForm = record
+    dwStyle: DWORD;
+    ptCurrentPos: TPoint;
+    rcArea: TRect;
+  end;
+
+function ImmGetContext(AWnd: HWND): HIMC; stdcall; external Imm32Dll name 'ImmGetContext';
+function ImmReleaseContext(AWnd: HWND; AHimc: HIMC): BOOL; stdcall;
+  external Imm32Dll name 'ImmReleaseContext';
+function ImmSetCompositionWindow(AHimc: HIMC; var AForm: TImmCompositionForm): BOOL; stdcall;
+  external Imm32Dll name 'ImmSetCompositionWindow';
+{$ENDIF}
+
+function XuiShiftStateOf(Shift: TShiftState): TXuiShiftState;
+begin
+  Result := [];
+  if ssShift in Shift then
+    Include(Result, xssShift);
+  if ssCtrl in Shift then
+    Include(Result, xssCtrl);
+  if ssAlt in Shift then
+    Include(Result, xssAlt);
+end;
+
+function XuiNowMs: Int64;
+begin
+  {$IFDEF WINDOWS}
+  Result := GetTickCount64;
+  {$ELSE}
+  Result := GetTickCount;
+  {$ENDIF}
+end;
 
 { TXuiHost }
 
@@ -56,13 +145,87 @@ begin
   // 引擎自绘全部像素，告诉 LCL 不要擦背景（避免闪烁）
   ControlStyle := ControlStyle + [csOpaque];
   Color := clWhite;
+  TabStop := True; // 需要接收键盘消息
   FEngine := TXuiEngine.Create;
+  FEngine.OnChange := @HandleEngineChange;
+  FTimer := TTimer.Create(Self);
+  FTimer.Interval := 16;
+  FTimer.Enabled := False;
+  FTimer.OnTimer := @HandleTimer;
 end;
 
 destructor TXuiHost.Destroy;
 begin
+  FTimer.Enabled := False;
+  FTimer.Free;
   FEngine.Free;
   inherited Destroy;
+end;
+
+procedure TXuiHost.HandleEngineChange(Sender: TObject);
+begin
+  // 引擎状态变化（伪类/滚动/文档改动/光标闪烁）→ 重绘
+  Invalidate;
+  // 过渡动画在绘制阶段才启动（此刻 NeedsTick 可能还是 False），先开定时器：
+  // 每轮 Tick 后由 SyncTimer 按需关闭，避免空转
+  if FTimer <> nil then
+    FTimer.Enabled := True;
+end;
+
+procedure TXuiHost.HandleTimer(Sender: TObject);
+begin
+  if FEngine = nil then
+    Exit;
+  FEngine.Tick(XuiNowMs);
+  SyncTimer;
+end;
+
+procedure TXuiHost.SyncTimer;
+begin
+  if (FTimer = nil) or (FEngine = nil) then
+    Exit;
+  FTimer.Enabled := FEngine.NeedsTick;
+end;
+
+procedure TXuiHost.DoEnter;
+begin
+  inherited DoEnter;
+  if FEngine <> nil then
+    FEngine.SetHostActive(True);
+  SyncTimer;
+end;
+
+procedure TXuiHost.DoExit;
+begin
+  if FEngine <> nil then
+    FEngine.SetHostActive(False);
+  SyncTimer;
+  inherited DoExit;
+end;
+
+procedure TXuiHost.SetBackend(const AValue: TXuiBackend);
+begin
+  FEngine.Backend := AValue;
+  Invalidate;
+end;
+
+function TXuiHost.GetBackend: TXuiBackend;
+begin
+  Result := FEngine.Backend;
+end;
+
+function TXuiHost.GetEventTarget: TObject;
+begin
+  Result := FEngine.EventTarget;
+end;
+
+procedure TXuiHost.SetEventTarget(const AValue: TObject);
+begin
+  if FEngine.EventTarget = AValue then
+    Exit;
+  FEngine.EventTarget := AValue;
+  FEngine.RebindEvents; // 换宿主对象后重新解析全部 on* 绑定
+  Invalidate;
 end;
 
 procedure TXuiHost.Loaded;
@@ -85,16 +248,31 @@ end;
 procedure TXuiHost.FitToDocumentDefaultSize;
 var
   root: TXuiNode;
-  v: Integer;
+  v, w, h: Integer;
 begin
   root := FEngine.Document.Root;
   if root = nil then
     Exit;
   // 读取根元素 width/height 属性（引擎 M1 中样式为惰性计算，此处直接取属性）
+  w := 0;
+  h := 0;
   if TryStrToInt(Trim(root.AttributeValue('width')), v) then
-    ClientWidth := v;
+    w := v;
   if TryStrToInt(Trim(root.AttributeValue('height')), v) then
-    ClientHeight := v;
+    h := v;
+  // 填充父窗体时改窗体尺寸（自身尺寸会被 alClient 覆盖），否则改自身
+  if (w > 0) and (h > 0) and (Align = alClient) and (Parent is TCustomForm) then
+  begin
+    TCustomForm(Parent).ClientWidth := w;
+    TCustomForm(Parent).ClientHeight := h;
+  end
+  else
+  begin
+    if w > 0 then
+      ClientWidth := w;
+    if h > 0 then
+      ClientHeight := h;
+  end;
 end;
 
 procedure TXuiHost.Paint;
@@ -112,5 +290,123 @@ begin
   FEngine.SetViewport(ClientWidth, ClientHeight);
   Invalidate;
 end;
+
+{ 输入转发：先给引擎，再走 LCL 的常规事件（用户的 OnMouseXxx / OnKeyXxx 仍可用） }
+
+procedure TXuiHost.MouseMove(Shift: TShiftState; X, Y: Integer);
+begin
+  if FEngine <> nil then
+    FEngine.HandleMouseMove(X, Y);
+  inherited MouseMove(Shift, X, Y);
+end;
+
+procedure TXuiHost.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
+begin
+  if (FEngine <> nil) and (Button = mbLeft) then
+    FEngine.HandleMouseDown(X, Y);
+  // 键盘消息只发给有焦点的窗口：点击自绘界面时把焦点拿到本控件
+  if CanFocus and (not Focused) then
+    SetFocus;
+  inherited MouseDown(Button, Shift, X, Y);
+end;
+
+procedure TXuiHost.MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
+begin
+  if (FEngine <> nil) and (Button = mbLeft) then
+    FEngine.HandleMouseUp(X, Y);
+  inherited MouseUp(Button, Shift, X, Y);
+end;
+
+procedure TXuiHost.MouseLeave;
+begin
+  if FEngine <> nil then
+    FEngine.HandleMouseLeave;
+  inherited MouseLeave;
+end;
+
+function TXuiHost.DoMouseWheel(Shift: TShiftState; WheelDelta: Integer;
+  MousePos: TPoint): Boolean;
+begin
+  Result := False;
+  if FEngine <> nil then
+    Result := FEngine.HandleMouseWheel(MousePos.X, MousePos.Y, WheelDelta);
+  if not Result then
+    Result := inherited DoMouseWheel(Shift, WheelDelta, MousePos);
+end;
+
+procedure TXuiHost.KeyDown(var Key: Word; Shift: TShiftState);
+begin
+  if (FEngine <> nil) and FEngine.HandleKeyDown(Key, XuiShiftStateOf(Shift)) then
+  begin
+    Key := 0; // 已消费：阻止 LCL 的默认处理（Tab 导航、默认按钮等）
+    SyncTimer;
+  end;
+  inherited KeyDown(Key, Shift);
+end;
+
+procedure TXuiHost.KeyUp(var Key: Word; Shift: TShiftState);
+begin
+  if (FEngine <> nil) and FEngine.HandleKeyUp(Key, XuiShiftStateOf(Shift)) then
+  begin
+    Key := 0;
+    SyncTimer;
+  end;
+  inherited KeyUp(Key, Shift);
+end;
+
+procedure TXuiHost.UTF8KeyPress(var UTF8Key: TUTF8Char);
+begin
+  // 普通字符与 IME 上屏文本都从这里进入引擎
+  if (FEngine <> nil) and FEngine.HandleTextInput(UTF8Key) then
+  begin
+    UTF8Key := ''; // 已被输入框消费
+    SyncTimer;
+  end
+  else
+    inherited UTF8KeyPress(UTF8Key);
+end;
+
+{$IFDEF WINDOWS}
+
+procedure TXuiHost.PositionImeWindow;
+var
+  ic: HIMC;
+  form: TImmCompositionForm;
+  r: TRect;
+  p: TPoint;
+begin
+  if (FEngine = nil) or (not FEngine.CaretRect(r)) then
+    Exit;
+  ic := ImmGetContext(Handle);
+  if ic = 0 then
+    Exit;
+  try
+    p.X := r.Left;                 // 组合窗锚点 = 引擎光标左下角
+    p.Y := r.Bottom;
+    p := Self.ClientToScreen(p);   // 显式走 LCL 方法（Windows 单元同名 API 需要 hWnd 参数）
+    form.dwStyle := CFS_POINT;
+    form.ptCurrentPos := p;
+    form.rcArea := Types.Rect(0, 0, 0, 0);
+    ImmSetCompositionWindow(ic, form);
+  finally
+    ImmReleaseContext(Handle, ic);
+  end;
+end;
+
+procedure TXuiHost.WMImeStartComposition(var Msg: TLMessage);
+begin
+  // 组合开始：把系统组合窗/候选窗移到引擎光标处；组合串由系统窗口显示
+  PositionImeWindow;
+  Msg.Result := 0; // 0 → 继续走 DefWindowProc（保留系统默认行为）
+end;
+
+procedure TXuiHost.WMImeComposition(var Msg: TLMessage);
+begin
+  if (Msg.LParam and GCS_COMPSTR) <> 0 then
+    PositionImeWindow;
+  Msg.Result := 0;
+end;
+
+{$ENDIF}
 
 end.

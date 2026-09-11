@@ -1,0 +1,89 @@
+/* lui M3 验收 —— 列表页（浅色）
+   flex 卡片列表：行内 flex（头像 / 文本 / 绝对定位角标）+ 文本换行 */
+
+window {
+  background-color: #eef1f5;
+}
+
+.page {
+  padding: 14px;
+}
+
+#page-title {
+  font-size: 16px;
+  font-weight: bold;
+  color: #1f1f1f;
+  margin-bottom: 10px;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  row-gap: 10px;
+}
+
+.item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  column-gap: 10px;
+  padding: 10px;
+  background-color: #ffffff;
+  border: 1px solid #e2e6ec;
+}
+
+/* 头像：flex 双向居中，演示主轴/交叉轴对齐 */
+.avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+}
+
+.avatar label {
+  color: #ffffff;
+  font-size: 13px;
+  margin: 0;
+}
+
+.avatar-a { background-color: #1677ff; }
+.avatar-b { background-color: #21a366; }
+.avatar-c { background-color: #f2994a; }
+
+.body {
+  flex: 1;
+  padding-right: 22px; /* 给右上角标留位 */
+}
+
+.name {
+  font-weight: bold;
+  color: #1f1f1f;
+  margin: 0;
+}
+
+.desc {
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.5;
+  margin: 2px 0 0 0;
+}
+
+/* 角标：绝对定位相对最近的非 static 祖先（.item） */
+.badge {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  background-color: #ff4d4f;
+}
+
+.badge label {
+  color: #ffffff;
+  font-size: 11px;
+  margin: 0;
+}

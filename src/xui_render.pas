@@ -12,8 +12,19 @@ uses
   xui_types, xui_style;
 
 type
+  // 渲染后端（xbAuto：Windows 上优先 GDI+，失败回退 GDI）
+  TXuiBackend = (xbAuto, xbGdi, xbGdiPlus);
+
   TXuiCustomRenderer = class
+  protected
+    FOpacity: Single;
   public
+    constructor Create; overload;
+    // 绘制前由引擎指定画布（假渲染器可忽略）
+    procedure SetCanvas(ACanvas: TCanvas); virtual;
+    // 当前元素（含祖先连乘）的不透明度：后端把它乘到颜色 alpha 上
+    procedure SetOpacity(AValue: Single); virtual;
+    property Opacity: Single read FOpacity;
     procedure FillRect(const R: TRect; const AColor: TXuiColor); virtual; abstract;
     procedure FrameRect(const R: TRect; const AColor: TXuiColor; AWidth: Single); virtual; abstract;
     procedure DrawText(const R: TRect; const AText: string; AStyle: TXuiStyle); virtual; abstract;
@@ -21,6 +32,10 @@ type
     procedure PushClip(const R: TRect); virtual; abstract;
     procedure PopClip; virtual; abstract;
     function LineHeight(ACurrent: TXuiStyle): Single; virtual; abstract;
+    // 圆角（M4）：默认退化为直角，后端可覆写（GDI 近似、GDI+ 抗锯齿）
+    procedure FillRoundRect(const R: TRect; ARadius: Single; const AColor: TXuiColor); virtual;
+    procedure FrameRoundRect(const R: TRect; ARadius, AWidth: Single;
+      const AColor: TXuiColor); virtual;
   end;
 
   { TGdiRenderer — 基于 LCL TCanvas（GDI）的实现。画布由宿主在绘制前指定。 }
@@ -29,8 +44,9 @@ type
     FCanvas: TCanvas;
     procedure ApplyFont(AStyle: TXuiStyle);
   public
-    constructor Create(ACanvas: TCanvas);
+    constructor Create(ACanvas: TCanvas); overload;
     property Canvas: TCanvas read FCanvas write FCanvas;
+    procedure SetCanvas(ACanvas: TCanvas); override;
     procedure FillRect(const R: TRect; const AColor: TXuiColor); override;
     procedure FrameRect(const R: TRect; const AColor: TXuiColor; AWidth: Single); override;
     procedure DrawText(const R: TRect; const AText: string; AStyle: TXuiStyle); override;
@@ -38,6 +54,9 @@ type
     procedure PushClip(const R: TRect); override;
     procedure PopClip; override;
     function LineHeight(ACurrent: TXuiStyle): Single; override;
+    procedure FillRoundRect(const R: TRect; ARadius: Single; const AColor: TXuiColor); override;
+    procedure FrameRoundRect(const R: TRect; ARadius, AWidth: Single;
+      const AColor: TXuiColor); override;
   end;
 
 function XuiColorToTColor(const C: TXuiColor): TColor; inline;
@@ -58,6 +77,40 @@ begin
   FCanvas := ACanvas;
 end;
 
+constructor TXuiCustomRenderer.Create;
+begin
+  inherited Create;
+  FOpacity := 1;
+end;
+
+procedure TXuiCustomRenderer.SetCanvas(ACanvas: TCanvas);
+begin
+  // 默认：无画布概念的渲染器无需实现
+end;
+
+procedure TXuiCustomRenderer.SetOpacity(AValue: Single);
+begin
+  FOpacity := AValue;
+end;
+
+procedure TXuiCustomRenderer.FillRoundRect(const R: TRect; ARadius: Single;
+  const AColor: TXuiColor);
+begin
+  // 默认退化：直角填充
+  FillRect(R, AColor);
+end;
+
+procedure TXuiCustomRenderer.FrameRoundRect(const R: TRect; ARadius, AWidth: Single;
+  const AColor: TXuiColor);
+begin
+  FrameRect(R, AColor, AWidth);
+end;
+
+procedure TGdiRenderer.SetCanvas(ACanvas: TCanvas);
+begin
+  FCanvas := ACanvas;
+end;
+
 procedure TGdiRenderer.ApplyFont(AStyle: TXuiStyle);
 begin
   FCanvas.Font.Name := AStyle.FontFamily;
@@ -70,7 +123,8 @@ end;
 
 procedure TGdiRenderer.FillRect(const R: TRect; const AColor: TXuiColor);
 begin
-  if AColor.A = 0 then
+  // GDI 无 alpha 通道：仅跳过完全透明（opacity 的视觉效果需 GDI+ 后端）
+  if (AColor.A = 0) or (FOpacity <= 0.01) then
     Exit;
   FCanvas.Brush.Style := bsSolid;
   FCanvas.Brush.Color := XuiColorToTColor(AColor);
@@ -81,7 +135,7 @@ procedure TGdiRenderer.FrameRect(const R: TRect; const AColor: TXuiColor; AWidth
 var
   w: Integer;
 begin
-  if AColor.A = 0 then
+  if (AColor.A = 0) or (FOpacity <= 0.01) then
     Exit;
   w := Max(1, Round(AWidth));
   FCanvas.Pen.Style := psSolid;
@@ -98,6 +152,8 @@ var
   x, y: Integer;
   alignX: Integer;
 begin
+  if FOpacity <= 0.01 then
+    Exit;
   ApplyFont(AStyle);
   sz := MeasureText(AText, AStyle);
 
@@ -138,6 +194,49 @@ end;
 function TGdiRenderer.LineHeight(ACurrent: TXuiStyle): Single;
 begin
   Result := ACurrent.FontSize * ACurrent.LineHeight;
+end;
+
+procedure TGdiRenderer.FillRoundRect(const R: TRect; ARadius: Single;
+  const AColor: TXuiColor);
+var
+  rad: Integer;
+begin
+  if (AColor.A = 0) or (FOpacity <= 0.01) then
+    Exit;
+  rad := Round(ARadius);
+  if rad <= 0 then
+  begin
+    FillRect(R, AColor);
+    Exit;
+  end;
+  // GDI 的 RoundRect：圆角无抗锯齿（观感由 GDI+ 后端补齐）
+  FCanvas.Brush.Style := bsSolid;
+  FCanvas.Brush.Color := XuiColorToTColor(AColor);
+  FCanvas.Pen.Style := psClear;
+  FCanvas.RoundRect(R.Left, R.Top, R.Right, R.Bottom, rad * 2, rad * 2);
+  FCanvas.Pen.Style := psSolid;
+end;
+
+procedure TGdiRenderer.FrameRoundRect(const R: TRect; ARadius, AWidth: Single;
+  const AColor: TXuiColor);
+var
+  rad, w: Integer;
+begin
+  if (AColor.A = 0) or (FOpacity <= 0.01) then
+    Exit;
+  rad := Round(ARadius);
+  if rad <= 0 then
+  begin
+    FrameRect(R, AColor, AWidth);
+    Exit;
+  end;
+  w := Max(1, Round(AWidth));
+  FCanvas.Brush.Style := bsClear;
+  FCanvas.Pen.Style := psSolid;
+  FCanvas.Pen.Width := w;
+  FCanvas.Pen.Color := XuiColorToTColor(AColor);
+  FCanvas.RoundRect(R.Left, R.Top, R.Right, R.Bottom, rad * 2, rad * 2);
+  FCanvas.Pen.Width := 1;
 end;
 
 end.
