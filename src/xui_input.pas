@@ -122,7 +122,9 @@ begin
   Result := Copy(AText, 1, i - 1);
 end;
 
-// 把任意字节偏移对齐到码点边界（防止落在多字节序列中）
+// 把字节偏移对齐到 UTF-8 码点边界。
+// 位置 P 合法 ⇔ P 之后的那个字节不是续字节（$80-$BF）；若在字符中间则回退到该字符起点。
+// 注意判定要看 P+1：合法边界处 AText[P] 是上一个字符的末尾（多字节时本身就是续字节）。
 function XuiSnapIndex(const AText: string; APos: Integer): Integer;
 begin
   Result := APos;
@@ -130,8 +132,8 @@ begin
     Result := 0;
   if Result > Length(AText) then
     Result := Length(AText);
-  while (Result > 0) and (Result <= Length(AText)) and
-        ((Byte(AText[Result]) and $C0) = $80) do
+  while (Result > 0) and (Result < Length(AText)) and
+        ((Byte(AText[Result + 1]) and $C0) = $80) do
     Dec(Result);
 end;
 

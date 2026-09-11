@@ -1740,6 +1740,116 @@ begin
   end;
 end;
 
+{ ---------- M5：中文（多字节）光标与删除 ---------- }
+
+// 回归：XuiSnapIndex 曾把合法边界误判为“字符中间”（判定字节取错），
+// 导致输入中文后光标被回退、右移卡死、删除留下半个字符（乱码）。
+procedure TestInputCjkEditing;
+var
+  engine: TXuiEngine;
+  fake: TFakeRenderer;
+  input: TXuiNode;
+
+  // 清空并重新输入（经重绘，走真实的光标对齐路径）
+  procedure Reset(const AText: string);
+  begin
+    engine.SetText(input, '');
+    ClickNode(engine, input);
+    engine.HandleTextInput(AText);
+    DrawEngine(engine);
+  end;
+
+  procedure Key(AKey: Word);
+  begin
+    engine.HandleKeyDown(AKey, []);
+    DrawEngine(engine); // 对齐发生在绘制期：每步都重绘，复现真实路径
+  end;
+
+begin
+  WriteLn('--- M5 输入框：中文光标与删除（回归）---');
+  engine := NewTestEngine(fake);
+  try
+    engine.LoadFromString('<window><input id="t"/></window>');
+    engine.LoadStyleSheetFromString(
+      'input { width:200px; height:28px; padding:0; border-width:0; font-size:14px; }');
+    DrawEngine(engine);
+    input := engine.Document.FindElementById('t');
+
+    Reset('中文');
+    engine.HandleTextInput('X');
+    Check(input.Text = '中文X', '末尾插入不受多字节影响');
+
+    Reset('中文');
+    Key(VK_LEFT);
+    engine.HandleTextInput('X');
+    Check(input.Text = '中X文', '← 左移一个码点（落在字符边界，不是半个字符）');
+
+    Reset('中文');
+    Key(VK_HOME);
+    Key(VK_RIGHT);
+    engine.HandleTextInput('A');
+    Check(input.Text = '中A文', '→ 右移一个码点');
+
+    Reset('中文');
+    Key(VK_HOME);
+    Key(VK_RIGHT);
+    Key(VK_RIGHT);
+    engine.HandleTextInput('Z');
+    Check(input.Text = '中文Z', '→ 连续右移可越过多个中文');
+
+    Reset('中');
+    Key(VK_BACK);
+    Check(input.Text = '', '单个中文 Backspace 全删（无残留字节）');
+
+    Reset('中文');
+    Key(VK_BACK);
+    Check(input.Text = '中', '中文 Backspace 只删一个码点（无乱码）');
+
+    Reset('中文');
+    Key(VK_BACK);
+    Key(VK_BACK);
+    Check(input.Text = '', '连续 Backspace 删空中文');
+
+    Reset('中文');
+    Key(VK_LEFT);
+    Key(VK_BACK);
+    Check(input.Text = '文', '光标在中间时 Backspace 删前一个码点');
+
+    Reset('中文');
+    Key(VK_LEFT);
+    Key(VK_DELETE);
+    Check(input.Text = '中', '光标在中间时 Delete 删后一个码点');
+
+    // 乱码回归：残留孤立字节会让字节数不对（“中”= 3 字节）
+    Reset('中');
+    Key(VK_BACK);
+    Check(Length(input.Text) = 0, '删除后无孤立续字节残留');
+    Reset('中文');
+    Key(VK_LEFT);
+    Key(VK_LEFT);
+    Key(VK_BACK);
+    Check((input.Text = '中文') and (Length(input.Text) = 6), '行首 Backspace 不破坏文本');
+
+    // Shift 扩选跨中文
+    Reset('中文');
+    Key(VK_HOME);
+    engine.HandleKeyDown(VK_RIGHT, [xssShift]);
+    DrawEngine(engine);
+    engine.HandleTextInput('Q');
+    Check(input.Text = 'Q文', 'Shift+→ 选中一个中文码点并被输入替换');
+
+    // 空文本时按键不越界
+    Reset('');
+    Key(VK_BACK);
+    Key(VK_DELETE);
+    Key(VK_LEFT);
+    Key(VK_RIGHT);
+    Check(input.Text = '', '空文本时编辑键不越界');
+  finally
+    engine.Free;
+  end;
+end;
+
 procedure TestRoundedAndOpacity;
 var
   engine: TXuiEngine;
@@ -1873,6 +1983,7 @@ begin
     TestInputRender;
     TestFocusTraversalAndEnter;
     TestInputClipboardAndMouse;
+    TestInputCjkEditing;
     TestTransitionAnim;
     TestIncludeTemplates;
     TestHotReload;
