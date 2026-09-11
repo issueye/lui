@@ -331,6 +331,16 @@ begin
     Exit;
   end;
 
+  // script 页：逻辑全在 script.ts（点击「添加一条」两次，再把按钮移出指针）
+  if FBaseName = 'script' then
+  begin
+    item := engine.Document.FindElementById('btn-add');
+    ClickAt(item);
+    ClickAt(item);
+    engine.HandleMouseMove(295, 195);
+    Exit;
+  end;
+
   // todo
   inputNode := engine.Document.FindElementById('new-todo');
   if inputNode <> nil then
@@ -379,6 +389,8 @@ begin
       page := 'todo'
     else if arg = 'list' then
       page := 'list'
+    else if arg = 'script' then
+      page := 'script'
     else if arg = 'login' then
       page := 'login'
     else if arg = 'shot' then

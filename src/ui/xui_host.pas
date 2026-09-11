@@ -12,7 +12,8 @@ interface
 
 uses
   Classes, SysUtils, Types, Controls, Graphics, Forms, ExtCtrls, LCLType, LMessages,
-  xui_types, xui_style, xui_dom, xui_engine, xui_render, xui_events;
+  xui_types, xui_style, xui_dom, xui_engine, xui_render, xui_events,
+  xui_script, xui_script_dom;
 
 const
   // Windows IME 消息号（自带常量，避免接口段依赖 Windows 单元）
@@ -24,6 +25,8 @@ type
   private
     FEngine: TXuiEngine;
     FTimer: TTimer;
+    FScript: TXuiScript;
+    FBridge: TXuiDomBridge;
     procedure SetXmlFile(const AValue: string);
     procedure SetBackend(const AValue: TXuiBackend);
     function GetBackend: TXuiBackend;
@@ -31,6 +34,8 @@ type
     procedure SetEventTarget(const AValue: TObject);
     procedure HandleEngineChange(Sender: TObject);
     procedure HandleTimer(Sender: TObject);
+    procedure HandleScriptError(const AFile, AMessage: string;
+      ALine, ACol: Integer; AStage: TXuiScriptStage);
     // 引擎是否需要周期 Tick → 启停 Timer（避免空转）
     procedure SyncTimer;
     {$IFDEF WINDOWS}
@@ -64,6 +69,8 @@ type
     // 依据根元素 width/height 属性调整宿主尺寸（demo 用）
     procedure FitToDocumentDefaultSize;
     property Engine: TXuiEngine read FEngine;
+    // 脚本门面（懒创建；宿主已自动装配 DOM 桥与错误路由）
+    property Script: TXuiScript read FScript;
     // 事件绑定的宿主对象：XML 里 onclick="MethodName" 解析到它的 published 方法
     property EventTarget: TObject read GetEventTarget write SetEventTarget;
     property Backend: TXuiBackend read GetBackend write SetBackend;
@@ -148,6 +155,12 @@ begin
   TabStop := True; // 需要接收键盘消息
   FEngine := TXuiEngine.Create;
   FEngine.OnChange := @HandleEngineChange;
+  // 脚本：门面 + DOM 桥（未加载脚本的应用零额外开销）
+  FScript := TXuiScript.Create;
+  FScript.OnError := @HandleScriptError;
+  FBridge := TXuiDomBridge.Create(FEngine, FScript);
+  FBridge.Install;
+  FEngine.AttachScript(FScript);
   FTimer := TTimer.Create(Self);
   FTimer.Interval := 16;
   FTimer.Enabled := False;
@@ -158,8 +171,36 @@ destructor TXuiHost.Destroy;
 begin
   FTimer.Enabled := False;
   FTimer.Free;
+  FBridge.Free;
+  FScript.Free;
   FEngine.Free;
   inherited Destroy;
+end;
+
+// 脚本错误路由：写日志文件（GUI 程序无控制台）+ 尝试写入页面的 #msg 节点
+procedure TXuiHost.HandleScriptError(const AFile, AMessage: string;
+  ALine, ACol: Integer; AStage: TXuiScriptStage);
+var
+  list: TStringList;
+  msg: TXuiNode;
+  line: string;
+begin
+  line := Format('[%s] %s:%d:%d %s', [
+    BoolToStr(AStage = ssCompile, 'compile', 'runtime'), AFile, ALine, ACol, AMessage]);
+  list := TStringList.Create;
+  try
+    list.Add(line);
+    list.SaveToFile(ExtractFilePath(ParamStr(0)) + 'script-error.txt');
+  finally
+    list.Free;
+  end;
+  // 页面内提示（只有存在 #msg 时才写，避免影响普通页面）
+  if (FEngine <> nil) and (FEngine.Document <> nil) then
+  begin
+    msg := FEngine.Document.FindElementById('msg');
+    if msg <> nil then
+      FEngine.SetText(msg, '脚本错误：' + AMessage);
+  end;
 end;
 
 procedure TXuiHost.HandleEngineChange(Sender: TObject);

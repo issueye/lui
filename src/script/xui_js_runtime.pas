@@ -7,14 +7,17 @@ unit xui_js_runtime;
   - 值模型：undefined / null / boolean / number(double) / string(UTF-8 码点语义) / object
   - 对象：属性表 + 原型链；函数（脚本 AST 闭包 / Pascal 原生回调）；数组（密集存储）
   - 环境：链式作用域，函数调用创建新环境（含 this）
-  - 语句与表达式求值；throw/try/catch/finally；指令预算（防死循环）
-  - 标记-清除 GC：根集 = 全局环境 + 宿主注册的根 + 活跃环境链
+  - 语句与表达式求值；throw/try/catch/finally；指令预算（防死循环，按切片重置）
+  - Promise 与微任务队列（P1）：then/catch/finally、resolve/reject/all/allSettled/race、
+    new Promise(executor)、thenable 采纳；每个微任务是独立预算切片
+  - 标记-清除 GC：根集 = 全局环境 + 宿主注册的根 + 微任务队列 + 未处理拒绝表
 
   刻意语义偏差（见设计方案 §3）：
   - string.length 与索引按 UTF-8 码点计数（非 UTF-16 code unit）
   - 事件处理器内 this 不绑定（顶层函数调用 this 为 undefined）
 
-  不支持：正则、Date、BigInt、Map/Set、Proxy/Reflect/Symbol、get/set 访问器、生成器、异步 }
+  不支持：正则、Date、BigInt、Map/Set、Proxy/Reflect/Symbol、get/set 访问器、生成器；
+  async/await（P3）、定时器（P2）、真实 I/O（P4） }
 
 interface
 
@@ -51,6 +54,9 @@ type
     const AArgs: TXuiJsValueArray): TXuiJsValue of object;
 
   TXuiJsLogProc = procedure(const AText: string) of object;
+
+  // 未处理 Promise 拒绝上报（门面接 OnScriptError；v1 每次排水结束检查一次）
+  TXuiJsUnhandledProc = procedure(const AMessage: string) of object;
 
   // 宿主对象的动态属性（DOM 桥：node.text 等）
   TXuiJsNativePropGet = function(AObj: TXuiJsObject; const AName: string;
@@ -128,6 +134,54 @@ type
     function FindFunctionEnv: TXuiJsEnv;
   end;
 
+  { ---- Promise 与微任务（M6-异步设计 P1，见 §4）---- }
+
+  TXuiJsPromiseState = (psPending, psFulfilled, psRejected);
+
+  // 反应项种类：then（含 catch 透传）/ finally / all・allSettled 聚合 / race
+  TXuiJsReactionKind = (rkThen, rkFinally, rkAll, rkAllSettled, rkRace);
+
+  // Promise.all / allSettled 的共享收集状态（解释器持有，任务跑完即回收）
+  TXuiJsPromise = class(TXuiJsObject)
+  public
+    State: TXuiJsPromiseState;
+    Value: TXuiJsValue;
+    Reactions: TObjectList;      // TXuiJsReaction（pending 期间持有；settle 后即拷入微任务并清空）
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
+  TXuiJsAggregate = class
+  public
+    Downstream: TXuiJsPromise;
+    Results: TXuiJsArray;        // 按输入下标写回结果
+    PendingJobs: Integer;        // 未执行的聚合任务数（归零即回收）
+  end;
+
+  // 反应项：then/catch/finally 挂接；settle 时拷贝为微任务（回调保证异步）
+  TXuiJsReaction = class
+  public
+    Kind: TXuiJsReactionKind;
+    OnFulfilled: TXuiJsValue;    // rkThen 成功回调 / rkFinally 的回调
+    OnRejected: TXuiJsValue;     // rkThen 失败回调
+    Downstream: TXuiJsPromise;   // then/catch/finally 的返回值
+    Aggregate: TObject;          // rkAll/rkAllSettled：TXuiJsAggregate（非拥有）
+    Index: Integer;              // rkAll/rkAllSettled：结果写回下标
+  end;
+
+  // 微任务 = settle 时由反应项拷贝出的作业（自持冻结数据，不再引用上游 promise）
+  TXuiJsMicroTask = class
+  public
+    Kind: TXuiJsReactionKind;
+    OnFulfilled: TXuiJsValue;
+    OnRejected: TXuiJsValue;
+    SrcFulfilled: Boolean;       // 上游 settle 结果（冻结）
+    SrcValue: TXuiJsValue;
+    Downstream: TXuiJsPromise;
+    Aggregate: TObject;          // 非拥有（TXuiJsAggregate）
+    Index: Integer;
+  end;
+
   TXuiJsInterp = class
   private
     FAllObjects: TObjectList;   // 全部对象（GC 扫描用）
@@ -137,12 +191,19 @@ type
     FGlobalEnv: TXuiJsEnv;
     FObjectProto, FFunctionProto, FArrayProto, FStringProto, FNumberProto,
       FBoolProto: TXuiJsObject;
+    FPromiseProto: TXuiJsObject;
     FSteps: Int64;
     FMaxSteps: Int64;
     FCollectThreshold: Integer;
     FLog: TXuiJsLogProc;
+    FOnUnhandledRejection: TXuiJsUnhandledProc;
     FDepth: Integer;
     FCurrentEnv: TXuiJsEnv;
+    // Promise / 微任务（P1）
+    FMicroTasks: TObjectList;    // TXuiJsMicroTask（FIFO，自有）
+    FAggregates: TObjectList;    // TXuiJsAggregate（自有，任务跑完即回收）
+    FUnhandled: TObjectList;     // 已拒绝且无人处理的 Promise（非拥有，排水末上报一次）
+    FDraining: Boolean;          // 排水重入防护
     // 执行
     function EvalExpr(ANode: TXuiJsNode; AEnv: TXuiJsEnv): TXuiJsValue;
     function EvalMemberChain(ANode: TXuiJsNode; AEnv: TXuiJsEnv): TXuiJsValue;
@@ -171,6 +232,9 @@ type
     procedure BindParams(AFn: TXuiJsFunction; AEnv: TXuiJsEnv;
       const AArgs: TXuiJsValueArray);
     procedure RunFieldInits(AFn: TXuiJsFunction; AEnv: TXuiJsEnv);
+    // 派生类未声明构造函数：沿继承链共享 this 执行（体 + 字段初始化）
+    procedure RunImplicitCtor(AFn: TXuiJsFunction; const AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray);
     procedure RunCtorBody(AFn: TXuiJsFunction; AEnv: TXuiJsEnv;
       const AArgs: TXuiJsValueArray);
     function ArgAt(const AArgs: TXuiJsValueArray; AIndex: Integer): TXuiJsValue;
@@ -208,6 +272,31 @@ type
       const AArgs: TXuiJsValueArray): TXuiJsValue;
     function NativeFunctionProto(AFn: TXuiJsFunction; AThis: TXuiJsValue;
       const AArgs: TXuiJsValueArray): TXuiJsValue;
+    // Promise（按函数名分派；控制函数 resolve/reject 经 Tag 携带目标 promise）
+    function NativePromise(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function NativePromiseCtl(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function NativePromiseProto(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function NativePromiseStatics(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
+    // Promise / 微任务
+    function NewPromise: TXuiJsPromise;
+    function IsPromise(const AValue: TXuiJsValue): Boolean;
+    procedure PromiseAddReaction(AP: TXuiJsPromise; AKind: TXuiJsReactionKind;
+      const AOnOk, AOnErr: TXuiJsValue; ADownstream: TXuiJsPromise;
+      AAggregate: TObject; AIndex: Integer);
+    procedure PromiseSettle(AP: TXuiJsPromise; ARejected: Boolean;
+      const AValue: TXuiJsValue);
+    procedure PromiseResolve(AP: TXuiJsPromise; const AValue: TXuiJsValue);
+    procedure PromiseReject(AP: TXuiJsPromise; const AReason: TXuiJsValue);
+    procedure EnqueueReactionJob(AReaction: TXuiJsReaction;
+      ASrcFulfilled: Boolean; const ASrcValue: TXuiJsValue);
+    procedure RunJob(ATask: TXuiJsMicroTask);
+    procedure RunMicroTaskSlice;   // 执行一个微任务（独立切片：预算重置）
+    procedure CleanupAggregates;
+    procedure ScanUnhandledRejections;
     // GC
     procedure MarkValue(const AValue: TXuiJsValue);
     procedure MarkObject(AObj: TXuiJsObject);
@@ -226,6 +315,19 @@ type
     // 全局变量读写
     function GetGlobal(const AName: string): TXuiJsValue;
     procedure SetGlobal(const AName: string; const AValue: TXuiJsValue);
+    // 宿主适配器用：创建对象/函数（宿主对象可挂 NativeGet/NativeSet 做动态属性）
+    function CreateHostObject(const AJsClass: string = 'Object'): TXuiJsObject;
+    function CreateHostFunction(const AName: string; AFn: TXuiJsNativeFunc): TXuiJsValue;
+
+    // 预算：按执行切片重置（跨调用累积会让长跑应用误报死循环）
+    procedure ResetSteps;
+    // P1：排空微任务队列（安全点调用：切片退出 / Tick / 文档加载后）
+    // 重入安全；结束时对"已拒绝且无人处理"的 Promise 上报一次 OnUnhandledRejection
+    procedure DrainMicrotasks;
+    function MicroTaskCount: Integer;
+    // 测试 / 宿主诊断
+    procedure ForceCollectGarbage;
+    function ObjectCount: Integer;
     // 原生注册（后续功能挂载点）：'ui.now' / 'ui.foo.bar' 路径式
     procedure RegisterNative(const APath: string; AFn: TXuiJsNativeFunc);
     procedure RegisterValue(const APath: string; const AValue: TXuiJsValue);
@@ -262,8 +364,12 @@ type
     function EmptyArray: TXuiJsValue;
     // 把 Pascal 字符串按 UTF-8 码点转为 JS 字符串值（同 Str）
     property OnLog: TXuiJsLogProc read FLog write FLog;
+    property OnUnhandledRejection: TXuiJsUnhandledProc
+      read FOnUnhandledRejection write FOnUnhandledRejection;
     property MaxSteps: Int64 read FMaxSteps write FMaxSteps;
     property CollectThreshold: Integer read FCollectThreshold write FCollectThreshold;
+    // 当前切片已消耗的步数（测试预算行为用）
+    property Steps: Int64 read FSteps;
   end;
 
 const
@@ -542,6 +648,22 @@ begin
   Result := Self;
 end;
 
+{ TXuiJsPromise }
+
+constructor TXuiJsPromise.Create;
+begin
+  inherited Create;
+  JsClass := 'Promise';
+  State := psPending;
+  Reactions := TObjectList.Create(True);
+end;
+
+destructor TXuiJsPromise.Destroy;
+begin
+  Reactions.Free;
+  inherited Destroy;
+end;
+
 { ---- UTF-8 码点字符串工具（JS 字符串按码点计数） ---- }
 
 function JsStrLength(const S: string): Integer;
@@ -673,10 +795,14 @@ begin
   FAllObjects := TObjectList.Create(False);
   FAllEnvs := TObjectList.Create(False);
   FRoots := TList.Create;
+  FMicroTasks := TObjectList.Create(True);
+  FAggregates := TObjectList.Create(True);
+  FUnhandled := TObjectList.Create(False);
   FSteps := 0;
   FMaxSteps := 2000000;
   FCollectThreshold := 50000;
   FDepth := 0;
+  FDraining := False;
   FGlobalEnv := TXuiJsEnv.Create(nil);
   FGlobalEnv.IsFunctionScope := True;
   FGlobal := TXuiJsObject.Create;
@@ -686,6 +812,9 @@ end;
 
 destructor TXuiJsInterp.Destroy;
 begin
+  FUnhandled.Free;
+  FAggregates.Free;
+  FMicroTasks.Free;
   FRoots.Free;
   FAllEnvs.Free;
   FAllObjects.Free;
@@ -694,10 +823,19 @@ begin
 end;
 
 procedure TXuiJsInterp.Step;
+var
+  e: EXuiJsThrow;
 begin
   Inc(FSteps);
   if FSteps > FMaxSteps then
-    raise EXuiJsRuntime.Create('脚本执行步数超出预算（可能存在死循环）');
+  begin
+    FSteps := 0; // 已触发：重置计数，避免后续每次调用都立即再抛
+    // 以脚本异常形式抛出：可被脚本的 try/catch 捕获；无人捕获时由门面上报。
+    // Value 携带消息文本：经 Promise 拒绝冒泡后仍可按文本归类为预算错误
+    e := EXuiJsThrow.Create('脚本执行步数超出预算（可能存在死循环）');
+    e.Value := MakeString(e.Message);
+    raise e;
+  end;
 end;
 
 function TXuiJsInterp.NewObject(const AJsClass: string): TXuiJsObject;
@@ -813,6 +951,8 @@ begin
           Exit('function ' + fn.Name + '() { ... }');
         Exit('function () { ... }');
       end;
+      if V.Obj.JsClass = 'Promise' then
+        Exit('[object Promise]');
       Result := '[object Object]';
     end;
   end;
@@ -1172,6 +1312,330 @@ begin
   FGlobalEnv.Define(AName, AValue);
 end;
 
+procedure TXuiJsInterp.ResetSteps;
+begin
+  FSteps := 0;
+end;
+
+{ ---- Promise 与微任务（P1）---- }
+
+function TXuiJsInterp.NewPromise: TXuiJsPromise;
+begin
+  Result := TXuiJsPromise.Create;
+  Result.Proto := FPromiseProto;
+  FAllObjects.Add(Result);
+end;
+
+function TXuiJsInterp.IsPromise(const AValue: TXuiJsValue): Boolean;
+begin
+  Result := (AValue.Kind = jvObject) and (AValue.Obj is TXuiJsPromise);
+end;
+
+// settle：状态不可逆；把反应项拷贝为微任务（回调永远异步），随后清空反应表。
+// 拒绝且无人挂接处理 → 进入未处理表（排水结束时统一上报一次）
+procedure TXuiJsInterp.PromiseSettle(AP: TXuiJsPromise; ARejected: Boolean;
+  const AValue: TXuiJsValue);
+var
+  i: Integer;
+begin
+  if AP.State <> psPending then
+    Exit;
+  if ARejected then
+    AP.State := psRejected
+  else
+    AP.State := psFulfilled;
+  AP.Value := AValue;
+  for i := 0 to AP.Reactions.Count - 1 do
+    EnqueueReactionJob(TXuiJsReaction(AP.Reactions[i]), not ARejected, AValue);
+  AP.Reactions.Clear;
+  if ARejected and (FUnhandled.IndexOf(AP) < 0) then
+    FUnhandled.Add(AP);
+end;
+
+// resolve 语义：值为 promise 时采纳（下游跟随其 settle），否则完成
+procedure TXuiJsInterp.PromiseResolve(AP: TXuiJsPromise; const AValue: TXuiJsValue);
+begin
+  if IsPromise(AValue) then
+  begin
+    if AValue.Obj = AP then
+    begin
+      // 自引用：按规范以 TypeError 拒绝
+      PromiseReject(AP, MakeString('TypeError: Chaining cycle detected for promise'));
+      Exit;
+    end;
+    PromiseAddReaction(TXuiJsPromise(AValue.Obj), rkThen,
+      MakeUndefined, MakeUndefined, AP, nil, 0);   // 透传反应
+    Exit;
+  end;
+  PromiseSettle(AP, False, AValue);
+end;
+
+procedure TXuiJsInterp.PromiseReject(AP: TXuiJsPromise; const AReason: TXuiJsValue);
+begin
+  PromiseSettle(AP, True, AReason);
+end;
+
+procedure TXuiJsInterp.PromiseAddReaction(AP: TXuiJsPromise; AKind: TXuiJsReactionKind;
+  const AOnOk, AOnErr: TXuiJsValue; ADownstream: TXuiJsPromise;
+  AAggregate: TObject; AIndex: Integer);
+var
+  r: TXuiJsReaction;
+begin
+  r := TXuiJsReaction.Create;
+  r.Kind := AKind;
+  r.OnFulfilled := AOnOk;
+  r.OnRejected := AOnErr;
+  r.Downstream := ADownstream;
+  r.Aggregate := AAggregate;
+  r.Index := AIndex;
+  FUnhandled.Remove(AP);   // 挂接处理即视为"已处理"
+  if AP.State = psPending then
+    AP.Reactions.Add(r)
+  else
+  begin
+    // 已 settle：立即入队（回调仍然异步执行）
+    EnqueueReactionJob(r, AP.State = psFulfilled, AP.Value);
+    r.Free;
+  end;
+end;
+
+procedure TXuiJsInterp.EnqueueReactionJob(AReaction: TXuiJsReaction;
+  ASrcFulfilled: Boolean; const ASrcValue: TXuiJsValue);
+var
+  t: TXuiJsMicroTask;
+begin
+  t := TXuiJsMicroTask.Create;
+  t.Kind := AReaction.Kind;
+  t.OnFulfilled := AReaction.OnFulfilled;
+  t.OnRejected := AReaction.OnRejected;
+  t.SrcFulfilled := ASrcFulfilled;
+  t.SrcValue := ASrcValue;
+  t.Downstream := AReaction.Downstream;
+  t.Aggregate := AReaction.Aggregate;
+  t.Index := AReaction.Index;
+  FMicroTasks.Add(t);
+end;
+
+// 执行一个微任务作业。任务内的脚本异常按 Promise 语义路由到下游（reject）；
+// 下游无人处理时由排水末的未处理检查上报。
+procedure TXuiJsInterp.RunJob(ATask: TXuiJsMicroTask);
+var
+  handler, v: TXuiJsValue;
+  agg: TXuiJsAggregate;
+  info: TXuiJsObject;
+
+  procedure SettleDown(ARejected: Boolean; const AVal: TXuiJsValue);
+  begin
+    if ATask.Downstream = nil then
+      Exit;
+    if ARejected then
+      PromiseReject(ATask.Downstream, AVal)
+    else
+      PromiseResolve(ATask.Downstream, AVal);
+  end;
+
+begin
+  case ATask.Kind of
+    rkThen:
+      begin
+        if ATask.SrcFulfilled then
+          handler := ATask.OnFulfilled
+        else
+          handler := ATask.OnRejected;
+        if IsCallable(handler) then
+        begin
+          try
+            v := CallFunction(handler, MakeUndefined, [ATask.SrcValue]);
+          except
+            on E: EXuiJsThrow do
+            begin
+              SettleDown(True, E.Value);
+              Exit;
+            end;
+            on E: Exception do
+            begin
+              SettleDown(True, MakeString(E.Message));
+              Exit;
+            end;
+          end;
+          SettleDown(False, v);
+        end
+        else if ATask.SrcFulfilled then   // 非函数参数：透传
+          SettleDown(False, ATask.SrcValue)
+        else
+          SettleDown(True, ATask.SrcValue);
+      end;
+    rkFinally:
+      begin
+        // finally 回调无参调用，返回值忽略（v1 简化）；抛错则下游 reject
+        if IsCallable(ATask.OnFulfilled) then
+        begin
+          try
+            CallFunction(ATask.OnFulfilled, MakeUndefined, []);
+          except
+            on E: EXuiJsThrow do
+            begin
+              SettleDown(True, E.Value);
+              Exit;
+            end;
+            on E: Exception do
+            begin
+              SettleDown(True, MakeString(E.Message));
+              Exit;
+            end;
+          end;
+        end;
+        if ATask.SrcFulfilled then
+          SettleDown(False, ATask.SrcValue)
+        else
+          SettleDown(True, ATask.SrcValue);
+      end;
+    rkAll, rkAllSettled:
+      begin
+        if ATask.Aggregate = nil then
+          Exit;
+        agg := TXuiJsAggregate(ATask.Aggregate);
+        if ATask.Kind = rkAll then
+        begin
+          if ATask.SrcFulfilled then
+          begin
+            if ATask.Index < agg.Results.Length then
+              agg.Results.Items[ATask.Index] := ATask.SrcValue;
+          end
+          else if (ATask.Downstream <> nil) and
+                  (ATask.Downstream.State = psPending) then
+            PromiseReject(ATask.Downstream, ATask.SrcValue);  // 任一 reject 即 reject
+        end
+        else
+        begin
+          info := NewObject;
+          if ATask.SrcFulfilled then
+          begin
+            info.SetOwn('status', MakeString('fulfilled'));
+            info.SetOwn('value', ATask.SrcValue);
+          end
+          else
+          begin
+            info.SetOwn('status', MakeString('rejected'));
+            info.SetOwn('reason', ATask.SrcValue);
+          end;
+          if ATask.Index < agg.Results.Length then
+            agg.Results.Items[ATask.Index] := ObjectValue(info);
+        end;
+        Dec(agg.PendingJobs);
+        if (agg.PendingJobs <= 0) and (ATask.Downstream <> nil) and
+           (ATask.Downstream.State = psPending) then
+          PromiseResolve(ATask.Downstream, ObjectValue(agg.Results));
+      end;
+    rkRace:
+      begin
+        // 先到先得（状态不可逆保证首个 settle 生效）
+        if ATask.SrcFulfilled then
+          SettleDown(False, ATask.SrcValue)
+        else
+          SettleDown(True, ATask.SrcValue);
+      end;
+  end;
+end;
+
+// 聚合状态：任务全部跑完即回收（避免长链泄漏）
+procedure TXuiJsInterp.CleanupAggregates;
+var
+  i: Integer;
+begin
+  for i := FAggregates.Count - 1 downto 0 do
+    if TXuiJsAggregate(FAggregates[i]).PendingJobs <= 0 then
+      FAggregates.Delete(i);
+end;
+
+// 单个微任务 = 独立执行切片：预算重置（不跨任务累计，见 M6-异步设计 §8）
+procedure TXuiJsInterp.RunMicroTaskSlice;
+var
+  t: TXuiJsMicroTask;
+begin
+  if FMicroTasks.Count = 0 then
+    Exit;
+  // Extract（而非 Delete）：任务所有权转移到本地，执行完再释放
+  t := TXuiJsMicroTask(FMicroTasks[0]);
+  FMicroTasks.Extract(t);
+  FSteps := 0;
+  Inc(FDepth);
+  try
+    RunJob(t);
+  finally
+    Dec(FDepth);
+  end;
+  t.Free;
+  CleanupAggregates;
+  MaybeCollect;
+end;
+
+procedure TXuiJsInterp.DrainMicrotasks;
+begin
+  if FDraining then
+    Exit;   // 重入防护：排水期间新产生的微任务由当前循环继续排空（同一轮）
+  FDraining := True;
+  try
+    while FMicroTasks.Count > 0 do
+      RunMicroTaskSlice;
+  finally
+    FDraining := False;
+  end;
+  ScanUnhandledRejections;
+end;
+
+function TXuiJsInterp.MicroTaskCount: Integer;
+begin
+  Result := FMicroTasks.Count;
+end;
+
+// v1 简化：每次排水结束检查一次；上报后即从表中移除（同一拒绝只报一次）
+procedure TXuiJsInterp.ScanUnhandledRejections;
+var
+  i: Integer;
+  msg: string;
+begin
+  if FUnhandled.Count = 0 then
+    Exit;
+  try
+    for i := 0 to FUnhandled.Count - 1 do
+    begin
+      msg := '未处理的 Promise 拒绝: ' +
+        ToStringValue(TXuiJsPromise(FUnhandled[i]).Value);
+      if Assigned(FOnUnhandledRejection) then
+        FOnUnhandledRejection(msg);
+    end;
+  finally
+    FUnhandled.Clear;
+  end;
+end;
+
+procedure TXuiJsInterp.ForceCollectGarbage;
+begin
+  CollectGarbage;
+end;
+
+function TXuiJsInterp.ObjectCount: Integer;
+begin
+  Result := FAllObjects.Count;
+end;
+
+function TXuiJsInterp.CreateHostObject(const AJsClass: string): TXuiJsObject;
+begin
+  Result := NewObject(AJsClass);
+end;
+
+function TXuiJsInterp.CreateHostFunction(const AName: string;
+  AFn: TXuiJsNativeFunc): TXuiJsValue;
+var
+  fn: TXuiJsFunction;
+begin
+  fn := NewFunction;
+  fn.Name := AName;
+  fn.Native := AFn;
+  Result := FunctionValue(fn);
+end;
+
 { ---- GC ---- }
 
 procedure TXuiJsInterp.MarkValue(const AValue: TXuiJsValue);
@@ -1185,6 +1649,8 @@ var
   i, j: Integer;
   arr: TXuiJsArray;
   fn: TXuiJsFunction;
+  p: TXuiJsPromise;
+  r: TXuiJsReaction;
 begin
   if (AObj = nil) or AObj.Marked then
     Exit;
@@ -1205,6 +1671,23 @@ begin
     MarkObject(fn.HomeObject);
     MarkObject(fn.ParentCtor);
     MarkObject(fn.ProtoObject);
+    // resolve/reject 控制函数经 Tag 携带目标 promise（保活，防止悬挂）
+    if fn.Tag is TXuiJsPromise then
+      MarkObject(TXuiJsPromise(fn.Tag));
+  end;
+  if AObj is TXuiJsPromise then
+  begin
+    p := TXuiJsPromise(AObj);
+    MarkValue(p.Value);
+    for i := 0 to p.Reactions.Count - 1 do
+    begin
+      r := TXuiJsReaction(p.Reactions[i]);
+      MarkValue(r.OnFulfilled);
+      MarkValue(r.OnRejected);
+      MarkObject(r.Downstream);
+      if r.Aggregate <> nil then
+        MarkObject(TXuiJsAggregate(r.Aggregate).Results);
+    end;
   end;
   if AObj.Tag <> nil then
     Exit; // Tag 由宿主管理（弱引用）
@@ -1227,6 +1710,17 @@ end;
 procedure TXuiJsInterp.CollectGarbage;
 var
   i: Integer;
+
+  procedure MarkMicroTask(ATask: TXuiJsMicroTask);
+  begin
+    MarkValue(ATask.OnFulfilled);
+    MarkValue(ATask.OnRejected);
+    MarkValue(ATask.SrcValue);
+    MarkObject(ATask.Downstream);
+    if ATask.Aggregate <> nil then
+      MarkObject(TXuiJsAggregate(ATask.Aggregate).Results);
+  end;
+
 begin
   // 标记
   for i := 0 to FAllObjects.Count - 1 do
@@ -1241,8 +1735,16 @@ begin
   MarkObject(FStringProto);
   MarkObject(FNumberProto);
   MarkObject(FBoolProto);
+  MarkObject(FPromiseProto);
   for i := 0 to FRoots.Count - 1 do
     MarkValue(TXuiJsProp(FRoots[i]).Value);
+  // P1 根扩展：微任务队列、未处理拒绝表、聚合收集状态
+  for i := 0 to FMicroTasks.Count - 1 do
+    MarkMicroTask(TXuiJsMicroTask(FMicroTasks[i]));
+  for i := 0 to FUnhandled.Count - 1 do
+    MarkObject(TXuiJsObject(FUnhandled[i]));
+  for i := 0 to FAggregates.Count - 1 do
+    MarkObject(TXuiJsAggregate(FAggregates[i]).Results);
   // 清扫
   for i := FAllEnvs.Count - 1 downto 0 do
     if not TXuiJsEnv(FAllEnvs[i]).Marked then
@@ -1477,8 +1979,54 @@ begin
       v := MakeUndefined;
     SetProp(thisVal, field.Name, v);
   end;
-  if AFn.FieldInits is TList then
-    AFn.FieldInits.Clear;
+  // 注意：不能清空 FieldInits —— 同一类会被多次实例化，每次都要初始化
+end;
+
+// 隐式构造函数（派生类未声明 constructor）：沿继承链找到最近的显式构造函数（共享 this），
+// 随后自基类向派生类依次执行字段初始化
+procedure TXuiJsInterp.RunImplicitCtor(AFn: TXuiJsFunction; const AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray);
+var
+  chain: TList;
+  f: TXuiJsFunction;
+  env: TXuiJsEnv;
+  i: Integer;
+begin
+  chain := TList.Create;
+  try
+    f := AFn;
+    while f <> nil do
+    begin
+      chain.Add(f);
+      f := f.ParentCtor;
+    end;
+    // 1) 运行最上层显式构造函数的函数体（this 贯穿全链）
+    for i := chain.Count - 1 downto 0 do
+    begin
+      f := TXuiJsFunction(chain[i]);
+      if f.Body <> nil then
+      begin
+        env := NewEnv(f.Closure);
+        env.IsFunctionScope := True;
+        env.HasThis := True;
+        env.ThisValue := AThis;
+        env.HomeObject := f.ProtoObject;
+        RunCtorBody(f, env, AArgs);
+        Break;
+      end;
+    end;
+    // 2) 字段初始化：基类 → 派生类
+    for i := chain.Count - 1 downto 0 do
+    begin
+      env := NewEnv(nil);
+      env.IsFunctionScope := True;
+      env.HasThis := True;
+      env.ThisValue := AThis;
+      RunFieldInits(TXuiJsFunction(chain[i]), env);
+    end;
+  finally
+    chain.Free;
+  end;
 end;
 
 procedure TXuiJsInterp.RunCtorBody(AFn: TXuiJsFunction; AEnv: TXuiJsEnv;
@@ -1508,10 +2056,7 @@ begin
 
   if fn.IsCtor then
   begin
-    if fn.ProtoObject <> nil then
-      obj := NewObject
-    else
-      obj := NewObject;
+    obj := NewObject;
     if fn.ProtoObject <> nil then
       obj.Proto := fn.ProtoObject;
     thisVal := ObjectValue(obj);
@@ -1521,12 +2066,8 @@ begin
     env.ThisValue := thisVal;
     env.HomeObject := fn.ProtoObject;
     if fn.Body = nil then
-    begin
-      // 隐式构造函数：直接调用父类并执行字段初始化
-      if fn.ParentCtor <> nil then
-        RunCtorBody(fn.ParentCtor, NewEnv(fn.Closure), AArgs);
-      RunFieldInits(fn, env);
-    end
+      // 派生类未声明构造函数：沿继承链共享 this 执行
+      RunImplicitCtor(fn, thisVal, AArgs)
     else
       RunCtorBody(fn, env, AArgs);
     Exit(thisVal);
@@ -2492,6 +3033,7 @@ end;
 procedure TXuiJsInterp.InitGlobals;
 var
   mathObj, jsonObj, consoleObj, objCtor, arrCtor, strCtor, numCtor, boolCtor: TXuiJsObject;
+  promiseCtor: TXuiJsFunction;
   fn: TXuiJsFunction;
 begin
   FObjectProto := TXuiJsObject.Create;
@@ -2573,6 +3115,25 @@ begin
   DefineNative(arrCtor, 'isArray', @NativeObjectStatics);
   arrCtor.SetOwn('prototype', ObjectValue(FArrayProto));
   FGlobal.SetOwn('Array', ObjectValue(arrCtor));
+
+  // Promise（P1）：构造器为真函数（支持 new Promise(executor)）；静态方法挂构造器
+  FPromiseProto := TXuiJsObject.Create;
+  FAllObjects.Add(FPromiseProto);
+  FPromiseProto.Proto := FObjectProto;
+  DefineNative(FPromiseProto, 'then', @NativePromiseProto);
+  DefineNative(FPromiseProto, 'catch', @NativePromiseProto);
+  DefineNative(FPromiseProto, 'finally', @NativePromiseProto);
+  promiseCtor := NewFunction;
+  promiseCtor.Name := 'Promise';
+  promiseCtor.Native := @NativePromise;
+  promiseCtor.ProtoObject := FPromiseProto;   // instanceof Promise 支持
+  DefineNative(promiseCtor, 'resolve', @NativePromiseStatics);
+  DefineNative(promiseCtor, 'reject', @NativePromiseStatics);
+  DefineNative(promiseCtor, 'all', @NativePromiseStatics);
+  DefineNative(promiseCtor, 'allSettled', @NativePromiseStatics);
+  DefineNative(promiseCtor, 'race', @NativePromiseStatics);
+  promiseCtor.SetOwn('prototype', ObjectValue(FPromiseProto));
+  FGlobal.SetOwn('Promise', FunctionValue(promiseCtor));
 
   // 原型方法（按名分派）
   DefineNative(FStringProto, 'charAt', @NativeStringProto);
@@ -3307,6 +3868,160 @@ begin
     Exit(CallFunction(AThis, thisArg, args));
   end;
   Result := MakeUndefined;
+end;
+
+{ ---- Promise 内建（P1）---- }
+
+// new Promise(executor)：executor 同步执行，收到 resolve/reject 控制函数；
+// executor 抛错且 promise 仍 pending → reject
+function TXuiJsInterp.NativePromise(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+var
+  p: TXuiJsPromise;
+  executor: TXuiJsValue;
+  res, rej: TXuiJsFunction;
+begin
+  executor := ArgAt(AArgs, 0);
+  if not IsCallable(executor) then
+    raise EXuiJsRuntime.Create('Promise 的参数必须是执行器函数');
+  p := NewPromise;
+  res := NewFunction;
+  res.Name := 'resolve';
+  res.Native := @NativePromiseCtl;
+  res.Tag := p;
+  rej := NewFunction;
+  rej.Name := 'reject';
+  rej.Native := @NativePromiseCtl;
+  rej.Tag := p;
+  try
+    CallFunction(executor, MakeUndefined, [FunctionValue(res), FunctionValue(rej)]);
+  except
+    on E: EXuiJsThrow do
+      PromiseReject(p, E.Value);
+    on E: Exception do
+      PromiseReject(p, MakeString(E.Message));
+  end;
+  Result := ObjectValue(p);
+end;
+
+// executor 的 resolve/reject 控制函数（经 Tag 找到目标 promise）
+function TXuiJsInterp.NativePromiseCtl(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+begin
+  if not (AFn.Tag is TXuiJsPromise) then
+    raise EXuiJsRuntime.Create('Promise 控制函数状态无效');
+  if AFn.Name = 'resolve' then
+    PromiseResolve(TXuiJsPromise(AFn.Tag), ArgAt(AArgs, 0))
+  else
+    PromiseReject(TXuiJsPromise(AFn.Tag), ArgAt(AArgs, 0));
+  Result := MakeUndefined;
+end;
+
+// 原型方法 then / catch / finally（返回下游 Promise）
+function TXuiJsInterp.NativePromiseProto(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+var
+  p, down: TXuiJsPromise;
+begin
+  if (AThis.Kind <> jvObject) or (not (AThis.Obj is TXuiJsPromise)) then
+    raise EXuiJsRuntime.CreateFmt('%s 的调用者必须是 Promise', [AFn.Name]);
+  p := TXuiJsPromise(AThis.Obj);
+  down := NewPromise;
+  if AFn.Name = 'then' then
+    PromiseAddReaction(p, rkThen, ArgAt(AArgs, 0), ArgAt(AArgs, 1), down, nil, 0)
+  else if AFn.Name = 'catch' then
+    PromiseAddReaction(p, rkThen, MakeUndefined, ArgAt(AArgs, 0), down, nil, 0)
+  else
+    PromiseAddReaction(p, rkFinally, ArgAt(AArgs, 0), MakeUndefined, down, nil, 0);
+  Result := ObjectValue(down);
+end;
+
+// 静态方法 resolve / reject / all / allSettled / race
+function TXuiJsInterp.NativePromiseStatics(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+var
+  p, down: TXuiJsPromise;
+  agg: TXuiJsAggregate;
+  src: TXuiJsValue;
+  arr: TXuiJsArray;
+  i: Integer;
+  kind: TXuiJsReactionKind;
+  r: TXuiJsReaction;
+begin
+  if AFn.Name = 'resolve' then
+  begin
+    src := ArgAt(AArgs, 0);
+    if IsPromise(src) then
+      Exit(src);   // 原生 promise 原样返回
+    p := NewPromise;
+    PromiseResolve(p, src);
+    Exit(ObjectValue(p));
+  end;
+  if AFn.Name = 'reject' then
+  begin
+    p := NewPromise;
+    PromiseReject(p, ArgAt(AArgs, 0));
+    Exit(ObjectValue(p));
+  end;
+
+  // all / allSettled / race：v1 参数简化为数组
+  if not ((ArgAt(AArgs, 0).Kind = jvObject) and
+          (ArgAt(AArgs, 0).Obj is TXuiJsArray)) then
+    raise EXuiJsRuntime.CreateFmt('Promise.%s 的参数必须是数组', [AFn.Name]);
+  arr := TXuiJsArray(ArgAt(AArgs, 0).Obj);
+  down := NewPromise;
+
+  if AFn.Name = 'race' then
+  begin
+    // 先到先得；非 promise 值按 FIFO 立即入队（首个任务生效）
+    for i := 0 to arr.Length - 1 do
+    begin
+      src := arr.Items[i];
+      if IsPromise(src) then
+        PromiseAddReaction(TXuiJsPromise(src.Obj), rkRace,
+          MakeUndefined, MakeUndefined, down, nil, 0)
+      else
+      begin
+        r := TXuiJsReaction.Create;
+        r.Kind := rkRace;
+        r.Downstream := down;
+        EnqueueReactionJob(r, True, src);
+        r.Free;
+      end;
+    end;
+    Exit(ObjectValue(down));
+  end;
+
+  // all / allSettled：聚合收集（结果按下标写回，全部到达即完成）
+  if AFn.Name = 'all' then
+    kind := rkAll
+  else
+    kind := rkAllSettled;
+  agg := TXuiJsAggregate.Create;
+  agg.Downstream := down;
+  agg.Results := NewArray;
+  SetLength(agg.Results.Items, arr.Length);
+  agg.PendingJobs := 0;
+  for i := 0 to arr.Length - 1 do
+  begin
+    src := arr.Items[i];
+    if IsPromise(src) then
+    begin
+      Inc(agg.PendingJobs);
+      PromiseAddReaction(TXuiJsPromise(src.Obj), kind,
+        MakeUndefined, MakeUndefined, down, agg, i);
+    end
+    else
+      agg.Results.Items[i] := src;
+  end;
+  FAggregates.Add(agg);
+  if agg.PendingJobs = 0 then
+  begin
+    // 全为普通值（含空数组）：直接完成
+    PromiseResolve(down, ObjectValue(agg.Results));
+    CleanupAggregates;
+  end;
+  Result := ObjectValue(down);
 end;
 
 end.

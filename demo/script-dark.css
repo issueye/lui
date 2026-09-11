@@ -1,0 +1,110 @@
+/* lui M6 演示 —— 脚本页主题（深色） */
+
+window {
+  background-color: #121212;
+}
+
+.app {
+  padding: 14px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  column-gap: 8px;
+  margin-bottom: 10px;
+}
+
+.title {
+  font-size: 16px;
+  font-weight: bold;
+  color: #eaeaea;
+  margin: 0;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.card {
+  padding: 12px;
+  margin-bottom: 10px;
+  background-color: #1e1e1e;
+  border: 1px solid #333333;
+  border-radius: 8px;
+  transition: all 150ms ease;
+}
+
+.label {
+  color: #9aa0a6;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.row {
+  display: flex;
+  column-gap: 8px;
+  margin-bottom: 8px;
+}
+
+button {
+  height: 30px;
+  font-size: 13px;
+  border-radius: 5px;
+}
+
+.primary {
+  flex: 1;
+  background-color: #1668dc;
+  color: #ffffff;
+  transition: all 150ms ease;
+}
+
+.primary:hover {
+  background-color: #1a7ae8;
+}
+
+.primary:active {
+  background-color: #1157b8;
+}
+
+.ghost {
+  width: 72px;
+  background-color: #1e1e1e;
+  color: #b8bcc4;
+  border: 1px solid #3a3a3a;
+  transition: all 150ms ease;
+}
+
+.ghost:hover {
+  background-color: #2a2a2a;
+}
+
+.counter {
+  font-size: 12px;
+  color: #4a9eff;
+}
+
+.list {
+  overflow: hidden;
+  height: 110px;
+}
+
+.item {
+  padding: 7px 10px;
+  margin-bottom: 6px;
+  background-color: #1e1e1e;
+  border: 1px solid #333333;
+  border-radius: 6px;
+  transition: all 120ms ease;
+}
+
+.item:hover {
+  background-color: #262626;
+}
+
+.item .text {
+  color: #eaeaea;
+  font-size: 13px;
+  margin: 0;
+}

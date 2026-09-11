@@ -55,6 +55,7 @@ type
     FTitle: string;
     FSourceFile: string;      // XML 源文件（热重载用；来自字符串时为空）
     FDependencies: TStringList; // 依赖文件（include 展开的全部来源；热重载监测）
+    FScripts: TStringList;    // <script src> 收集（按 XML 出现顺序；M6 脚本引擎）
   public
     constructor Create;
     destructor Destroy; override;
@@ -62,6 +63,7 @@ type
     property Title: string read FTitle write FTitle; // 来自 window/@title
     property SourceFile: string read FSourceFile write FSourceFile;
     property Dependencies: TStringList read FDependencies;
+    property Scripts: TStringList read FScripts;
     function FindElementById(const AId: string): TXuiNode;
   end;
 
@@ -196,10 +198,12 @@ constructor TXuiDocument.Create;
 begin
   inherited Create;
   FDependencies := TStringList.Create;
+  FScripts := TStringList.Create;
 end;
 
 destructor TXuiDocument.Destroy;
 begin
+  FScripts.Free;
   FDependencies.Free;
   FRoot.Free;
   inherited Destroy;

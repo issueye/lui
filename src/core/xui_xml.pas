@@ -35,16 +35,19 @@ type
     BaseDir: string;
     Stack: TStringList;        // 正在展开的文件（ExpandFileName 规范化）
     Dependencies: TStringList; // 展开过的全部文件
-    constructor Create(const ABaseDir: string; ADependencies: TStringList);
+    Scripts: TStringList;      // <script src> 收集（按出现顺序）
+    constructor Create(const ABaseDir: string; ADependencies, AScripts: TStringList);
     destructor Destroy; override;
   end;
 
-constructor TIncludeContext.Create(const ABaseDir: string; ADependencies: TStringList);
+constructor TIncludeContext.Create(const ABaseDir: string;
+  ADependencies, AScripts: TStringList);
 begin
   inherited Create;
   BaseDir := ABaseDir;
   Stack := TStringList.Create;
   Dependencies := ADependencies;
+  Scripts := AScripts;
 end;
 
 destructor TIncludeContext.Destroy;
@@ -237,16 +240,25 @@ begin
   end;
 end;
 
-// 元素 → 节点并递归子元素（<include> 就地展开）
+// 元素 → 节点并递归子元素（<include> 就地展开；<script src> 收集不产生节点）
 procedure BuildInto(ADomElement: TDOMElement; AParent: TXuiNode;
   ACtx: TIncludeContext);
 var
   node: TXuiNode;
   child: TDOMNode;
+  src: string;
 begin
   if CompareText(ADomElement.NodeName, 'include') = 0 then
   begin
     BuildInclude(ADomElement, AParent, ACtx);
+    Exit;
+  end;
+  // <script src="app.ts"/>：不产生节点，登记到文档的脚本列表（按出现顺序）
+  if CompareText(ADomElement.NodeName, 'script') = 0 then
+  begin
+    src := Trim(AttrOf(ADomElement, 'src'));
+    if src <> '' then
+      ACtx.Scripts.Add(src);
     Exit;
   end;
   node := BuildNodeSelf(ADomElement);
@@ -274,7 +286,7 @@ begin
     if CompareText(rootEl.NodeName, 'include') = 0 then
       raise Exception.Create('根元素不能是 <include>');
     Result.SourceFile := ASourceFile;
-    ctx := TIncludeContext.Create(ABaseDir, Result.Dependencies);
+    ctx := TIncludeContext.Create(ABaseDir, Result.Dependencies, Result.Scripts);
     try
       Result.Root := BuildNodeSelf(rootEl);
       child := rootEl.FirstChild;

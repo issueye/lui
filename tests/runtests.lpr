@@ -11,7 +11,8 @@ uses
   Classes, SysUtils, Types, Math, Contnrs, Graphics, LCLType,
   xui_types, xui_style, xui_dom, xui_xml, xui_layout, xui_text,
   xui_css_token, xui_css_parser, xui_css_match, xui_render, xui_engine,
-  xui_events, xui_widget, xui_input
+  xui_events, xui_widget, xui_input,
+  xui_js_token, xui_js_parser, xui_js_runtime, xui_script, xui_script_dom
   {$IFDEF WINDOWS}, xui_render_gdiplus{$ENDIF};
 
 var
@@ -1591,6 +1592,15 @@ begin
   end;
 end;
 
+// 让"随后的文件写入"确定性地落在新的时间戳窗口里。
+// FileAge 只有 2 秒粒度（DOS 时间格式），且 FileSetDate 在 Windows 上会偶发不生效
+// （文件刚写完时的缓存/索引干扰）——所以这里不用 FileSetDate，而是等过粒度边界，
+// 让写入后的 mtime 必然与"加载时记录的 mtime"不同。历史上的偶发失败即源于此。
+procedure WaitForMTimeTick;
+begin
+  Sleep(2200);
+end;
+
 procedure TestIncludeTemplates;
 var
   dir, mainFile, itemFile, tmplFile, nestFile, cycA, cycB, badFile: string;
@@ -1681,7 +1691,530 @@ begin
   end;
 end;
 
-{ ---------- M5：热重载 ---------- }
+{ ---------- M6：脚本引擎（内核级 + 集成）---------- }
+
+type
+  // 脚本输出/错误接收器（回调是 of object 类型）
+  TScriptSink = class
+  public
+    Log: TStringList;
+    Unhandled: TStringList;   // 未处理 Promise 拒绝消息（P1）
+    LastError: string;
+    LastErrorStage: TXuiScriptStage;
+    Errors: Integer;
+    constructor Create;
+    destructor Destroy; override;
+    procedure HandleLog(const AText: string);
+    procedure HandleError(const AFile, AMessage: string;
+      ALine, ACol: Integer; AStage: TXuiScriptStage);
+    procedure HandleUnhandled(const AMessage: string);
+  end;
+
+constructor TScriptSink.Create;
+begin
+  inherited Create;
+  Log := TStringList.Create;
+  Unhandled := TStringList.Create;
+end;
+
+destructor TScriptSink.Destroy;
+begin
+  Log.Free;
+  Unhandled.Free;
+  inherited Destroy;
+end;
+
+procedure TScriptSink.HandleLog(const AText: string);
+begin
+  Log.Add(AText);
+end;
+
+procedure TScriptSink.HandleError(const AFile, AMessage: string;
+  ALine, ACol: Integer; AStage: TXuiScriptStage);
+begin
+  Inc(Errors);
+  LastError := AMessage;
+  LastErrorStage := AStage;
+end;
+
+procedure TScriptSink.HandleUnhandled(const AMessage: string);
+begin
+  Unhandled.Add(AMessage);
+end;
+
+// 内核：词法/语法/解释器（不依赖引擎）
+procedure TestScriptCore;
+var
+  interp: TXuiJsInterp;
+  prog: TXuiJsProgram;
+  sink: TScriptSink;
+  src: string;
+
+  function RunScript(const ACode: string): string;
+  begin
+    sink.Log.Clear;
+    prog := XuiJsParse(ACode, 'test.ts');
+    try
+      interp.Run(prog.Root);
+    finally
+      prog.Free;
+    end;
+    Result := sink.Log.Text;
+  end;
+
+begin
+  WriteLn('--- M6 脚本内核 ---');
+  sink := TScriptSink.Create;
+  interp := TXuiJsInterp.Create;
+  try
+    interp.OnLog := @sink.HandleLog;
+    src := RunScript(
+      'let x: number = 1 + 2 * 3;' + #10 +
+      'console.log("a" + x);' + #10 +
+      'function add(p: number, q: number): number { return p + q; }' + #10 +
+      'console.log("b" + add(2, 3));' + #10 +
+      'const o = { k: 1, s: "hi" };' + #10 +
+      'console.log("c" + o.k + o.s);' + #10 +
+      'const arr = [1, 2, 3];' + #10 +
+      'console.log("d" + arr.length + arr.map(v => v * 2).join("-"));' + #10 +
+      'console.log("e" + `t${1 + 1}`);' + #10 +
+      'const { k, s } = o;' + #10 +
+      'console.log("f" + k + s);' + #10 +
+      'let 计数 = 0; 计数 += 5;' + #10 +
+      'console.log("g" + 计数);');
+    Check(Pos('a7', src) > 0, '表达式优先级与类型擦除');
+    Check(Pos('b5', src) > 0, '函数声明与调用');
+    Check(Pos('c1hi', src) > 0, '对象字面量与成员访问');
+    Check(Pos('d32-4-6', src) > 0, '数组方法（map/join）');
+    Check(Pos('et2', src) > 0, '模板串');
+    Check(Pos('f1hi', src) > 0, '对象解构');
+    Check(Pos('g5', src) > 0, '中文标识符与复合赋值');
+
+    src := RunScript(
+      'class A { constructor(n) { this.n = n; } hi() { return "A" + this.n; } }' + #10 +
+      'class B extends A { hi() { return "B" + this.n; } }' + #10 +
+      'console.log("h" + new B("x").hi());' + #10 +
+      'let sum = 0; for (const v of [1,2,3]) { sum += v; }' + #10 +
+      'console.log("i" + sum);' + #10 +
+      'try { throw "err"; } catch (e) { console.log("j" + e); }' + #10 +
+      'console.log("k" + JSON.stringify({ p: 1, q: [true, null] }));' + #10 +
+      'const s2 = "你好世界";' + #10 +
+      'console.log("l" + s2.length + s2.slice(1, 3));');
+    Check(Pos('hBx', src) > 0, '类继承与方法覆盖');
+    Check(Pos('i6', src) > 0, 'for..of 累加');
+    Check(Pos('jerr', src) > 0, 'try/catch 捕获 throw');
+    Check(Pos('k{"p":1,"q":[true,null]}', src) > 0, 'JSON.stringify');
+    Check(Pos('l4好世', src) > 0, '中文字符串按码点计数与切片');
+
+    // 预算：切片内死循环应被拦下（不挂死测试进程）
+    src := RunScript(
+      'function Loop() { let i = 0; while (true) { i++; } }' + #10 +
+      'try { Loop(); } catch (e) { console.log("m" + e); }');
+    Check(Pos('m', src) > 0, '死循环被指令预算拦截');
+  finally
+    interp.Free;
+    sink.Free;
+  end;
+end;
+
+{ ---------- M6 P1：Promise 与微任务 ---------- }
+
+// 内核级：Promise 语义、微任务时序、预算切片化、GC 根扩展（不依赖引擎）
+procedure TestScriptAsync;
+var
+  interp: TXuiJsInterp;
+  prog: TXuiJsProgram;
+  sink: TScriptSink;
+  src: string;
+  baseline, syncSteps: Int64;
+  progs: TObjectList;   // AST 须存活到排水之后（闭包引用函数体节点）
+
+  // 只求值不排水（时序断言需要）
+  procedure RunNoDrain(const ACode: string);
+  begin
+    prog := XuiJsParse(ACode, 'test.ts');
+    progs.Add(prog);    // 所有权转移：程序对象随测试结束统一释放
+    interp.Run(prog.Root);
+  end;
+
+  function RunAndDrain(const ACode: string): string;
+  begin
+    sink.Log.Clear;
+    RunNoDrain(ACode);
+    interp.DrainMicrotasks;
+    Result := sink.Log.Text;
+  end;
+
+begin
+  WriteLn('--- M6 P1 Promise 与微任务 ---');
+  sink := TScriptSink.Create;
+  interp := TXuiJsInterp.Create;
+  progs := TObjectList.Create(True);
+  try
+    interp.OnLog := @sink.HandleLog;
+    interp.OnUnhandledRejection := @sink.HandleUnhandled;
+
+    // 回调异步执行：then 回调晚于后续同步语句（经典顺序断言）
+    sink.Log.Clear;
+    RunNoDrain(
+      'console.log("a");' + #10 +
+      'Promise.resolve(1).then(function (v) { console.log("c" + v); });' + #10 +
+      'console.log("b");');
+    Check((Pos('a', sink.Log.Text) > 0) and (Pos('b', sink.Log.Text) > 0) and
+      (Pos('c1', sink.Log.Text) = 0), 'then 回调不同步执行');
+    interp.DrainMicrotasks;
+    Check(Pos('c1', sink.Log.Text) > Pos('b', sink.Log.Text),
+      '排水后回调执行且晚于同步语句');
+
+    // 微任务 FIFO
+    src := RunAndDrain(
+      'Promise.resolve().then(function () { console.log("t1"); });' + #10 +
+      'Promise.resolve().then(function () { console.log("t2"); });' + #10 +
+      'Promise.resolve().then(function () { console.log("t3"); });');
+    Check((Pos('t1', src) < Pos('t2', src)) and (Pos('t2', src) < Pos('t3', src)),
+      '微任务按 FIFO 顺序执行');
+
+    // 链式传值：回调返回值 resolve 下游
+    src := RunAndDrain(
+      'Promise.resolve(1)' + #10 +
+      '  .then(function (v) { return v + 1; })' + #10 +
+      '  .then(function (v) { return v * 10; })' + #10 +
+      '  .then(function (v) { console.log("chain" + v); });');
+    Check(Pos('chain20', src) > 0, '链式 then 传递回调返回值');
+
+    // 非函数参数透传
+    src := RunAndDrain(
+      'Promise.resolve("p").then().then(function (v) { console.log("pass" + v); });' + #10 +
+      'Promise.resolve(5).then(123).then(function (v) { console.log("pass2" + v); });' + #10 +
+      'Promise.reject("ep").then(undefined, function (r) { console.log("pass3" + r); });');
+    Check(Pos('passp', src) > 0, '空 then 透传成功值');
+    Check(Pos('pass25', src) > 0, '非函数 onFulfilled 透传');
+    Check(Pos('pass3ep', src) > 0, 'then(undefined, f) 处理拒绝');
+
+    // 错误传播与恢复：handler 抛错 reject 下游；catch 捕获并恢复；跳过路径
+    src := RunAndDrain(
+      'Promise.resolve("x").then(function (v) { throw "boom"; })' + #10 +
+      '  .catch(function (r) { console.log("caught" + r); return "rec"; })' + #10 +
+      '  .then(function (v) { console.log("after" + v); });' + #10 +
+      'Promise.reject("rj").then(function (v) { console.log("skipx" + v); })' + #10 +
+      '  .catch(function (r) { console.log("skipped" + r); });');
+    Check(Pos('caughtboom', src) > 0, 'then 回调抛错进入下游 catch');
+    Check(Pos('afterrec', src) > 0, 'catch 返回值恢复链路');
+    Check(Pos('skipx', src) = 0, '拒绝跳过 onFulfilled');
+    Check(Pos('skippedrj', src) > 0, 'catch 捕获初始拒绝');
+
+    // 状态不可逆：resolve 后再 resolve/reject 均无效（set 是关键字，控制函数名用 fire）
+    src := RunAndDrain(
+      'let fire;' + #10 +
+      'const q = new Promise(function (res, rej) { fire = res; });' + #10 +
+      'fire("first");' + #10 +
+      'fire("second");' + #10 +
+      'q.then(function (v) { console.log("once" + v); });');
+    Check((Pos('oncefirst', src) > 0) and (Pos('second', src) = 0),
+      'promise 状态不可逆');
+
+    // executor 同步执行 + 抛错 → reject
+    src := RunAndDrain(
+      'console.log("pre");' + #10 +
+      'new Promise(function (res) { console.log("exec"); res("ok"); })' + #10 +
+      '  .then(function (v) { console.log("then" + v); });' + #10 +
+      'console.log("post");' + #10 +
+      'new Promise(function () { throw "ctor-throw"; })' + #10 +
+      '  .catch(function (r) { console.log("ct" + r); });');
+    Check((Pos('pre', src) < Pos('exec', src)) and (Pos('exec', src) < Pos('post', src)),
+      'executor 同步执行');
+    Check(Pos('thenok', src) > Pos('post', src), 'executor 内 resolve 仍异步回调');
+    Check(Pos('ctctor-throw', src) > 0, 'executor 抛错使 promise 拒绝');
+
+    // thenable 采纳：回调返回 promise → 下游等待其 settle
+    src := RunAndDrain(
+      'const outer = Promise.resolve("in")' + #10 +
+      '  .then(function (v) { return Promise.resolve(v + "!"); });' + #10 +
+      'outer.then(function (v) { console.log("adopt" + v); });');
+    Check(Pos('adoptin!', src) > 0, '下游采纳回调返回的 promise');
+
+    // Promise.resolve(promise) 原样返回
+    src := RunAndDrain(
+      'const same = Promise.resolve(7);' + #10 +
+      'console.log("same" + (Promise.resolve(same) === same) +' + #10 +
+      '  (Promise.resolve(8) === same));');
+    Check(Pos('sametruefalse', src) > 0, 'Promise.resolve 对 promise 原样返回');
+
+    // all：结果按输入序；任一 reject 即 reject；空数组
+    src := RunAndDrain(
+      'Promise.all([Promise.resolve(1), 2, Promise.resolve(3)])' + #10 +
+      '  .then(function (a) { console.log("all" + a.join("-")); });' + #10 +
+      'Promise.all([Promise.resolve(1), Promise.reject("all-rej")])' + #10 +
+      '  .catch(function (r) { console.log("allerr" + r); });' + #10 +
+      'Promise.all([]).then(function (a) { console.log("allempty" + a.length); });');
+    Check(Pos('all1-2-3', src) > 0, 'Promise.all 收集全部值（含普通值混入）');
+    Check(Pos('allerrall-rej', src) > 0, 'Promise.all 任一拒绝即拒绝');
+    Check(Pos('allempty0', src) > 0, 'Promise.all 空数组立即完成');
+
+    // allSettled：收集 {status, value|reason}
+    src := RunAndDrain(
+      'Promise.allSettled([Promise.resolve(1), Promise.reject("r2")])' + #10 +
+      '  .then(function (a) {' + #10 +
+      '    console.log("as" + a[0].status + ":" + a[0].value + "|" +' + #10 +
+      '      a[1].status + ":" + a[1].reason); });');
+    Check(Pos('asfulfilled:1|rejected:r2', src) > 0, 'Promise.allSettled 收集全部结局');
+
+    // race：先到先得（含拒绝领先与普通值混入）
+    src := RunAndDrain(
+      'Promise.race(["first", Promise.resolve("late")])' + #10 +
+      '  .then(function (v) { console.log("race1" + v); });' + #10 +
+      'Promise.race([Promise.reject("race-rej"), Promise.resolve("x")])' + #10 +
+      '  .catch(function (r) { console.log("race2" + r); });');
+    Check(Pos('race1first', src) > 0, 'Promise.race 首个 settle 生效');
+    Check(Pos('race2race-rej', src) > 0, 'Promise.race 拒绝领先同样生效');
+
+    // finally：回调执行、透传原值、拒绝透传、回调抛错
+    src := RunAndDrain(
+      'Promise.resolve("fin").finally(function () { console.log("fin-run"); })' + #10 +
+      '  .then(function (v) { console.log("fin-pass" + v); });' + #10 +
+      'Promise.reject("fe").finally(function () { console.log("fin-rej-run"); })' + #10 +
+      '  .catch(function (r) { console.log("fin-keep" + r); });' + #10 +
+      'Promise.resolve("x").finally(function () { throw "fin-throw"; })' + #10 +
+      '  .catch(function (r) { console.log("fin-threw" + r); });');
+    Check(Pos('fin-run', src) > 0, 'finally 回调执行');
+    Check(Pos('fin-passfin', src) > 0, 'finally 透传成功值');
+    Check(Pos('fin-rej-run', src) > 0, 'finally 在拒绝路径也执行');
+    Check(Pos('fin-keepfe', src) > 0, 'finally 透传拒绝原因');
+    Check(Pos('fin-threwfin-throw', src) > 0, 'finally 回调抛错使下游拒绝');
+
+    // 未处理拒绝：上报一次；排水前挂接处理则免报
+    sink.Unhandled.Clear;
+    sink.Log.Clear;
+    RunNoDrain(
+      'Promise.reject("orphan");' + #10 +
+      'const p2 = Promise.reject("handled2");' + #10 +
+      'p2.catch(function (r) { console.log("lh" + r); });');
+    interp.DrainMicrotasks;
+    Check(sink.Unhandled.Count = 1, '未处理拒绝恰上报一次');
+    Check(Pos('orphan', sink.Unhandled.Text) > 0, '未处理拒绝携带原因');
+    Check(Pos('handled2', sink.Unhandled.Text) = 0, '已挂接处理的拒绝不上报');
+    Check(Pos('lhhandled2', sink.Log.Text) > 0, '挂接的处理函数正常执行');
+    interp.DrainMicrotasks;
+    Check(sink.Unhandled.Count = 1, '同一拒绝不重复上报');
+
+    // 预算：微任务内死循环 → 超预算以拒绝形式冒泡并上报（不挂死）
+    interp.MaxSteps := 50000;
+    sink.Unhandled.Clear;
+    sink.Log.Clear;
+    RunNoDrain(
+      'Promise.resolve().then(function () { let i = 0; while (true) { i++; } });');
+    interp.DrainMicrotasks;
+    Check(Pos('步数超出预算', sink.Unhandled.Text) > 0,
+      '微任务内死循环超预算并上报');
+    interp.MaxSteps := 2000000;
+
+    // 预算切片化：微任务不继承触发切片的已耗步数
+    sink.Log.Clear;
+    RunNoDrain(
+      'function Loop(n) { let s = 0; let i; for (i = 0; i < n; i++) { s += i; } return s; }' + #10 +
+      'Loop(20000);');
+    syncSteps := interp.Steps;
+    Check(syncSteps > 1000, '同步切片消耗步数可测');
+    interp.MaxSteps := syncSteps * 3 div 2;   // 预算 = 1.5 × 单次切片：若跨任务累计必溢出
+    RunNoDrain(
+      'Promise.resolve().then(function () { console.log("mb" + Loop(20000)); });');
+    interp.DrainMicrotasks;
+    Check(Pos('mb', sink.Log.Text) > 0, '微任务预算独立重置（跨任务不累计）');
+    // 负向对照：同等预算下更大循环必须仍被拦截
+    sink.Unhandled.Clear;
+    RunNoDrain(
+      'Promise.resolve().then(function () { console.log("mc" + Loop(200000)); });');
+    interp.DrainMicrotasks;
+    Check(Pos('步数超出预算', sink.Unhandled.Text) > 0, '微任务内预算超限仍生效');
+    Check(Pos('mc', sink.Log.Text) = 0, '超预算微任务未产生输出');
+    interp.MaxSteps := 2000000;
+
+    // GC：排队中的微任务（回调 + 下游 promise）不被回收；排水后对象数收敛
+    interp.ForceCollectGarbage;
+    baseline := interp.ObjectCount;
+    RunNoDrain(
+      'for (let i = 0; i < 50; i++) { Promise.resolve(i).then(function (v) { return v; }); }');
+    interp.ForceCollectGarbage;
+    Check(interp.ObjectCount > baseline + 50, '挂起中的回调与下游不被回收');
+    interp.DrainMicrotasks;
+    interp.ForceCollectGarbage;
+    Check(interp.ObjectCount < baseline + 30, '排水后脚本对象数收敛');
+
+    // GC：resolve 控制函数保活其 promise（经 Tag 标记），GC 后仍可 settle
+    sink.Unhandled.Clear;
+    RunNoDrain('let saved; new Promise(function (res) { saved = res; });');
+    interp.ForceCollectGarbage;
+    sink.Log.Clear;
+    RunNoDrain('saved(42); console.log("ctl-ok");');
+    Check(Pos('ctl-ok', sink.Log.Text) > 0, 'GC 后控制函数仍可用');
+    Check(sink.Unhandled.Count = 0, '控制函数 settle 成功无拒绝');
+  finally
+    progs.Free;
+    interp.Free;
+    sink.Free;
+  end;
+end;
+
+// 集成：脚本经引擎操作 DOM（桥 + 事件第二来源 + 动态绑定 + 错误路由）
+procedure TestScriptIntegration;
+var
+  engine: TXuiEngine;
+  fake: TFakeRenderer;
+  script: TXuiScript;
+  bridge: TXuiDomBridge;
+  sink: TScriptSink;
+  btn: TXuiNode;
+begin
+  WriteLn('--- M6 脚本集成（DOM 桥 / 事件 / 错误）---');
+  engine := NewTestEngine(fake);
+  script := TXuiScript.Create;
+  sink := TScriptSink.Create;
+  try
+    bridge := TXuiDomBridge.Create(engine, script);
+    try
+      bridge.Install;
+      engine.AttachScript(script);
+
+      script.Run(
+        'function OnBtnClick() {' + #10 +
+        '  const n = document.find("btn");' + #10 +
+        '  n.text = "clicked";' + #10 +
+        '  n.class = "hot";' + #10 +
+        '}' + #10 +
+        'function Boot() {' + #10 +
+        '  document.find("btn").on("mouseenter", function (e) {' + #10 +
+        '    document.find("tip").text = "hover:" + e.type;' + #10 +
+        '  });' + #10 +
+        '}', 'app.ts');
+      Check(script.ErrorCount = 0, '脚本求值无错误');
+      Check(script.HasGlobalFunction('OnBtnClick'), '全局函数可被查询（事件第二来源）');
+      Check(not script.HasGlobalFunction('NotDefined'), '未定义函数查询为假');
+
+      engine.LoadFromString(
+        '<window><panel>' +
+        '  <button id="btn" text="原始" onclick="OnBtnClick"/>' +
+        '  <label id="tip" text="none"/>' +
+        '</panel></window>');
+      engine.LoadStyleSheetFromString(
+        '#btn { width:80px; height:30px; } .hot { background-color:#ff0000; }');
+      DrawEngine(engine);
+      btn := engine.Document.FindElementById('btn');
+      Check(btn <> nil, '节点就绪');
+
+      // 点击 → 脚本全局函数（XML onclick 名字回退）→ 改 DOM
+      ClickNode(engine, btn);
+      DrawEngine(engine);
+      Check(btn.Text = 'clicked', 'onclick 回退到脚本全局函数并改写文本');
+      Check(btn.HasClass('hot'), '脚本可设置类名');
+      Check((btn.Style <> nil) and (btn.Style.BgColor.R = $FF), '类名变更后样式生效');
+
+      // 动态绑定 node.on + 事件对象
+      // 注意：先移出按钮（ClickNode 已把指针放在按钮上），再进入才会产生 mouseenter
+      script.CallGlobal('Boot', []);
+      engine.HandleMouseMove(295, 195);
+      engine.HandleMouseMove((btn.BoxRect.Left + btn.BoxRect.Right) div 2,
+        (btn.BoxRect.Top + btn.BoxRect.Bottom) div 2);
+      DrawEngine(engine);
+      Check(engine.Document.FindElementById('tip').Text = 'hover:onmouseenter',
+        '动态绑定收到事件并携带事件对象');
+
+      // 错误路由：脚本运行期错误不中断应用
+      script.OnError := @sink.HandleError;
+      script.Run('function Boom() { throw "内部错误"; }', 'bad.ts');
+      script.CallGlobal('Boom', []);
+      Check(sink.LastError <> '', '脚本运行时错误经 OnError 上报');
+      Check(sink.LastErrorStage = ssRuntime, '错误阶段标记为运行时');
+
+      // 预算按切片重置（跨调用不累积）
+      script.Run('function Slow() { let s = 0; let i;' +
+        ' for (i = 0; i < 50000; i++) { s += i; } return s; }', 'slow.ts');
+      Check(Round(script.CallGlobal('Slow', []).Num) = 1249975000, '首次调用完成');
+      Check(Round(script.CallGlobal('Slow', []).Num) = 1249975000, '重复调用同样通过（预算不累积）');
+    finally
+      bridge.Free;
+    end;
+  finally
+    sink.Free;
+    script.Free;
+    engine.Free;
+  end;
+end;
+
+// P1 集成：事件切片结束排水（then 回调改 DOM 立即生效）+ 未处理拒绝/预算的错误分类
+procedure TestScriptPromiseIntegration;
+var
+  engine: TXuiEngine;
+  fake: TFakeRenderer;
+  script: TXuiScript;
+  bridge: TXuiDomBridge;
+  sink: TScriptSink;
+  btn: TXuiNode;
+begin
+  WriteLn('--- M6 P1 Promise 集成（切片排水 / 错误分类）---');
+  engine := NewTestEngine(fake);
+  script := TXuiScript.Create;
+  sink := TScriptSink.Create;
+  try
+    bridge := TXuiDomBridge.Create(engine, script);
+    try
+      bridge.Install;
+      engine.AttachScript(script);
+      script.OnError := @sink.HandleError;
+
+      // 事件处理器内创建 Promise：切片退出即排水 → 回调改 DOM 无需等待 Tick
+      script.Run(
+        'function OnBtnClick() {' + #10 +
+        '  const out = document.find("out");' + #10 +
+        '  out.text = "sync";' + #10 +
+        '  Promise.resolve("done").then(function (v) { out.text = "async-" + v; });' + #10 +
+        '  out.text = out.text + "-tail";' + #10 +
+        '}', 'async.ts');
+      Check(script.ErrorCount = 0, '异步脚本求值无错误');
+      engine.LoadFromString(
+        '<window><button id="b" text="go" onclick="OnBtnClick"/>' +
+        '<label id="out" text="init"/></window>');
+      DrawEngine(engine);
+      btn := engine.Document.FindElementById('b');
+      ClickNode(engine, btn);
+      DrawEngine(engine);
+      // 若回调同步执行，末尾拼接会得到 "async-done-tail"；
+      // 最终值为 "async-done" 证明回调晚于同步尾语句，且切片结束已排水
+      Check(engine.Document.FindElementById('out').Text = 'async-done',
+        '事件切片结束排水：回调晚于同步尾语句且改 DOM 立即生效');
+
+      // 未处理拒绝 → stage=unhandledRejection
+      script.Run('function Fire() { Promise.reject("orphan2"); }', 'fire.ts');
+      sink.Errors := 0;
+      sink.LastError := '';
+      script.CallGlobal('Fire', []);
+      Check(sink.Errors = 1, '未处理拒绝上报一次');
+      Check(Pos('orphan2', sink.LastError) > 0, '未处理拒绝携带原因');
+      Check(sink.LastErrorStage = ssUnhandledRejection, '错误阶段为 unhandledRejection');
+
+      // 已挂接处理的拒绝不报
+      script.Run('function Handled() { Promise.reject("h3").catch(function (r) { }); }', 'h3.ts');
+      sink.Errors := 0;
+      script.CallGlobal('Handled', []);
+      Check(sink.Errors = 0, '已处理的拒绝不上报');
+
+      // 微任务内死循环 → 预算超限（budget 分类）
+      script.Run('function FireLoop() {' +
+        ' Promise.resolve().then(function () { let i = 0; while (true) { i++; } }); }', 'loop.ts');
+      sink.Errors := 0;
+      sink.LastError := '';
+      script.CallGlobal('FireLoop', []);
+      Check(sink.Errors = 1, '微任务超预算上报');
+      Check(sink.LastErrorStage = ssBudget, '微任务预算超限归类为 budget');
+    finally
+      bridge.Free;
+    end;
+  finally
+    sink.Free;
+    script.Free;
+    engine.Free;
+  end;
+end;
+
 
 procedure TestHotReload;
 var
@@ -1713,16 +2246,16 @@ begin
 
     // 仅 CSS 变化：就地重解析，DOM 保留
     engine.AddElement(engine.Document.Root, '<panel id="runtime"/>');
+    WaitForMTimeTick;
     WriteTestFile(cssFile, '#box { width:50px; height:20px; background-color:#00ff00; }');
-    FileSetDate(cssFile, FileAge(cssFile) + 4); // 制造时间戳差异（FileAge 2 秒粒度）
     Check(engine.ReloadChangedFiles, 'CSS 变化触发重载');
     DrawEngine(engine);
     Check(engine.Document.FindElementById('box').Style.BgColor.G = $FF, '重载后新样式生效');
     Check(engine.Document.FindElementById('runtime') <> nil, 'CSS 重载保留运行时 DOM');
 
     // include 依赖变化：整体重建
+    WaitForMTimeTick;
     WriteTestFile(partFile, '<label id="part" text="P2"/>');
-    FileSetDate(partFile, FileAge(partFile) + 4);
     Check(engine.ReloadChangedFiles, 'include 依赖变化触发重载');
     DrawEngine(engine);
     Check(engine.Document.FindElementById('part').Text = 'P2', 'include 重载后内容更新');
@@ -1987,6 +2520,11 @@ begin
     TestTransitionAnim;
     TestIncludeTemplates;
     TestHotReload;
+
+    TestScriptCore;
+    TestScriptAsync;
+    TestScriptIntegration;
+    TestScriptPromiseIntegration;
 
     WriteLn;
     WriteLn(Format('结果: %d 通过, %d 失败', [PassCount, FailCount]));

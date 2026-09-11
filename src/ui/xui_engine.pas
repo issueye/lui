@@ -10,7 +10,8 @@ interface
 uses
   Classes, SysUtils, StrUtils, Types, Graphics, Contnrs, Math, LCLType,
   xui_types, xui_style, xui_dom, xui_xml, xui_render, xui_layout, xui_widget,
-  xui_css_parser, xui_css_match, xui_text, xui_events, xui_input, xui_anim
+  xui_css_parser, xui_css_match, xui_text, xui_events, xui_input, xui_anim,
+  xui_script, xui_js_runtime
   {$IFDEF WINDOWS}, xui_render_gdiplus{$ENDIF};
 
 const
@@ -18,6 +19,10 @@ const
   XuiWheelStep = 48;
 
 type
+  // 脚本事件钩子（由 DOM 桥装配）：在事件冒泡到某节点时询问脚本侧是否处理
+  // 返回 True 表示已消费（不再继续冒泡），语义与静态绑定命中一致
+  TXuiScriptEventFilter = function(ANode: TXuiNode; const AEvent: TXuiEvent): Boolean of object;
+
   TXuiEngine = class
   private
     FDocument: TXuiDocument;
@@ -40,6 +45,10 @@ type
     FReloadIntervalMs: Integer;
     FLastReloadCheck: Int64;
     FDocWatch: TStringList;   // XML 与 include 依赖：Name=路径, Value=加载时 FileAge
+    FScript: TXuiScript;      // 脚本门面（宿主装配；nil = 未启用脚本，零开销）
+    FOnScriptEvent: TXuiScriptEventFilter; // 脚本事件钩子（DOM 桥装配）
+    FScriptClockBase: Int64;  // ui.now() 的零点
+    FScriptInitialized: Boolean; // 文档加载后是否已执行过脚本
     FOnEvent: TXuiEventNotify;
     FOnFindMethod: TXuiFindMethodFunc;
     FOnChange: TNotifyEvent;
@@ -126,13 +135,27 @@ type
     // 换事件宿主对象后重新解析全部 on* 绑定
     procedure RebindEvents;
 
+    // ---- 脚本（M6）----
+    // 装配脚本门面（宿主在 DOM 桥就绪后调用）；文档加载完成后由引擎按序求值
+    procedure AttachScript(AScript: TXuiScript);
+    // 执行 `<script src>` 里收集到的脚本文件（按 XML 出现顺序）
+    procedure RunDocumentScripts;
+    // 安全点：只允许"动 DOM 安全"的时刻排水（事件结束 / Tick 内 / 加载后）
+    // P0 为空实现（预算切片与错误路由已由门面承担）；P1 接入微任务排水
+    procedure SafePoint;
+    // 脚本可用时由宿主注入时钟（ui.now）
+    procedure SetScriptClock(ANowMs: Int64);
+
     property Document: TXuiDocument read FDocument;
+    property Script: TXuiScript read FScript;
     property Renderer: TXuiCustomRenderer read FRenderer write FRenderer;
     property Pointer: TXuiPointerState read FPointer;
     property FocusNode: TXuiNode read FFocusNode;
     property EventTarget: TObject read FEventTarget write FEventTarget;
     property OnEvent: TXuiEventNotify read FOnEvent write FOnEvent;
     property OnFindMethod: TXuiFindMethodFunc read FOnFindMethod write FOnFindMethod;
+    // 脚本事件钩子（由 DOM 桥装配；nil = 脚本未启用）
+    property OnScriptEvent: TXuiScriptEventFilter read FOnScriptEvent write FOnScriptEvent;
     // 需要重绘时通知宿主（宿主接 Invalidate）
     property OnChange: TNotifyEvent read FOnChange write FOnChange;
     property Backend: TXuiBackend read FBackend write FBackend;
@@ -149,6 +172,19 @@ begin
   Result := GetTickCount64;
   {$ELSE}
   Result := GetTickCount;
+  {$ENDIF}
+end;
+
+// 绝对路径判定（Windows 盘符 / UNC；Unix 以 / 开头）
+function EnginePathIsAbsolute(const APath: string): Boolean;
+begin
+  if APath = '' then
+    Exit(False);
+  {$IFDEF UNIX}
+  Result := APath[1] = '/';
+  {$ELSE}
+  Result := ((Length(APath) >= 2) and (APath[2] = ':')) or
+    ((Length(APath) >= 2) and (APath[1] = PathDelim) and (APath[2] = PathDelim));
   {$ENDIF}
 end;
 
@@ -172,6 +208,10 @@ begin
   FReloadIntervalMs := 500;
   FLastReloadCheck := 0;
   FDocWatch := TStringList.Create;
+  FScript := nil;
+  FOnScriptEvent := nil;
+  FScriptClockBase := 0;
+  FScriptInitialized := False;
   FBackend := xbAuto;
 end;
 
@@ -203,6 +243,7 @@ begin
   FNeedsLayout := True;
   RecordDocSources;
   DoChange;
+  RunDocumentScripts; // DOM 就绪后按序执行 <script src>（未装配脚本时无开销）
 end;
 
 procedure TXuiEngine.LoadFromString(const AXMLContent: string);
@@ -221,6 +262,7 @@ begin
   FDocumentDirty := True;
   FNeedsLayout := True;
   DoChange;
+  RunDocumentScripts; // DOM 就绪后按序执行脚本
 end;
 
 procedure TXuiEngine.SetViewport(AWidth, AHeight: Integer);
@@ -427,14 +469,26 @@ begin
     for i := 0 to node.Bindings.Count - 1 do
     begin
       binding := TXuiEventBinding(node.Bindings[i]);
-      if (binding.Kind = AEvent.Kind) and (binding.Handler.Code <> nil) then
+      if binding.Kind = AEvent.Kind then
       begin
-        // Sender = 承载绑定的节点（等价 DFM 里 Sender = 控件）
-        TNotifyEvent(binding.Handler)(node);
-        // v1：绑定命中即消费该事件，不再向祖先冒泡
-        Exit(True);
+        // ① 宿主 published 方法（RTTI 绑定，与 DFM 同机制）
+        if binding.Handler.Code <> nil then
+        begin
+          TNotifyEvent(binding.Handler)(node);
+          Exit(True);
+        end;
+        // ② 脚本全局同名函数（惰性解析：脚本可热重载后立即生效）
+        if (FScript <> nil) and FScript.HasGlobalFunction(binding.HandlerName) then
+        begin
+          FScript.CallGlobal(binding.HandlerName, []);
+          Exit(True);
+        end;
       end;
     end;
+    // ③ 脚本事件钩子（DOM 桥：动态绑定 node.on）
+    if (FOnScriptEvent <> nil) and FOnScriptEvent(node, AEvent) then
+      Exit(True);
+    // ④ 节点行为
     if (node.Behavior is TXuiBehavior) and
        TXuiBehavior(node.Behavior).HandleEvent(node, AEvent) then
       Exit(True);
@@ -453,6 +507,57 @@ begin
   ev := Default(TXuiEvent);
   ev.Kind := AKind;
   Result := DispatchEvent(ANode, ev);
+end;
+
+{ ---- 脚本（M6）---- }
+
+procedure TXuiEngine.AttachScript(AScript: TXuiScript);
+begin
+  FScript := AScript;
+end;
+
+// 按序求值文档收集到的脚本（DOM 已就绪；失败经门面 OnScriptError 上报）
+procedure TXuiEngine.RunDocumentScripts;
+var
+  i: Integer;
+  baseDir, path: string;
+begin
+  FScriptInitialized := True;
+  SafePoint;
+  if (FScript = nil) or (FDocument = nil) or (FDocument.Scripts.Count = 0) then
+    Exit;
+  baseDir := '';
+  if FDocument.SourceFile <> '' then
+    baseDir := ExtractFileDir(FDocument.SourceFile);
+  for i := 0 to FDocument.Scripts.Count - 1 do
+  begin
+    path := FDocument.Scripts[i];
+    if not EnginePathIsAbsolute(path) then
+      path := baseDir + PathDelim + path;
+    path := ExpandFileName(path);
+    if not FileExists(path) then
+    begin
+      // 缺文件不致命：报告后继续（便于先写 XML 再补脚本）
+      FScript.ReportError(path, '脚本文件不存在', ssCompile);
+      Continue;
+    end;
+    FScript.RunFile(path);
+  end;
+  SafePoint;
+end;
+
+// P1：安全点排空微任务（Promise 回调在此执行；时机白名单见 M6-异步设计 §3）
+procedure TXuiEngine.SafePoint;
+begin
+  FScriptInitialized := FScriptInitialized; // 保留状态位
+  if FScript <> nil then
+    FScript.DrainMicrotasks;
+end;
+
+procedure TXuiEngine.SetScriptClock(ANowMs: Int64);
+begin
+  if FScriptClockBase = 0 then
+    FScriptClockBase := ANowMs;
 end;
 
 // 命中链上存在 disabled → 阻断点击类事件（视觉上仍可 :hover，与浏览器一致）
@@ -541,6 +646,7 @@ begin
     DoChange;
   if changed then
     InvalidateStyles;
+  SafePoint; // 事件结束：脚本可在此排水（P1 起）
 end;
 
 procedure TXuiEngine.HandleMouseDown(AX, AY: Integer);
@@ -603,6 +709,7 @@ begin
     DoChange;
   if changed then
     InvalidateStyles;
+  SafePoint; // 事件结束：脚本可在此排水（P1 起）
 end;
 
 procedure TXuiEngine.HandleMouseLeave;
@@ -737,6 +844,7 @@ begin
 
   if Result then
     DoChange;
+  SafePoint; // 键盘事件结束
 end;
 
 function TXuiEngine.HandleKeyUp(AKey: Word; AShift: TXuiShiftState): Boolean;
@@ -776,6 +884,7 @@ begin
     end;
     DoChange;
   end;
+  SafePoint; // 文本输入结束
 end;
 
 function TXuiEngine.FocusNext(AForward: Boolean): Boolean;
@@ -843,6 +952,7 @@ var
   blink: Boolean;
 begin
   FClock := ANowMs;
+  SetScriptClock(ANowMs);
 
   // 热重载轮询（节流）
   if FHotReload and (ANowMs - FLastReloadCheck >= FReloadIntervalMs) then
@@ -854,6 +964,8 @@ begin
   // 过渡动画推进
   if FTransitions.Advance(ANowMs) then
     DoChange;
+
+  SafePoint; // Tick 内安全点：排空微任务（P1；P2 起到期定时器也在此之后处理）
 
   blink := FHostActive and FocusWantsCaret;
   if not blink then

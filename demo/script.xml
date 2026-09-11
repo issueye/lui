@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- M6 P0：脚本页。逻辑全部在 script.ts，XML 只声明结构与绑定名 -->
+<window title="脚本演示" width="380" height="300">
+  <script src="script.ts"/>
+  <panel id="app" class="app">
+    <panel class="header">
+      <label class="title" text="脚本引擎演示"/>
+      <panel class="spacer"/>
+      <button id="theme" class="ghost" text="换肤" onclick="ThemeClick"/>
+    </panel>
+    <panel class="card">
+      <label class="label" text="点击下方按钮，逻辑由 script.ts 处理"/>
+      <panel class="row">
+        <button id="btn-add" class="primary" text="添加一条" onclick="OnAdd"/>
+        <button id="btn-clear" class="ghost" text="清空" onclick="OnClear"/>
+      </panel>
+      <label id="counter" class="counter" text="共 0 条"/>
+    </panel>
+    <panel id="list" class="list">
+      <panel class="item"><label class="text" text="初始条目（DOM 由脚本改写）"/></panel>
+    </panel>
+  </panel>
+</window>
