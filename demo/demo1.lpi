@@ -32,7 +32,7 @@
         <IsPartOfProject Value="True"/>
       </Unit0>
       <Unit1>
-        <Filename Value="..\src\xui_host.pas"/>
+        <Filename Value="..\src\ui\xui_host.pas"/>
         <IsPartOfProject Value="False"/>
       </Unit1>
     </Units>
@@ -43,7 +43,7 @@
       <Filename Value="demo1"/>
     </Target>
     <SearchPaths>
-      <OtherUnitFiles Value="..\src"/>
+      <OtherUnitFiles Value="..\src\core;..\src\css;..\src\layout;..\src\render;..\src\ui;..\src\script"/>
       <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)"/>
     </SearchPaths>
     <Linking>
