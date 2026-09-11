@@ -1,0 +1,46 @@
+/* lui M2 验收 —— 深色主题（同一 XML，换肤验证） */
+
+window {
+  background-color: #121212;
+}
+
+.card {
+  padding: 16px;
+  margin: 12px;
+  background-color: #1e1e1e;
+  border: 1px solid #333333;
+}
+
+.title {
+  font-size: 18px;
+  font-weight: bold;
+  color: #eaeaea;
+  margin-bottom: 10px;
+}
+
+.field-label {
+  color: #9aa0a6;
+  margin-bottom: 2px;
+}
+
+input {
+  height: 26px;
+  margin-bottom: 8px;
+  background-color: #2a2a2a;
+  border: 1px solid #3a3a3a;
+}
+
+#btn-ok {
+  height: 32px;
+  margin-top: 4px;
+  background-color: #1668dc;
+  color: #ffffff;
+  text-align: center;
+  font-weight: bold;
+}
+
+#msg {
+  font-size: 12px;
+  color: #6e6e6e;
+  margin-top: 8px;
+}

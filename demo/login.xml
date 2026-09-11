@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<window title="登录" width="360" height="240">
+  <panel id="login-card" class="card">
+    <label class="title" text="登录 Aluka"/>
+    <panel class="row">
+      <label class="field-label" text="用户名："/>
+      <input id="username" class="textbox"/>
+    </panel>
+    <panel class="row">
+      <label class="field-label" text="密  码："/>
+      <input id="password" class="textbox" password="true"/>
+    </panel>
+    <button id="btn-ok" class="primary-btn" text="登  录" onclick="BtnOkClick"/>
+    <label id="msg" class="error-label" text="M1 验收：XML 结构 + 默认样式渲染"/>
+  </panel>
+</window>

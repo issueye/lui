@@ -1,0 +1,3 @@
+*.exe
+tests/lib/x86_64-win64/*
+demo/lib/x86_64-win64/*
