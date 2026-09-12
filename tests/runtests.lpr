@@ -8974,6 +8974,59 @@ begin
       DrawEngine(engine);
       ClickNode(engine, engine.Document.FindElementById('ev4'));
       Check(script.ErrorCount > errs, 'x-onclick：表达式出错上报为脚本错误（不崩应用）');
+
+      // x-oninput：input 事件触发（函数名形式）
+      RunAndFlush(
+        'const iv = reactive({ n: 0 });' + #10 +
+        'function OnIv() { iv.n = iv.n + 1; }');
+      engine.LoadFromString(
+        '<window><input id="iv1" x-oninput="OnIv"/>' +
+        '<label id="iv2" text="n={{iv.n}}"/></window>');
+      DrawEngine(engine);
+      ClickNode(engine, engine.Document.FindElementById('iv1'));
+      engine.HandleTextInput('x');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('iv2');
+      Check((node <> nil) and (node.Text = 'n=1'), 'x-oninput：input 事件触发表达式');
+
+      // 表达式形式可读 event 载荷（event.text = 输入后的文本）
+      RunAndFlush('const it2 = reactive({ t: "-" });');
+      engine.LoadFromString(
+        '<window><input id="iv3" x-oninput="it2.t = event.text"/>' +
+        '<label id="iv4" text="t={{it2.t}}"/></window>');
+      DrawEngine(engine);
+      ClickNode(engine, engine.Document.FindElementById('iv3'));
+      engine.HandleTextInput('hi');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('iv4');
+      Check((node <> nil) and (node.Text = 't=hi'),
+        'x-oninput：表达式可用 event.text 读取载荷');
+
+      // ---- M8-0 ADR 23：x-model 组件双向绑定（props.modelValue ↔ props.onModelValue）----
+      RunAndFlush(
+        'const mv = reactive({ name: "init" });' + #10 +
+        'component("ui-text", { props: { modelValue: { type: "string", default: "" } }, ' +
+        'template: "<panel class=\"uitext\"><input :text=\"props.modelValue\" ' +
+        'x-oninput=\"props.onModelValue\"/></panel>" });');
+      engine.LoadFromString('<window><ui-text id="ut1" x-model="mv.name"/></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('ut1');
+      Check((node <> nil) and (node.Count = 1) and (node[0].Text = 'init'),
+        'x-model 组件：宿主状态写入 props.modelValue（初值）');
+
+      ClickNode(engine, node[0]);
+      engine.HandleTextInput('abc');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('ut1');
+      src := RunAndFlush('console.log("mv=" + mv.name);');
+      Check(Pos('mv=initabc', src) > 0,
+        'x-model 组件：组件内输入经 props.onModelValue 回写宿主状态');
+
+      RunAndFlush('mv.name = "reset";');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('ut1');
+      Check((node <> nil) and (node[0].Text = 'reset'),
+        'x-model 组件：宿主状态变化回灌组件内部');
     finally
       bridge.Free;
     end;

@@ -110,6 +110,7 @@ type
     PropName: string;        // bkProp：属性名
     EventName: string;       // bkEvent：事件名（'click'/'input'/…）
     EventEntry: TObject;     // bkEvent：TXuiBindEvent（弱引用；引擎注册表自有）
+    ModelEntry: TObject;     // 组件 x-model：TXuiBindModel（弱引用；引擎注册表自有）
     Scope: TXuiJsEnv;        // 作用域（v-for 克隆；nil = 全局）
     Parts: TStringList;      // x-text 插值：偶数=字面量（Objects=nil），奇数=表达式（Objects=1）
     destructor Destroy; override;
@@ -124,6 +125,16 @@ type
     Binding: TXuiBinding;    // 弱引用
     Node: TXuiNode;          // 弱引用
     EventName: string;
+    Env: TXuiJsEnv;          // 求值环境（事件对象以 event 变量注入；按作用域变化重建）
+    EnvScope: TXuiJsEnv;     // Env 对应的绑定作用域
+  end;
+
+  // x-model 组件双向绑定（M8 ADR 23）：组件经 props.onModelValue(v) 写回宿主路径
+  TXuiBindModel = class
+  public
+    Fn: TXuiJsFunction;      // 弱引用（对象由解释器持有；GC 经 MarkScopes 标记）
+    FnValue: TXuiJsValue;
+    Path: string;            // 宿主给出的状态路径（'state.name'）
   end;
 
   TXuiBindingEngine = class
@@ -134,6 +145,7 @@ type
     FCache: TObjectList;      // TXuiBindProg（自有，按表达式源缓存）
     FComponents: TObjectList; // TXuiComponentDef（自有）
     FEvents: TObjectList;     // TXuiBindEvent（自有；@event 的处理器注册表）
+    FModels: TObjectList;     // TXuiBindModel（自有；组件 x-model 的写回函数注册表）
     FOnNodeEvent: TXuiBindNodeEventProc;
     FScanned: Boolean;
     function CompileExpr(const ASrc: string): TXuiJsNode;
@@ -148,6 +160,12 @@ type
     procedure ApplyNewBindings(AFromIndex: Integer);
     procedure BindEvent(ABinding: TXuiBinding);
     procedure UnbindEvent(ABinding: TXuiBinding);
+    procedure UnbindModel(ABinding: TXuiBinding);
+    function BindComponentModel(ABinding: TXuiBinding; AProps: TXuiJsObject;
+      const APath: string; const ACompName: string): Boolean;
+    function NativeModelWrite(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function WritePath(const APath: string; const AValue: TXuiJsValue): Boolean;
     procedure DeleteBinding(AIndex: Integer);
     function NativeEventDispatch(AFn: TXuiJsFunction; AThis: TXuiJsValue;
       const AArgs: TXuiJsValueArray): TXuiJsValue;
@@ -393,6 +411,7 @@ begin
   FCache := TObjectList.Create(True);
   FComponents := TObjectList.Create(True);
   FEvents := TObjectList.Create(True);
+  FModels := TObjectList.Create(True);
   FScanned := False;
   FScript.Interp.AddOnCollectRoots(@MarkScopes);
   FScript.Interp.GlobalObject.SetOwn('component',
@@ -401,6 +420,7 @@ end;
 
 destructor TXuiBindingEngine.Destroy;
 begin
+  FModels.Free;
   FEvents.Free;
   FComponents.Free;
   FCache.Free;
@@ -596,15 +616,126 @@ var
 begin
   FScanned := False;
   for i := 0 to FBindings.Count - 1 do
+  begin
     UnbindEvent(TXuiBinding(FBindings[i]));   // @event：注销监听并释放处理器
+    UnbindModel(TXuiBinding(FBindings[i]));   // x-model：释放写回函数
+  end;
   FBindings.Clear;
 end;
 
-// 绑定删除的唯一出口：@event 需在此注销 DOM 桥监听（节点释放/克隆剪除都走这里）
+// 绑定删除的唯一出口：@event / x-model 的运行时资源在此释放
 procedure TXuiBindingEngine.DeleteBinding(AIndex: Integer);
 begin
   UnbindEvent(TXuiBinding(FBindings[AIndex]));
+  UnbindModel(TXuiBinding(FBindings[AIndex]));
   FBindings.Delete(AIndex);
+end;
+
+// x-model（组件宿主，M8 ADR 23）：登记 props.modelValue ← 宿主路径 的绑定，
+// 并注入写回函数 props.onModelValue，组件内部调用它即可回写状态（双向绑定）
+function TXuiBindingEngine.BindComponentModel(ABinding: TXuiBinding;
+  AProps: TXuiJsObject; const APath: string; const ACompName: string): Boolean;
+var
+  pb: TXuiBinding;
+  entry: TXuiBindModel;
+begin
+  Result := False;
+  if (AProps = nil) or (APath = '') then
+    Exit;
+  // 1) 读：props.modelValue 随宿主状态刷新（复用动态 prop 通路，含类型校验）
+  pb := TXuiBinding.Create;
+  pb.Kind := bkProp;
+  pb.PropsObj := AProps;
+  pb.PropName := 'modelValue';
+  pb.PropSpec := TXuiComponentDef(ABinding.CompDef).FindSpec('modelValue');
+  pb.CompName := ACompName;
+  pb.Expr := APath;
+  pb.Scope := ABinding.Scope;
+  pb.Owner := ABinding;
+  pb.OwnerRoot := ABinding.OwnerRoot;
+  FBindings.Add(pb);
+  try
+    WriteProp(AProps, 'modelValue', pb.PropSpec, EvalOn(APath, ABinding.Scope),
+      False, ACompName);
+  except
+    on E: EXuiJsThrow do ;
+    on E: EXuiJsRuntime do ;
+  end;
+
+  // 2) 写：props.onModelValue(v) → 写回宿主路径
+  entry := TXuiBindModel.Create;
+  entry.Path := APath;
+  entry.FnValue := FScript.Interp.CreateHostFunction('onModelValue', @NativeModelWrite);
+  entry.Fn := TXuiJsFunction(entry.FnValue.Obj);
+  FModels.Add(entry);
+  pb.ModelEntry := entry;
+  WriteProp(AProps, 'onModelValue',
+    TXuiComponentDef(ABinding.CompDef).FindSpec('onModelValue'), entry.FnValue,
+    False, ACompName);
+  Result := True;
+end;
+
+
+function TXuiBindingEngine.WritePath(const APath: string;
+  const AValue: TXuiJsValue): Boolean;
+var
+  segs: TStringList;
+  cur: TXuiJsValue;
+  j: Integer;
+begin
+  Result := False;
+  segs := TStringList.Create;
+  try
+    segs.Delimiter := '.';
+    segs.StrictDelimiter := True;
+    segs.DelimitedText := APath;
+    if segs.Count < 2 then
+      Exit;
+    cur := FScript.Interp.GetGlobal(segs[0]);
+    for j := 1 to segs.Count - 2 do
+      cur := FScript.Interp.PropValue(cur, segs[j]);
+    if cur.Kind <> jvObject then
+      Exit;
+    FScript.Interp.SetPropValue(cur, segs[segs.Count - 1], AValue);
+    Result := True;
+  finally
+    segs.Free;
+  end;
+end;
+
+// x-model（组件）：props.onModelValue(v) → 写回宿主给出的路径
+// 组件若直接把事件对象传进来（x-oninput="props.onModelValue"），取 event.value / event.text
+function TXuiBindingEngine.NativeModelWrite(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+var
+  i: Integer;
+  entry: TXuiBindModel;
+  v: TXuiJsValue;
+  ev: TXuiJsObject;
+begin
+  Result := FScript.Undefined;
+  for i := 0 to FModels.Count - 1 do
+    if TXuiBindModel(FModels[i]).Fn = AFn then
+    begin
+      entry := TXuiBindModel(FModels[i]);
+      if (entry.Path = '') or (System.Length(AArgs) = 0) then
+        Exit;
+      v := AArgs[0];
+      if (v.Kind = jvObject) and (v.Obj <> nil) and (v.Obj.FindOwn('type') >= 0) then
+      begin
+        // 事件对象：优先 value，其次 text；两者都空则回读事件节点的当前文本
+        ev := v.Obj;
+        if ev.FindOwn('value') >= 0 then
+          v := ev.GetOwn('value')
+        else if ev.FindOwn('text') >= 0 then
+          v := ev.GetOwn('text');
+        if ((v.Kind = jvUndefined) or ((v.Kind = jvString) and (v.Str = ''))) and
+           (ev.FindOwn('node') >= 0) then
+          v := FScript.Interp.PropValue(ev.GetOwn('node'), 'text');
+      end;
+      WritePath(entry.Path, v);
+      Exit;
+    end;
 end;
 
 // @event="expr"：把宿主函数注册到节点事件上（只注册一次；表达式的求值在触发时进行，
@@ -647,23 +778,50 @@ begin
     end;
 end;
 
-// 事件触发：在该绑定的作用域内求值；结果是函数则调用（传事件对象），否则视为语句表达式
+procedure TXuiBindingEngine.UnbindModel(ABinding: TXuiBinding);
+var
+  i: Integer;
+  entry: TXuiBindModel;
+begin
+  if ABinding.ModelEntry = nil then
+    Exit;
+  entry := TXuiBindModel(ABinding.ModelEntry);
+  ABinding.ModelEntry := nil;
+  for i := 0 to FModels.Count - 1 do
+    if FModels[i] = entry then
+    begin
+      FModels.Delete(i);
+      Break;
+    end;
+end;
+
+// 事件触发：在该绑定的作用域内求值；结果是函数则调用（传事件对象），否则视为语句表达式；
+// 表达式形式可用 event 读取事件载荷（对应 Vue 的 $event）
 function TXuiBindingEngine.NativeEventDispatch(AFn: TXuiJsFunction; AThis: TXuiJsValue;
   const AArgs: TXuiJsValueArray): TXuiJsValue;
 var
   i: Integer;
   b: TXuiBinding;
+  entry: TXuiBindEvent;
   v: TXuiJsValue;
 begin
   Result := FScript.Undefined;
   for i := 0 to FEvents.Count - 1 do
     if TXuiBindEvent(FEvents[i]).Fn = AFn then
     begin
-      b := TXuiBindEvent(FEvents[i]).Binding;
+      entry := TXuiBindEvent(FEvents[i]);
+      b := entry.Binding;
       if (b = nil) or (b.Expr = '') then
         Exit;
       try
-        v := EvalOn(b.Expr, b.Scope);
+        if (entry.Env = nil) or (entry.EnvScope <> b.Scope) then
+        begin
+          entry.Env := FScript.Interp.NewChildEnv(ScopeOf(b.Scope));
+          entry.EnvScope := b.Scope;
+        end;
+        if System.Length(AArgs) > 0 then
+          entry.Env.Define('event', AArgs[0]);
+        v := EvalOn(b.Expr, entry.Env);
         if FScript.Interp.IsCallable(v) then
           Result := FScript.Interp.Call(v, AArgs);
       except
@@ -704,9 +862,11 @@ begin
       for j := 0 to TXuiBinding(FBindings[i]).Items.Count - 1 do
         FScript.Interp.MarkRootEnv(TXuiForItem(TXuiBinding(FBindings[i]).Items[j]).Env);
   end;
-  // @event 处理器函数保活（注册表由绑定引擎持有，不经 DOM 桥的宿主根）
+  // @event 处理器函数与 x-model 写回函数保活（注册表由绑定引擎持有，不经 DOM 桥的宿主根）
   for k := 0 to FEvents.Count - 1 do
     FScript.Interp.MarkRootValue(TXuiBindEvent(FEvents[k]).FnValue);
+  for k := 0 to FModels.Count - 1 do
+    FScript.Interp.MarkRootValue(TXuiBindModel(FModels[k]).FnValue);
 end;
 
 // 表达式 → AST（按源文缓存；解析失败上报 ssCompile 并返回 nil）
@@ -1115,16 +1275,15 @@ var
   mark: TXuiSlotMark;
   child: TXuiNode;
   slotParent: TXuiNode;
-  slotIdx, idx, i, scanFrom: Integer;
+  slotIdx, idx, i, j, scanFrom: Integer;
   env: TXuiJsEnv;
   props: TXuiJsObject;
   doc: TXuiDocument;
-  attrName, attrValue, propName, slotName, evName: string;
+  attrName, attrValue, propName, slotName, evName, pn: string;
   pb: TXuiBinding;
   spec: TXuiPropSpec;
   dv: TXuiJsValue;
-  placed: Boolean;
-  isEventAttr: Boolean;
+  placed, isEventAttr, explicit: Boolean;
 begin
   def := TXuiComponentDef(ABinding.CompDef);
   compNode := ABinding.Node;
@@ -1146,8 +1305,9 @@ begin
     else
       propName := PropNameOfAttr(attrName);   // :on-tap → onTap（kebab 转 camel）
     if (propName = '') or SameText(attrName, 'id') or SameText(attrName, 'class') or
-       SameText(attrName, 'x-key') or SameText(attrName, 'slot') then
-      Continue;   // id/class 由宿主转移到实例根；x-key/slot 与 props 无关
+       SameText(attrName, 'x-key') or SameText(attrName, 'slot') or
+       SameText(attrName, 'x-model') then
+      Continue;   // id/class 由宿主转移到实例根；x-key/slot/x-model 与 props 无关
     spec := def.FindSpec(propName);
     if isEventAttr or ((attrName <> '') and (attrName[1] = ':')) then
     begin
@@ -1191,6 +1351,24 @@ begin
         on E: EXuiJsRuntime do ;
       end;
     WriteProp(props, spec.Name, spec, dv, False, def.Name);
+  end;
+
+  // x-model（M8 ADR 23）：组件宿主上的双向绑定（显式 :model-value / :on-model-value 优先）
+  for i := 0 to compNode.Attributes.Count - 1 do
+  begin
+    if not SameText(compNode.Attributes.Names[i], 'x-model') then
+      Continue;
+    explicit := False;
+    for j := 0 to compNode.Attributes.Count - 1 do
+    begin
+      pn := PropNameOfAttr(compNode.Attributes.Names[j]);
+      if SameText(pn, 'modelValue') or SameText(pn, 'onModelValue') then
+        explicit := True;
+    end;
+    if not explicit then
+      BindComponentModel(ABinding, props, Trim(compNode.Attributes.ValueFromIndex[i]),
+        def.Name);
+    Break;
   end;
 
   // 必填校验（实例化时一次性检查）
@@ -1685,10 +1863,8 @@ end;
 // x-model 输入回写：x-model="state.path" → 写状态（触发响应式刷新）
 function TXuiBindingEngine.HandleModelInput(ANode: TXuiNode): Boolean;
 var
-  i, j: Integer;
+  i: Integer;
   b: TXuiBinding;
-  segs: TStringList;
-  cur: TXuiJsValue;
 begin
   Result := False;
   for i := 0 to FBindings.Count - 1 do
@@ -1696,25 +1872,7 @@ begin
     b := TXuiBinding(FBindings[i]);
     if (b.Node = ANode) and (b.Kind = bkModel) then
     begin
-      segs := TStringList.Create;
-      try
-        segs.Delimiter := '.';
-        segs.StrictDelimiter := True;
-        segs.DelimitedText := b.Expr;
-        if segs.Count = 0 then
-          Exit;
-        cur := FScript.Interp.GetGlobal(segs[0]);
-        for j := 1 to segs.Count - 2 do
-          cur := FScript.Interp.PropValue(cur, segs[j]);
-        if (cur.Kind = jvObject) and (segs.Count >= 2) then
-        begin
-          FScript.Interp.SetPropValue(cur, segs[segs.Count - 1],
-            FScript.Str(ANode.Text));
-          Result := True;
-        end;
-      finally
-        segs.Free;
-      end;
+      Result := WritePath(b.Expr, FScript.Str(ANode.Text));
       Exit;
     end;
   end;

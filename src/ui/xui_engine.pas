@@ -523,6 +523,9 @@ var
 begin
   ev := Default(TXuiEvent);
   ev.Kind := AKind;
+  // 输入类事件带上当前文本：脚本/组件的 x-oninput 处理器可直接读 event.text
+  if (AKind in [xevInput, xevTextInput]) and (ANode <> nil) then
+    ev.Text := ANode.Text;
   Result := DispatchEvent(ANode, ev);
 end;
 
