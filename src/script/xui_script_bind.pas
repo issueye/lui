@@ -38,12 +38,14 @@ type
   TXuiBindKind = (bkText, bkClass, bkDisabled, bkShow, bkIf, bkModel, bkFor,
     bkComponent, bkProp);
 
-  // prop 声明项（M7-4）：props 数组形式 = 只声明名字；对象形式可带 type/required
+  // prop 声明项（M7-4/M7-5）：props 数组形式 = 只声明名字；对象形式可带 type/required/default
   TXuiPropSpec = class
   public
     Name: string;
     TypeName: string;        // '' = 不校验；string/number/boolean/function/object/array/any
     Required: Boolean;
+    HasDefault: Boolean;
+    DefaultValue: TXuiJsValue;   // 缺省值；可调用则视为工厂（实例化时调用取值）
   end;
 
   // 组件定义（component('name', {props, template}) 注册；注册表自有）
@@ -72,11 +74,14 @@ type
     Ast: TXuiJsNode;
   end;
 
-  TXuiForItem = class        // 键控 x-for：已渲染条目
+  TXuiForItem = class        // x-for：已渲染条目
   public
     Key: string;
-    Node: TXuiNode;          // 克隆根（弱引用；由文档持有）
+    Node: TXuiNode;          // 克隆首根（弱引用；由文档持有）
+    Nodes: TList;            // 克隆的根集合（多根组件实例 = 多根；弱引用，按序）
     Env: TXuiJsEnv;          // 迭代作用域（弱引用；GC 经绑定标记）
+    constructor Create;
+    destructor Destroy; override;
   end;
 
   TXuiBinding = class
@@ -126,7 +131,7 @@ type
     procedure PruneOwner(AOwner: TXuiBinding);
     procedure PruneCloneSubtree(ACloneRoot: TXuiNode);
     procedure PruneNodeBindings(ANode: TXuiNode; AKeep: TXuiBinding);
-    procedure ReplaceNodeRefs(AOld, ANew: TXuiNode);
+    procedure ReplaceNodeRefs(AOld: TXuiNode; ARoots: TList);
     function IsUnder(ANode, ARoot: TXuiNode): Boolean;
     function ClassValueToString(const AValue: TXuiJsValue): string;
     procedure WriteProp(AProps: TXuiJsObject; const AName: string;
@@ -260,6 +265,18 @@ begin
   end;
 end;
 
+constructor TXuiForItem.Create;
+begin
+  inherited Create;
+  Nodes := TList.Create;
+end;
+
+destructor TXuiForItem.Destroy;
+begin
+  Nodes.Free;
+  inherited Destroy;
+end;
+
 destructor TXuiBinding.Destroy;
 begin
   Parts.Free;
@@ -383,6 +400,11 @@ begin
       begin
         spec.TypeName := LowerCase(Trim(FScript.ToStringValue(iv.Obj.GetOwn('type'))));
         spec.Required := FScript.Interp.ToBoolValue(iv.Obj.GetOwn('required'));
+        if iv.Obj.FindOwn('default') >= 0 then
+        begin
+          spec.HasDefault := True;
+          spec.DefaultValue := iv.Obj.GetOwn('default');
+        end;
       end;
       if not PropTypeSupported(spec.TypeName) then
         FScript.ReportError('', 'component("' + name + '") 的 prop "' + spec.Name +
@@ -477,8 +499,18 @@ end;
 
 procedure TXuiBindingEngine.MarkScopes;
 var
-  i, j: Integer;
+  i, j, k: Integer;
+  def: TXuiComponentDef;
 begin
+  // 组件定义的 default 值（可为工厂函数/数组）由注册表持有，需保活
+  for k := 0 to FComponents.Count - 1 do
+  begin
+    def := TXuiComponentDef(FComponents[k]);
+    for j := 0 to def.Specs.Count - 1 do
+      if TXuiPropSpec(def.Specs[j]).HasDefault and
+         (TXuiPropSpec(def.Specs[j]).DefaultValue.Kind = jvObject) then
+        FScript.Interp.MarkRootValue(TXuiPropSpec(def.Specs[j]).DefaultValue);
+  end;
   for i := 0 to FBindings.Count - 1 do
   begin
     if TXuiBinding(FBindings[i]).Scope <> nil then
@@ -893,6 +925,7 @@ var
   attrName, attrValue, propName, slotName: string;
   pb: TXuiBinding;
   spec: TXuiPropSpec;
+  dv: TXuiJsValue;
   placed: Boolean;
 begin
   def := TXuiComponentDef(ABinding.CompDef);
@@ -940,6 +973,23 @@ begin
     end
     else
       WriteProp(props, propName, spec, FScript.Str(attrValue), True, def.Name);
+  end;
+
+  // 缺省值（实例化时套用；可调用则视为工厂，每次实例调用一次——对象/数组缺省不会跨实例共享）
+  for i := 0 to def.Specs.Count - 1 do
+  begin
+    spec := TXuiPropSpec(def.Specs[i]);
+    if (not spec.HasDefault) or (props.GetOwn(spec.Name).Kind <> jvUndefined) then
+      Continue;
+    dv := spec.DefaultValue;
+    if FScript.Interp.IsCallable(dv) then
+      try
+        dv := FScript.Interp.Call(dv, []);
+      except
+        on E: EXuiJsThrow do ;
+        on E: EXuiJsRuntime do ;
+      end;
+    WriteProp(props, spec.Name, spec, dv, False, def.Name);
   end;
 
   // 必填校验（实例化时一次性检查）
@@ -1081,7 +1131,7 @@ begin
 
   // 其余落在宿主子树内的绑定（已随内容丢弃/替换）剪除
   PruneNodeBindings(compNode, ABinding);
-  ReplaceNodeRefs(compNode, firstRoot);
+  ReplaceNodeRefs(compNode, roots);
   compNode.Free;
   ABinding.Node := nil;
 
@@ -1161,6 +1211,7 @@ begin
     // 条目簿记：作用域需登记为 GC 根，同长度替换时亦按此原地更新
     ABinding.Items.Add(TXuiForItem.Create);
     TXuiForItem(ABinding.Items.Last).Node := clone;
+    TXuiForItem(ABinding.Items.Last).Nodes.Add(clone);
     TXuiForItem(ABinding.Items.Last).Env := env;
     ScanNode(clone, env, ABinding, clone);
   end;
@@ -1246,22 +1297,33 @@ begin
     end;
 end;
 
-// 组件实例化替换宿主节点后，把各处对宿主节点的引用改指实例首根
-// （键控 x-for 的条目簿记、克隆归属都记录着宿主节点）
-procedure TXuiBindingEngine.ReplaceNodeRefs(AOld, ANew: TXuiNode);
+// 组件实例化替换宿主节点后，把各处对宿主节点的引用改指实例根集合
+// （键控 x-for 的条目簿记、克隆归属都记录着宿主节点；多根实例整组记录）
+procedure TXuiBindingEngine.ReplaceNodeRefs(AOld: TXuiNode; ARoots: TList);
 var
-  i, j: Integer;
+  i, j, k: Integer;
   b: TXuiBinding;
+  item: TXuiForItem;
 begin
+  if (ARoots = nil) or (ARoots.Count = 0) then
+    Exit;
   for i := 0 to FBindings.Count - 1 do
   begin
     b := TXuiBinding(FBindings[i]);
     if b.OwnerRoot = AOld then
-      b.OwnerRoot := ANew;
-    if b.Items <> nil then
-      for j := 0 to b.Items.Count - 1 do
-        if TXuiForItem(b.Items[j]).Node = AOld then
-          TXuiForItem(b.Items[j]).Node := ANew;
+      b.OwnerRoot := TXuiNode(ARoots[0]);
+    if b.Items = nil then
+      Continue;
+    for j := 0 to b.Items.Count - 1 do
+    begin
+      item := TXuiForItem(b.Items[j]);
+      if item.Nodes.IndexOf(AOld) < 0 then
+        Continue;
+      item.Nodes.Clear;
+      for k := 0 to ARoots.Count - 1 do
+        item.Nodes.Add(ARoots[k]);
+      item.Node := TXuiNode(ARoots[0]);
+    end;
   end;
 end;
 
@@ -1290,14 +1352,16 @@ procedure TXuiBindingEngine.ApplyForKeyed(ABinding: TXuiBinding);
 var
   arrV: TXuiJsValue;
   arr: TXuiJsArray;
-  i, j2, oldIdx, target, scanFrom: Integer;
+  i, j2, k, oldIdx, cursor, scanFrom: Integer;
   clone: TXuiNode;
   env, scratch: TXuiJsEnv;
   newKeys: TStringList;
   newClones: array of TXuiNode;
   newEnvs: array of TXuiJsEnv;
+  newEntries: array of TXuiForItem;
   used: array of Boolean;
   removed: TXuiNode;
+  grp: TList;
 begin
   arrV := EvalOn(ABinding.Expr, ABinding.Scope);
   if not ((arrV.Kind = jvObject) and (arrV.Obj is TXuiJsArray)) then
@@ -1311,6 +1375,7 @@ begin
   try
     SetLength(newClones, arr.Length);
     SetLength(newEnvs, arr.Length);
+    SetLength(newEntries, arr.Length);
     SetLength(used, ABinding.Items.Count);
     for i := 0 to High(used) do
       used[i] := False;
@@ -1333,9 +1398,10 @@ begin
       if oldIdx >= 0 then
       begin
         used[oldIdx] := True;
-        newClones[i] := TXuiForItem(ABinding.Items[oldIdx]).Node;
+        newEntries[i] := TXuiForItem(ABinding.Items[oldIdx]);
+        newClones[i] := newEntries[i].Node;
         // 复用：沿用旧迭代作用域（组件实例等子作用域随之看到新数据），只更新条目与下标
-        newEnvs[i] := TXuiForItem(ABinding.Items[oldIdx]).Env;
+        newEnvs[i] := newEntries[i].Env;
         newEnvs[i].Define(ABinding.ItemName, arr.Items[i]);
         newEnvs[i].Define('index', FScript.Num(i));
       end
@@ -1349,13 +1415,13 @@ begin
       end;
     end;
 
-    // 移除：未被复用的旧克隆（连带其绑定）
+    // 移除：未被复用的旧条目（整组节点连带其绑定）
     for i := ABinding.Items.Count - 1 downto 0 do
       if not used[i] then
       begin
-        removed := TXuiForItem(ABinding.Items[i]).Node;
-        if removed <> nil then
+        for k := TXuiForItem(ABinding.Items[i]).Nodes.Count - 1 downto 0 do
         begin
+          removed := TXuiNode(TXuiForItem(ABinding.Items[i]).Nodes[k]);
           PruneCloneSubtree(removed);
           if removed.Parent <> nil then
             removed.Parent.RemoveChild(removed);
@@ -1372,35 +1438,40 @@ begin
         clone := CloneSubtree(ABinding.TemplateRef);
         FEngine.AttachElement(ABinding.Node, clone);
         // 先登记簿记再扫描：模板根若是组件，实例化会替换宿主节点，
-        // ReplaceNodeRefs 依簿记把条目改指实例根，扫描后据此读回
+        // ReplaceNodeRefs 依簿记把条目改指实例根（多根则整组），扫描后据此读回
         ABinding.Items.Add(TXuiForItem.Create);
-        TXuiForItem(ABinding.Items.Last).Key := newKeys[i];
-        TXuiForItem(ABinding.Items.Last).Node := clone;
-        TXuiForItem(ABinding.Items.Last).Env := newEnvs[i];
+        newEntries[i] := TXuiForItem(ABinding.Items.Last);
+        newEntries[i].Key := newKeys[i];
+        newEntries[i].Node := clone;
+        newEntries[i].Nodes.Add(clone);
+        newEntries[i].Env := newEnvs[i];
         ScanNode(clone, newEnvs[i], ABinding, clone);
-        newClones[i] := TXuiForItem(ABinding.Items.Last).Node;
+        newClones[i] := newEntries[i].Node;
       end;
 
-    // 重排：使容器子节点顺序与 newKeys 一致
+    // 更新簿记：按 newKeys 顺序重排条目对象（保留各自的作用域与根集合）
+    ABinding.Items.OwnsObjects := False;
+    ABinding.Items.Clear;   // 仅解除引用；移除的条目已在上一步释放
+    for i := 0 to arr.Length - 1 do
+      ABinding.Items.Add(newEntries[i]);
+    ABinding.Items.OwnsObjects := True;
+
+    // 重排：使容器子节点顺序与 newKeys 一致；条目若是多根实例则整组搬移保持连续
+    cursor := 0;
     for i := 0 to arr.Length - 1 do
     begin
-      clone := newClones[i];
-      target := i;
-      if ABinding.Node.IndexOfChild(clone) <> target then
+      grp := TXuiForItem(ABinding.Items[i]).Nodes;
+      if grp.Count = 0 then
+        Continue;
+      if ABinding.Node.IndexOfChild(TXuiNode(grp[0])) <> cursor then
       begin
-        ABinding.Node.RemoveChild(clone);
-        ABinding.Node.InsertChild(target, clone);
+        for k := 0 to grp.Count - 1 do
+          if TXuiNode(grp[k]).Parent <> nil then
+            TXuiNode(grp[k]).Parent.RemoveChild(TXuiNode(grp[k]));
+        for k := 0 to grp.Count - 1 do
+          ABinding.Node.InsertChild(cursor + k, TXuiNode(grp[k]));
       end;
-    end;
-
-    // 更新簿记（Items 与已渲染条目平行；作用域是 GC 根）
-    ABinding.Items.Clear;
-    for i := 0 to arr.Length - 1 do
-    begin
-      ABinding.Items.Add(TXuiForItem.Create);
-      TXuiForItem(ABinding.Items.Last).Key := newKeys[i];
-      TXuiForItem(ABinding.Items.Last).Node := newClones[i];
-      TXuiForItem(ABinding.Items.Last).Env := newEnvs[i];
+      Inc(cursor, grp.Count);
     end;
   finally
     newKeys.Free;

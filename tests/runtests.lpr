@@ -8845,6 +8845,46 @@ begin
       engine.LoadFromString('<window><duo id="duox" x-if="vv.on"/></window>');
       DrawEngine(engine);
       Check(script.ErrorCount > errs, '多根组件 + x-if：上报不支持');
+
+      // ---- M7-5：props default（原始值 / 工厂函数）与多根组件作为 keyed 列表项 ----
+
+      // 原始值缺省 + 显式传入覆盖
+      RunAndFlush(
+        'component("dv-box", { props: { n: { type: "number", default: 5 }, s: { type: "string", default: "d" } }, template: "<label x-text=\"props.s + props.n\"/>" });');
+      engine.LoadFromString('<window><dv-box id="dv1"/><dv-box id="dv2" s="x" n="9"/></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('dv1');
+      Check((node <> nil) and (node.Text = 'd5'), 'props default：原始值缺省生效');
+      node := engine.Document.FindElementById('dv2');
+      Check((node <> nil) and (node.Text = 'x9'), 'props default：显式传入覆盖缺省');
+
+      // 工厂函数缺省：每次实例化调用一次（数组缺省不跨实例共享，且通过类型校验）
+      errs := script.ErrorCount;
+      RunAndFlush(
+        'component("fx-list", { props: { tags: { type: "array", default: function () { return ["t1"]; } } }, template: "<panel class=\"fl\"><panel x-for=\"t in props.tags\"><label x-text=\"t\"/></panel></panel>" });');
+      engine.LoadFromString('<window><fx-list id="fl1"/><fx-list id="fl2"/></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('fl1');
+      Check((node <> nil) and (node[0].Count = 1) and (node[0][0].Text = 't1'),
+        'props default：工厂函数缺省（数组）');
+      Check(script.ErrorCount = errs, 'props default：缺省值通过类型校验，无错误上报');
+
+      // 多根组件作为 keyed 列表项：两棵根成组渲染、重排后仍成组有序
+      RunAndFlush(
+        'const mg = reactive({ rows: [{ id: 1, n: "M1" }, { id: 2, n: "M2" }] });' + #10 +
+        'component("pair", { props: ["n"], template: "<label class=\"p1\" x-text=\"props.n\"/><label class=\"p2\" text=\"tail\"/>" });');
+      engine.LoadFromString(
+        '<window><panel id="mg1" x-for="r in mg.rows"><pair :n="r.n" x-key="r.id"/></panel></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('mg1');
+      Check((node.Count = 4) and (node[0].Text = 'M1') and (node[1].Text = 'tail') and
+        (node[2].Text = 'M2') and (node[3].Text = 'tail'),
+        '多根组件作为 keyed 列表项：两棵根成组渲染');
+      RunAndFlush('mg.rows = [{ id: 2, n: "M2b" }, { id: 1, n: "M1b" }];');
+      node := engine.Document.FindElementById('mg1');
+      Check((node.Count = 4) and (node[0].Text = 'M2b') and (node[1].Text = 'tail') and
+        (node[2].Text = 'M1b') and (node[3].Text = 'tail'),
+        '多根组件作为 keyed 列表项：重排后两棵根保持成组有序');
     finally
       bridge.Free;
     end;
