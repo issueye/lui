@@ -16,7 +16,8 @@ interface
 
 uses
   Classes, SysUtils, Contnrs,
-  xui_js_token, xui_js_parser, xui_js_runtime;
+  xui_js_token, xui_js_parser, xui_js_runtime,
+  xui_script_io;
 
 type
   // 错误阶段（决定 UI 呈现方式）
@@ -51,6 +52,7 @@ type
     FLastErrorLine: Integer;
     FLastErrorCol: Integer;
     FLastErrorStage: TXuiScriptStage;
+    FIO: TXuiScriptIO;       // 真实 I/O（懒创建；ui.http/ui.fs 首次调用即装）
     FSliceDepth: Integer;    // 切片嵌套深度（最外层才重置预算）
     function FindUnit(const AFileName: string): TXuiScriptUnit;
     procedure Report(const AFile, AMessage: string; ALine, ACol: Integer;
@@ -61,6 +63,8 @@ type
     procedure HandleUnhandledRejection(const AMessage: string);
     // 定时器宏任务回调内未捕获异常（Interp 泵回调）：预算超限归类为 budget
     procedure HandleCallbackError(const AMessage: string);
+    // I/O 失败上报（TXuiScriptIO 完成回调）：stage=io
+    procedure HandleIoError(const AMessage: string);
   public
     constructor Create;
     destructor Destroy; override;
@@ -83,6 +87,11 @@ type
     // 排空微任务队列（安全点调用：切片退出 / Tick / 文档加载后；
     // 末尾对未处理拒绝上报一次，见 M6-异步设计 §4）
     procedure DrainMicrotasks;
+
+    // P4 真实 I/O（引擎 Tick 驱动完成泵；首次访问自动创建并注册 ui.http/ui.fs/ui.storage）
+    function IO: TXuiScriptIO;
+    procedure PumpIO;                // 排空 I/O 完成队列 → settle 对应 Promise
+    function IoInFlight: Integer;    // 在途请求数（引擎 NeedsTick 计入）
 
     // P2 定时器宿主接口（引擎 Tick 驱动；时钟相对应用零点）
     procedure SetClockMs(ANowMs: Int64);   // 注入当前脚本时钟
@@ -147,6 +156,7 @@ end;
 
 destructor TXuiScript.Destroy;
 begin
+  FIO.Free;
   FUnits.Free;
   FInterp.Free;
   inherited Destroy;
@@ -331,6 +341,39 @@ end;
 procedure TXuiScript.DrainMicrotasks;
 begin
   FInterp.DrainMicrotasks;
+end;
+
+{ ---- P4 真实 I/O ---- }
+
+function TXuiScript.IO: TXuiScriptIO;
+begin
+  if FIO = nil then
+  begin
+    FIO := TXuiScriptIO.Create(FInterp);
+    FIO.OnIoError := @HandleIoError;
+    FIO.Install;
+  end;
+  Result := FIO;
+end;
+
+procedure TXuiScript.PumpIO;
+begin
+  if FIO <> nil then
+    FIO.PumpCompletions;
+end;
+
+function TXuiScript.IoInFlight: Integer;
+begin
+  if FIO <> nil then
+    Result := FIO.InFlight
+  else
+    Result := 0;
+end;
+
+// I/O 失败上报（不中断应用）
+procedure TXuiScript.HandleIoError(const AMessage: string);
+begin
+  Report('', AMessage, 0, 0, ssIO);
 end;
 
 { ---- P2 定时器宿主接口 ---- }

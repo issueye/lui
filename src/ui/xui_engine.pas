@@ -972,6 +972,10 @@ begin
     FScript.PumpTimers;
   end;
 
+  // P4：I/O 完成回传（工作线程结果 → settle Promise；微任务随其后的 SafePoint 排空）
+  if FScript <> nil then
+    FScript.PumpIO;
+
   SafePoint; // Tick 内安全点：再排一次微任务（通常已由泵排空）
 
   blink := FHostActive and FocusWantsCaret;
@@ -1004,9 +1008,10 @@ end;
 
 function TXuiEngine.NeedsTick: Boolean;
 begin
-  // P2：定时器表非空时保持 Tick（宿主 Timer 按需启停，无需改宿主）
+  // P2：定时器表非空；P4：在途 I/O 请求（宿主 Timer 按需启停，无需改宿主）
   Result := FHotReload or FTransitions.HasActive or (FHostActive and FocusWantsCaret) or
-    ((FScript <> nil) and (FScript.TimersPending > 0));
+    ((FScript <> nil) and (FScript.TimersPending > 0)) or
+    ((FScript <> nil) and (FScript.IoInFlight > 0));
 end;
 
 procedure TXuiEngine.InvalidateStyles;
