@@ -48,6 +48,7 @@ type
     FScript: TXuiScript;
     FBridges: TObjectList;   // TXuiNodeBridge（自有）
     FListeners: TObjectList; // TXuiJsListener（自有）
+    FIncluded: TStringList;  // ui.include 已执行的脚本（绝对路径；只跑一次）
     FDocumentObj: TXuiJsObject;
     FBindingEngine: TXuiBindingEngine;   // M7：声明式绑定（响应式刷新）
     function FindBridge(ANode: TXuiNode): TXuiNodeBridge;
@@ -87,6 +88,9 @@ type
     // ui.popup：浮层挂到文档根并定位（M8 ADR 24）
     function NativePopup(AFn: TXuiJsFunction; AThis: TXuiJsValue;
       const AArgs: TXuiJsValueArray): TXuiJsValue;
+    // ui.include：运行另一个脚本文件（相对当前脚本；只执行一次）
+    function NativeInclude(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
     property DocumentObject: TXuiJsObject read FDocumentObj;
   end;
 
@@ -117,11 +121,13 @@ begin
   FScript := AScript;
   FBridges := TObjectList.Create(True);
   FListeners := TObjectList.Create(True);
+  FIncluded := TStringList.Create;
 end;
 
 destructor TXuiDomBridge.Destroy;
 begin
   FBindingEngine.Free;
+  FIncluded.Free;
   FListeners.Free;
   FBridges.Free;
   inherited Destroy;
@@ -537,6 +543,41 @@ begin
   FEngine.PlacePopup(node, anchor, placement, ox, oy);
 end;
 
+// ui.include(path)：编译并运行另一个脚本文件（相对当前脚本所在目录；同一文件只执行一次）。
+// TS 子集没有模块系统，组件库用它把多个 .ts 拼成"入口 + 分件"的结构。
+function TXuiDomBridge.NativeInclude(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+var
+  path, base: string;
+begin
+  Result := FScript.Undefined;
+  if System.Length(AArgs) < 1 then
+    Exit;
+  path := Trim(FScript.ToStringValue(AArgs[0]));
+  if path = '' then
+    Exit;
+  if not ((Length(path) >= 2) and (path[2] = ':') and (path[1] >= 'A') and (path[1] <= 'Z')) and
+     (path[1] <> PathDelim) and (path[1] <> '/') then
+  begin
+    base := '';
+    if FScript.CurrentFile <> '' then
+      base := ExtractFileDir(FScript.CurrentFile);
+    if base = '' then
+      base := GetCurrentDir;
+    path := base + PathDelim + path;
+  end;
+  path := ExpandFileName(path);
+  if FIncluded.IndexOf(path) >= 0 then
+    Exit;   // 同一文件只执行一次（重复 include 无副作用）
+  FIncluded.Add(path);
+  if not FileExists(path) then
+  begin
+    FScript.ReportError(path, 'ui.include 的脚本文件不存在', ssCompile);
+    Exit;
+  end;
+  FScript.RunFile(path);
+end;
+
 procedure TXuiDomBridge.Install;
 var
   doc: TXuiJsObject;
@@ -558,6 +599,7 @@ begin
   FScript.RegisterValue('ui.version', FScript.Str('lui M8'));
   // ui.popup(node, {anchor, placement, offsetX, offsetY})：浮层挂到文档根并定位（M8 ADR 24）
   FScript.RegisterNative('ui.popup', @NativePopup);
+  FScript.RegisterNative('ui.include', @NativeInclude);   // 脚本 include（只执行一次）
 
   // 引擎事件钩子（动态绑定）
   FEngine.OnScriptEvent := @HandleEngineEvent;

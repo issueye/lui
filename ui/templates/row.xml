@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-row：栅格行（gutter 用 column-gap 实现；列宽由 ui-col 的 flex-grow 分配） -->
+<panel class="ui-row" :style="'column-gap:' + props.gutter + 'px'">
+  <slot/>
+</panel>

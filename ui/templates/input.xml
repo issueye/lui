@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-input：原生 input 行为；text/placeholder/password/disabled 都走运行时属性绑定（随 props 更新），
+     输入事件回写宿主状态（引擎从事件对象取 text） -->
+<panel class="ui-input" :class="{ 'is-disabled': props.disabled }">
+  <input class="ui-input__field" :text="props.modelValue" :placeholder="props.placeholder"
+    :password="props.password" :disabled="props.disabled" x-oninput="props.onModelValue"/>
+</panel>

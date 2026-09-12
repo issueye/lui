@@ -1,0 +1,19 @@
+/* lui 组件库主题（深色）：只覆盖 token（组件样式在 lui-light.css，用 var() 取值） */
+
+window {
+  --ui-color-primary: #4a9eff;
+  --ui-color-primary-hover: #6cb2ff;
+  --ui-color-primary-active: #2b7fd4;
+  --ui-color-success: #3ecf6a;
+  --ui-color-warning: #f0a020;
+  --ui-color-danger: #f4635f;
+  --ui-color-info: #9aa0a6;
+  --ui-color-text: #eaeaea;
+  --ui-color-text-sub: #9aa0a6;
+  --ui-color-text-disabled: #5f646b;
+  --ui-color-bg: #1e1e1e;
+  --ui-color-bg-soft: #191c1f;
+  --ui-color-fill: #262626;
+  --ui-color-border: #3a3a3a;
+  --ui-color-border-light: #333333;
+}

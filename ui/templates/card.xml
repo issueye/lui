@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-card：卡片（title 为空时不渲染标题行） -->
+<panel class="ui-card">
+  <label class="ui-card__title" x-if="props.title !== ''" :text="props.title"/>
+  <panel class="ui-card__body">
+    <slot/>
+  </panel>
+</panel>

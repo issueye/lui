@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-divider：分割线（vertical 时 1px 竖线） -->
+<panel class="ui-divider" :class="{ 'ui-divider--v': props.direction === 'vertical' }"/>

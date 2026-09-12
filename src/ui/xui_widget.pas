@@ -21,6 +21,9 @@ type
     procedure Attach(ANode: TXuiNode); virtual;
     // XML 属性逐个通知（text/id/class 之外的业务属性）
     procedure HandleAttribute(const AName, AValue: string); virtual;
+    // M8：运行时属性设置（声明式绑定用，如 :placeholder / :password）。
+    // 返回 True 表示已处理；默认不处理（行为只在装配期读属性）。
+    function SetRuntimeAttr(const AName, AValue: string): Boolean; virtual;
     // 能否通过点击/键盘(Tab)获得焦点（:focus）
     function CanFocus: Boolean; virtual;
     // 事件钩子：返回 True 表示已处理（阻止继续向祖先冒泡）
@@ -90,6 +93,11 @@ end;
 procedure TXuiBehavior.HandleAttribute(const AName, AValue: string);
 begin
   // 默认忽略
+end;
+
+function TXuiBehavior.SetRuntimeAttr(const AName, AValue: string): Boolean;
+begin
+  Result := False;
 end;
 
 function TXuiBehavior.CanFocus: Boolean;

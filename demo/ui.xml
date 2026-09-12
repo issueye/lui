@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- M8-1：组件库演示页（ui/*：布局 / 卡片 / 文本 / 图标 / 按钮 / 输入框）
+     逻辑全在 ui.ts；组件样式来自 ui/theme/lui-light.css（深色叠 lui-dark.css） -->
+<window title="组件库" width="400" height="700">
+  <script src="../ui/index.ts"/>
+  <script src="ui.ts"/>
+  <include src="nav.xml"/>
+  <panel class="page">
+    <panel class="header">
+      <label class="title" text="lui 组件库"/>
+      <panel class="spacer"/>
+      <button id="theme" class="ghost" text="换肤" onclick="ThemeClick"/>
+    </panel>
+
+    <ui-card title="按钮 Button">
+      <ui-space size="8">
+        <ui-button id="ui-btn-1" text="默认" x-onclick="OnTap"/>
+        <ui-button text="主要" type="primary" x-onclick="OnTap"/>
+        <ui-button text="成功" type="success" x-onclick="OnTap"/>
+      </ui-space>
+      <ui-divider/>
+      <ui-space size="8">
+        <ui-button text="小" type="primary" size="small" x-onclick="OnTap"/>
+        <ui-button text="中" type="danger" size="small" x-onclick="OnTap"/>
+        <ui-button text="大" type="success" size="large" x-onclick="OnTap"/>
+      </ui-space>
+      <label class="hint" x-text="'点击 ' + state.clicks + ' 次（' + state.last + '）'"/>
+    </ui-card>
+
+    <ui-card title="输入框 Input（x-model 双向绑定）">
+      <ui-space size="8" direction="vertical">
+        <ui-input id="ui-name" x-model="state.name" placeholder="请输入用户名"/>
+        <ui-input x-model="state.pwd" placeholder="请输入密码" password="true"/>
+      </ui-space>
+      <label class="hint" x-text="'name=' + state.name + ' / pwd 长度=' + state.pwd.length"/>
+    </ui-card>
+
+    <ui-card title="布局 / 文本 / 图标 / 链接">
+      <ui-row gutter="8">
+        <ui-col span="8"><label class="box" text="col 8"/></ui-col>
+        <ui-col span="8"><label class="box" text="col 8"/></ui-col>
+        <ui-col span="8"><label class="box" text="col 8"/></ui-col>
+      </ui-row>
+      <ui-divider/>
+      <ui-space size="10">
+        <ui-icon name="star"/>
+        <ui-icon glyph="✓"/>
+        <ui-text text="次要文本" type="sub"/>
+        <ui-text text="主要文本" type="primary"/>
+        <ui-link text="链接（点我）" x-onclick="OnTap"/>
+      </ui-space>
+      <ui-divider/>
+      <ui-space size="8">
+        <ui-button id="ui-lock" text="切换禁用" size="small" x-onclick="OnLock"/>
+        <ui-button text="禁用态" size="small" :disabled="state.locked" x-onclick="OnTap"/>
+        <ui-input x-model="state.name" :disabled="state.locked" placeholder="禁用输入框"/>
+      </ui-space>
+    </ui-card>
+  </panel>
+</window>

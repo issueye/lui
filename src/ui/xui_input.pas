@@ -52,6 +52,8 @@ type
     function HandleEditingKey(ANode: TXuiNode; AKey: Word; AShift: TXuiShiftState): Boolean;
   public
     procedure HandleAttribute(const AName, AValue: string); override;
+    // M8：运行时属性（声明式绑定 :placeholder / :password / :maxlength）
+    function SetRuntimeAttr(const AName, AValue: string): Boolean; override;
     function CanFocus: Boolean; override;
     function HandleEvent(ANode: TXuiNode; const AEvent: TXuiEvent): Boolean; override;
     function RenderContent(ANode: TXuiNode; ARenderer: TXuiCustomRenderer;
@@ -421,6 +423,24 @@ begin
   end
   else if CompareText(AName, 'disabled') = 0 then
     SetDisabled(XuiAttributeIsTrue(AValue));
+end;
+
+// M8：运行时属性（声明式绑定 :placeholder / :password / :maxlength）
+function TXuiInputBehavior.SetRuntimeAttr(const AName, AValue: string): Boolean;
+begin
+  Result := True;
+  if CompareText(AName, 'placeholder') = 0 then
+    FPlaceholder := AValue
+  else if CompareText(AName, 'password') = 0 then
+    FPassword := XuiAttributeIsTrue(AValue)
+  else if CompareText(AName, 'maxlength') = 0 then
+  begin
+    FMaxLength := StrToIntDef(Trim(AValue), 0);
+    if FMaxLength < 0 then
+      FMaxLength := 0;
+  end
+  else
+    Result := False;
 end;
 
 function TXuiInputBehavior.CanFocus: Boolean;

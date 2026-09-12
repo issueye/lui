@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-link：链接（disabled 时置灰且不响应点击） -->
+<label class="ui-link" :text="props.text" :disabled="props.disabled" x-onclick="props.onClick"/>

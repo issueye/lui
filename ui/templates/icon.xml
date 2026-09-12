@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-icon：字形图标（name 查字形表；glyph 可直接给字形覆盖） -->
+<label class="ui-icon" :text="UiIconText(props.glyph, props.name)"/>

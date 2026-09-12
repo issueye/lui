@@ -8440,6 +8440,102 @@ end;
 
 
 
+{ ---------- M8：组件库（ui/）---------- }
+
+// 仓库内相对路径定位（从仓库根或 tests 目录运行都能找到）
+function RepoPath(const ARelative: string): string;
+begin
+  Result := ARelative;
+  if FileExists(Result) then
+    Exit;
+  Result := '..' + PathDelim + ARelative;
+  if not FileExists(Result) then
+    Result := '';
+end;
+
+// 组件库冒烟：注册入口 / 主题样式 / 组件交互（按钮回调、输入双向、栅格与卡片）
+procedure TestUiLibrary;
+var
+  engine: TXuiEngine;
+  fake: TFakeRenderer;
+  script: TXuiScript;
+  bridge: TXuiDomBridge;
+  sink: TScriptSink;
+  node, btn: TXuiNode;
+  theme, index: string;
+  errs: Integer;
+  src: string;
+begin
+  WriteLn('--- M8 组件库（ui/）---');
+  theme := RepoPath('ui' + PathDelim + 'theme' + PathDelim + 'lui-light.css');
+  index := RepoPath('ui' + PathDelim + 'index.ts');
+  if (theme = '') or (index = '') then
+  begin
+    WriteLn('SKIP  未找到 ui/ 组件库文件');
+    Exit;
+  end;
+  engine := NewTestEngine(fake);
+  script := TXuiScript.Create;
+  sink := TScriptSink.Create;
+  try
+    bridge := TXuiDomBridge.Create(engine, script);
+    try
+      bridge.Install;
+      engine.AttachScript(script);
+      script.OnError := @sink.HandleError;
+      script.Interp.OnLog := @sink.HandleLog;
+      engine.LoadStyleSheetFromFile(theme);
+      script.RunFile(index);   // ui/index.ts：注册全部组件
+      script.Run('const uiTaps = reactive({ n: 1 });' + #10 +
+        'const uiState = reactive({ name: "lui" });' + #10 +
+        'function OnUiTap(): void { uiTaps.n = uiTaps.n + 1; }', 'uiprobe.ts');
+      Check(script.ErrorCount = 0, '组件库入口加载无错误');
+
+      engine.LoadFromString(
+        '<window>' +
+        '<ui-card title="卡片">' +
+        '<ui-row id="r1" gutter="8">' +
+        '<ui-col span="12"><label id="c1" text="a"/></ui-col>' +
+        '<ui-col span="12"><label id="c2" text="b"/></ui-col>' +
+        '</ui-row>' +
+        '<ui-button id="b1" text="主按钮" type="primary" size="small" x-onclick="OnUiTap"/>' +
+        '<label id="cnt" text="taps={{uiTaps.n}}"/>' +
+        '<ui-input id="i1" x-model="uiState.name" placeholder="请输入"/>' +
+        '</ui-card>' +
+        '</window>');
+      engine.LoadStyleSheetFromFile(theme);   // 与 demo 一致：文档（含组件实例化）在前、主题表在后
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('r1');
+      Check((node <> nil) and (node.Style.Display = xdispFlex) and
+        (node.Style.ColumnGap.Value = 8), '组件库：ui-row 横向栅格 + gutter');
+      node := engine.Document.FindElementById('c1');
+      Check((node <> nil) and (node.Parent.Style.FlexGrow = 12),
+        '组件库：ui-col 按 span 分配 flex-grow');
+      node := engine.Document.FindElementById('i1');
+      Check((node <> nil) and (node.Style.Display = xdispFlex),
+        '组件库：主题样式生效（ui-input 根节点 display:flex）');
+
+      btn := engine.Document.FindElementById('b1');
+      Check((btn <> nil) and btn.HasClass('ui-btn') and btn.HasClass('ui-btn--primary') and
+        btn.HasClass('ui-btn--sm') and (btn.Style.BgColor.R = $16),
+        '组件库：ui-button 修饰类与主题色（primary/small）');
+      ClickNode(engine, btn);
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('cnt');
+      Check((node <> nil) and (node.Text = 'taps=2'), '组件库：ui-button 回调 prop 触发父级函数');
+      node := engine.Document.FindElementById('i1');
+      Check((node <> nil) and (node.Count = 1) and (node[0].Text = 'lui'),
+        '组件库：ui-input 经 x-model 取到宿主状态');
+    finally
+      bridge.Free;
+    end;
+  finally
+    sink.Free;
+    script.Free;
+    engine.Free;
+  end;
+end;
+
 { ---------- M8：CSS 变量（自定义属性）---------- }
 
 // --x 声明 + var() 取值：继承 / 回退 / 简写值内替换 / 主题覆盖（后加载样式表重定义）
@@ -8507,6 +8603,7 @@ var
   keptA, keptC: TXuiNode;
   errs: Integer;
   tplDir: string;
+  incDir: string;
   src: string;
   ioSeq: Integer;
 
@@ -9116,6 +9213,40 @@ begin
       Check((node <> nil) and (node.Style.Width.Value = 60),
         'ui.popup：保留作者内联样式（width 未被定位覆盖）');
       Check(Pos('rect=', src) > 0, 'node.rect：脚本可读元素矩形');
+
+      // ---- M8-1 前置：:style 运行时样式 / :placeholder 运行时属性 / ui.include ----
+      RunAndFlush('const sty = reactive({ w: 40 });');
+      engine.LoadFromString(
+        '<window><panel id="sty1" :style="''width:'' + sty.w + ''px; height:20px''"/></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('sty1');
+      Check((node <> nil) and (node.Style.Width.Value = 40), ':style：运行时样式生效');
+      RunAndFlush('sty.w = 80;');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('sty1');
+      Check((node <> nil) and (node.Style.Width.Value = 80),
+        ':style：状态变化后样式随之更新（组件按 props 算样式的基础）');
+
+      RunAndFlush('const ph = reactive({ hint: "请输入用户名" });');
+      engine.LoadFromString('<window><input id="ph1" :placeholder="ph.hint"/></window>');
+      fake.Clear;
+      DrawEngine(engine);
+      Check(fake.TextDrawn('请输入用户名'), ':placeholder：运行时占位符生效');
+
+      incDir := GetTempDir + 'lui_m8_inc';
+      ForceDirectories(incDir);
+      WriteTestFile(incDir + PathDelim + 'part.ts', 'function IncFn(): number { return 7; }');
+      WriteTestFile(incDir + PathDelim + 'main.ts',
+        'ui.include("part.ts");' + #10 +
+        'ui.include("part.ts");' + #10 +   // 重复 include 只执行一次
+        'console.log("inc=" + IncFn());');
+      sink.Log.Clear;
+      script.RunFile(incDir + PathDelim + 'main.ts');
+      Check(Pos('inc=7', sink.Log.Text) > 0, 'ui.include：按当前脚本目录加载并执行另一个脚本');
+      errs := script.ErrorCount;
+      WriteTestFile(incDir + PathDelim + 'badinc.ts', 'ui.include("nope.ts");');
+      script.RunFile(incDir + PathDelim + 'badinc.ts');
+      Check(script.ErrorCount > errs, 'ui.include：文件缺失上报为脚本错误');
     finally
       bridge.Free;
     end;
@@ -10215,6 +10346,7 @@ begin
 
     TestCssCascadeOnNode;
     TestCssVariables;
+    TestUiLibrary;
 
 
     TestThemeSkin;

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-col：栅格列（span 作为 flex-grow 权重，basis 0 保证按比例分配） -->
+<panel class="ui-col" :style="'flex-grow:' + props.span + '; flex-basis:0'">
+  <slot/>
+</panel>

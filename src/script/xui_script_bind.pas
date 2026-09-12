@@ -11,7 +11,11 @@ unit xui_script_bind;
     x-for="item in expr"   列表渲染：容器按数组重建克隆子树，作用域注入 item/index；
                             模板子节点上的 x-key="expr" 启用键控 diff（按 key 复用/移除/重排；
                             同 key 沿用原迭代作用域，组件实例等子作用域随之看到新数据）
-    x-model="state.path"   input 双向绑定（路径形式，输入事件回写）
+    x-model="state.path"   input 双向绑定（路径形式，输入事件回写）；组件宿主上则表示
+                            双向绑定协议（props.modelValue ← 路径，props.onModelValue 写回）
+    :placeholder="expr"    运行时属性（input 行为支持 placeholder/password/maxlength）
+    x-onclick="expr"       事件表达式：触发时在绑定作用域求值（结果为函数则调用并传事件对象；
+                            表达式内可用 event 读取载荷）。组件宿主上等价于回调 prop onClick
 
     组件（M7-3/M7-4）：
     component('name', opts)   注册；opts 含 props 与 template；模板支持多根，
@@ -36,7 +40,7 @@ uses
 
 type
   TXuiBindKind = (bkText, bkClass, bkDisabled, bkShow, bkIf, bkModel, bkFor,
-    bkComponent, bkProp, bkEvent);
+    bkComponent, bkProp, bkEvent, bkAttr);
 
   // DOM 桥注入的节点监听注册/注销（AEventName 形如 'click'；ABind=False 表示注销）
   TXuiBindNodeEventProc = procedure(ANode: TXuiNode; const AEventName: string;
@@ -110,6 +114,7 @@ type
     PropName: string;        // bkProp：属性名
     EventName: string;       // bkEvent：事件名（'click'/'input'/…）
     EventEntry: TObject;     // bkEvent：TXuiBindEvent（弱引用；引擎注册表自有）
+    AttrName: string;        // bkAttr：运行时属性名（placeholder/password/maxlength）
     ModelEntry: TObject;     // 组件 x-model：TXuiBindModel（弱引用；引擎注册表自有）
     Scope: TXuiJsEnv;        // 作用域（v-for 克隆；nil = 全局）
     Parts: TStringList;      // x-text 插值：偶数=字面量（Objects=nil），奇数=表达式（Objects=1）
@@ -219,6 +224,20 @@ begin
     Result.AddChild(CloneSubtree(ASrc[i]));
 end;
 
+// 属性名去掉绑定前缀（x- / :），返回基础名（小写）
+function BaseAttrName(const AAttrName: string): string;
+var
+  n: string;
+begin
+  n := LowerCase(AAttrName);
+  if Pos('x-', n) = 1 then
+    Result := Copy(n, 3, MaxInt)
+  else if (n <> '') and (n[1] = ':') then
+    Result := Copy(n, 2, MaxInt)
+  else
+    Result := n;
+end;
+
 // 属性名 → 绑定种类（x- 前缀；冒号别名）
 function BindAttrName(const AName: string; out AKind: TXuiBindKind): Boolean;
 var
@@ -239,6 +258,9 @@ begin
   else if n = 'if' then AKind := bkIf
   else if n = 'model' then AKind := bkModel
   else if n = 'for' then AKind := bkFor
+  else if (n = 'placeholder') or (n = 'password') or (n = 'maxlength') or
+          (n = 'style') then
+    AKind := bkAttr      // M8：运行时属性/样式（style 由引擎处理，其余交行为识别）
   else
     Result := False;
 end;
@@ -460,10 +482,10 @@ function TXuiBindingEngine.FindComponentDef(const AName: string): TXuiComponentD
 var
   i: Integer;
 begin
+  Result := nil;
   for i := 0 to FComponents.Count - 1 do
     if TXuiComponentDef(FComponents[i]).Name = LowerCase(AName) then
       Exit(TXuiComponentDef(FComponents[i]));
-  Result := nil;
 end;
 
 // 支持的 prop 类型名（'' 与 'any' = 不校验）
@@ -505,6 +527,7 @@ var
   path: string;
   tplV: TXuiJsValue;
   list: TStringList;
+  p: Integer;
 begin
   Result := '';
   tplV := defn.GetOwn('templateFile');
@@ -528,6 +551,16 @@ begin
     try
       list.LoadFromFile(path);
       Result := list.Text;
+      // 模板会被包进 <xui-root> 再解析：文件里的 XML 声明与 BOM 此时非法，先去掉
+      if (Length(Result) >= 3) and (Copy(Result, 1, 3) = #$EF#$BB#$BF) then
+        Delete(Result, 1, 3);
+      Result := TrimLeft(Result);
+      if Copy(Result, 1, 5) = '<?xml' then
+      begin
+        p := Pos('?>', Result);
+        if p > 0 then
+          Delete(Result, 1, p + 1);
+      end;
     except
       on E: Exception do
         FScript.ReportError(path, '组件 ' + ACompName + ' 的模板文件读取失败：' + E.Message,
@@ -1165,6 +1198,8 @@ begin
       Continue;   // 已在循环前登记
     expr := Trim(ANode.Attributes.ValueFromIndex[i]);
     RegBinding(kind, expr);
+    if kind = bkAttr then
+      b.AttrName := BaseAttrName(attr);
     if kind = bkText then
     begin
       b.Expr := expr;
@@ -1302,6 +1337,10 @@ begin
       end;
     bkModel:
       FEngine.SetText(ABinding.Node,
+        FScript.ToStringValue(EvalOn(ABinding.Expr, ABinding.Scope)));
+    bkAttr:
+      // 运行时属性（:placeholder / :password / :maxlength）：交给行为识别
+      FEngine.SetNodeRuntimeAttr(ABinding.Node, ABinding.AttrName,
         FScript.ToStringValue(EvalOn(ABinding.Expr, ABinding.Scope)));
     bkIf:
       begin
@@ -1485,6 +1524,14 @@ begin
       if firstRoot.ClassList.IndexOf(compNode.ClassList[i]) < 0 then
         firstRoot.ClassList.Add(compNode.ClassList[i]);
 
+    // 模板节点用**组件作用域**登记绑定（必须在分发 slot 内容之前：slot 内容已按父作用域登记过，
+    // 若等分发后再扫，会把它们按组件作用域重绑一遍——模板里的 props 会读到父组件的 props）
+    env := FScript.Interp.NewChildEnv(FScript.Interp.GlobalEnv);
+    env.Define('props', FScript.Interp.ObjectValue(props));
+    scanFrom := FBindings.Count;
+    for i := 0 to roots.Count - 1 do
+      ScanNode(TXuiNode(roots[i]), env, ABinding, ABinding.OwnerRoot);
+
     // slot 分发：宿主直接子节点按 slot="x" 归入具名槽（无该属性 = 默认槽）；
     // 逆文档序处理，插入内容不影响尚未处理的槽位下标
     marks := TObjectList.Create(True);
@@ -1587,14 +1634,9 @@ begin
     FEngine.ApplyNodeData(TXuiNode(roots[i]));
   FEngine.InvalidateStyles;
 
-  // 以组件作用域登记实例绑定（props 经 env 暴露）；OwnerRoot 继承克隆归属
-  env := FScript.Interp.NewChildEnv(FScript.Interp.GlobalEnv);
-  env.Define('props', FScript.Interp.ObjectValue(props));
-  scanFrom := FBindings.Count;
+  // 模板节点与本组件内的嵌套组件：本轮 flush 内完成首渲染
   if host <> nil then
-    for i := 0 to roots.Count - 1 do
-      ScanNode(TXuiNode(roots[i]), env, ABinding, ABinding.OwnerRoot);
-  ApplyNewBindings(scanFrom);
+    ApplyNewBindings(scanFrom);
   roots.Free;
 end;
 

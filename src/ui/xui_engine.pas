@@ -138,6 +138,8 @@ type
     procedure SetText(ANode: TXuiNode; const AText: string);
     procedure SetClass(ANode: TXuiNode; const AClassName: string);
     procedure SetDisabled(ANode: TXuiNode; AValue: Boolean);
+    // M8：运行时属性（:placeholder / :password / :maxlength；由行为决定是否支持）
+    function SetNodeRuntimeAttr(ANode: TXuiNode; const AName, AValue: string): Boolean;
     // 换事件宿主对象后重新解析全部 on* 绑定
     procedure RebindEvents;
 
@@ -1265,6 +1267,33 @@ begin
   if (FFocusNode <> nil) and (FFocusNode.Root <> FDocument.Root) then
     FFocusNode := nil;
   InvalidateStyles;
+end;
+
+// M8：运行时属性设置（声明式绑定用）；返回是否被处理
+//   style：直接写内联 style（组件按 props 计算样式用），样式随之重算
+//   其余交给行为的 SetRuntimeAttr（如 input 的 placeholder/password/maxlength）
+function TXuiEngine.SetNodeRuntimeAttr(ANode: TXuiNode; const AName, AValue: string): Boolean;
+begin
+  Result := False;
+  if ANode = nil then
+    Exit;
+  if SameText(AName, 'style') then
+  begin
+    if ANode.Attributes.Values['style'] <> AValue then
+    begin
+      ANode.Attributes.Values['style'] := AValue;
+      InvalidateStyles;
+    end;
+    Exit(True);
+  end;
+  if ANode.Behavior = nil then
+    Exit;
+  Result := TXuiBehavior(ANode.Behavior).SetRuntimeAttr(AName, AValue);
+  if Result then
+  begin
+    FNeedsLayout := True;   // 占位符/掩码改变文本宽度
+    DoChange;
+  end;
 end;
 
 procedure TXuiEngine.SetText(ANode: TXuiNode; const AText: string);

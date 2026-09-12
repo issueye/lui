@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-space：间距容器（horizontal = column-gap；vertical = 纵向排列 + row-gap） -->
+<panel class="ui-space" :style="UiSpaceStyle(props.size, props.direction)">
+  <slot/>
+</panel>

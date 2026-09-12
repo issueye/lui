@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-text：文本（type 决定颜色、size 决定字号） -->
+<label class="ui-text"
+  :class="{ 'ui-text--sub': props.type === 'sub', 'ui-text--primary': props.type === 'primary', 'ui-text--success': props.type === 'success', 'ui-text--warning': props.type === 'warning', 'ui-text--danger': props.type === 'danger', 'ui-text--info': props.type === 'info', 'ui-text--sm': props.size === 'small', 'ui-text--lg': props.size === 'large' }"
+  :text="props.text"/>

@@ -1,0 +1,258 @@
+/* lui 组件库主题（浅色）：设计 token 用 CSS 变量定义，深色主题（lui-dark.css）只覆盖 token。
+   命名约定：类名前缀 ui-，状态类 is-*，修饰类 ui-<comp>--<variant>（对齐 Element Plus 的 el-*） */
+
+window {
+  /* 类型色 */
+  --ui-color-primary: #1677ff;
+  --ui-color-primary-hover: #0f6ae8;
+  --ui-color-primary-active: #0b56c2;
+  --ui-color-success: #22c55e;
+  --ui-color-warning: #f59e0b;
+  --ui-color-danger: #ef4444;
+  --ui-color-info: #6b7280;
+  /* 文本与背景 */
+  --ui-color-text: #1f1f1f;
+  --ui-color-text-sub: #5a5f66;
+  --ui-color-text-disabled: #a8adb5;
+  --ui-color-bg: #ffffff;
+  --ui-color-bg-soft: #f5f7fa;
+  --ui-color-fill: #f1f2f5;
+  --ui-color-border: #d7dbe2;
+  --ui-color-border-light: #e5e7eb;
+  /* 尺寸与间距 */
+  --ui-radius: 6px;
+  --ui-radius-sm: 4px;
+  --ui-font-size: 13px;
+  --ui-font-size-sm: 12px;
+  --ui-font-size-lg: 14px;
+  --ui-height: 30px;
+  --ui-height-sm: 26px;
+  --ui-height-lg: 34px;
+  --ui-gap: 8px;
+  --ui-pad-x: 12px;
+  --ui-transition: all 150ms ease;
+}
+
+/* ---------- 布局 ---------- */
+
+.ui-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.ui-col {
+  flex-grow: 1;
+  flex-basis: 0;
+}
+
+.ui-space {
+  display: flex;
+  column-gap: var(--ui-gap);
+}
+
+.ui-divider {
+  height: 1px;
+  background-color: var(--ui-color-border-light);
+  margin-top: var(--ui-gap);
+  margin-bottom: var(--ui-gap);
+}
+
+.ui-divider--v {
+  width: 1px;
+  height: auto;
+  margin: 0 0 0 var(--ui-gap);
+}
+
+/* ---------- 容器与文本 ---------- */
+
+.ui-card {
+  background-color: var(--ui-color-bg);
+  border: 1px solid var(--ui-color-border-light);
+  border-radius: var(--ui-radius);
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.ui-card__title {
+  font-size: var(--ui-font-size-lg);
+  font-weight: bold;
+  color: var(--ui-color-text);
+  margin-bottom: 8px;
+}
+
+.ui-card__body {
+  display: flex;
+  flex-direction: column;
+}
+
+.ui-text {
+  font-size: var(--ui-font-size);
+  color: var(--ui-color-text);
+}
+
+.ui-text--sub {
+  color: var(--ui-color-text-sub);
+}
+
+.ui-text--primary {
+  color: var(--ui-color-primary);
+}
+
+.ui-text--success {
+  color: var(--ui-color-success);
+}
+
+.ui-text--warning {
+  color: var(--ui-color-warning);
+}
+
+.ui-text--danger {
+  color: var(--ui-color-danger);
+}
+
+.ui-text--info {
+  color: var(--ui-color-info);
+}
+
+.ui-text--sm {
+  font-size: var(--ui-font-size-sm);
+}
+
+.ui-text--lg {
+  font-size: var(--ui-font-size-lg);
+}
+
+.ui-link {
+  font-size: var(--ui-font-size);
+  color: var(--ui-color-primary);
+  transition: var(--ui-transition);
+}
+
+.ui-link:hover {
+  color: var(--ui-color-primary-hover);
+}
+
+.ui-link:disabled {
+  color: var(--ui-color-text-disabled);
+}
+
+.ui-link:disabled:hover {
+  color: var(--ui-color-text-disabled);
+}
+
+.ui-icon {
+  font-size: var(--ui-font-size);
+  color: var(--ui-color-text-sub);
+}
+
+/* ---------- 按钮 ---------- */
+
+.ui-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--ui-height);
+  padding-left: var(--ui-pad-x);
+  padding-right: var(--ui-pad-x);
+  font-size: var(--ui-font-size);
+  line-height: 1;
+  color: var(--ui-color-text);
+  background-color: var(--ui-color-bg);
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius);
+  transition: var(--ui-transition);
+}
+
+.ui-btn:hover {
+  color: var(--ui-color-primary);
+  border-color: var(--ui-color-primary);
+}
+
+.ui-btn:disabled {
+  color: var(--ui-color-text-disabled);
+  background-color: var(--ui-color-fill);
+  border-color: var(--ui-color-border-light);
+}
+
+.ui-btn--primary {
+  color: #ffffff;
+  background-color: var(--ui-color-primary);
+  border-color: var(--ui-color-primary);
+}
+
+.ui-btn--primary:hover {
+  color: #ffffff;
+  background-color: var(--ui-color-primary-hover);
+  border-color: var(--ui-color-primary-hover);
+}
+
+.ui-btn--success {
+  color: #ffffff;
+  background-color: var(--ui-color-success);
+  border-color: var(--ui-color-success);
+}
+
+.ui-btn--danger {
+  color: #ffffff;
+  background-color: var(--ui-color-danger);
+  border-color: var(--ui-color-danger);
+}
+
+.ui-btn--warning {
+  color: #ffffff;
+  background-color: var(--ui-color-warning);
+  border-color: var(--ui-color-warning);
+}
+
+.ui-btn--info {
+  color: #ffffff;
+  background-color: var(--ui-color-info);
+  border-color: var(--ui-color-info);
+}
+
+.ui-btn--sm {
+  height: var(--ui-height-sm);
+  font-size: var(--ui-font-size-sm);
+  padding-left: 9px;
+  padding-right: 9px;
+}
+
+.ui-btn--lg {
+  height: var(--ui-height-lg);
+  font-size: var(--ui-font-size-lg);
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+/* ---------- 输入框 ---------- */
+
+.ui-input {
+  display: flex;
+  align-items: center;
+}
+
+.ui-input__field {
+  flex: 1;
+  height: var(--ui-height);
+  padding-left: 8px;
+  padding-right: 8px;
+  font-size: var(--ui-font-size);
+  color: var(--ui-color-text);
+  background-color: var(--ui-color-bg);
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius);
+  transition: var(--ui-transition);
+}
+
+.ui-input__field:hover {
+  border-color: var(--ui-color-primary);
+}
+
+.ui-input__field:focus {
+  border-color: var(--ui-color-primary);
+}
+
+.ui-input__field:disabled {
+  background-color: var(--ui-color-fill);
+  border-color: var(--ui-color-border-light);
+}

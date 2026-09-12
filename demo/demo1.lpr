@@ -12,6 +12,8 @@ program demo1;
   demo1 todo dark        Todo 小应用（深色）
   demo1 m7               M7 响应式演示（插值 / x-model / :class / x-if / keyed v-for / 组件）
   demo1 m7 dark          M7 响应式演示（深色）
+  demo1 ui               M8 组件库演示（ui-button / ui-input / ui-card / ui-row 等）
+  demo1 ui dark          M8 组件库演示（深色）
   demo1 watch            开启热重载：运行中修改 *.css / *.xml 自动生效
   demo1 shot [WxH]       渲染到 shot.png 后退出（布局/观感自动核对）
   demo1 todo demo shot   同上，但先模拟交互（输入 + Enter 添加 / 悬停 / 完成 / 删除 / 滚动）
@@ -113,25 +115,42 @@ begin
 end;
 
 procedure TDemoForm.ApplyTheme;
+var
+  pageCss, navCss, libBase, libOverride: string;
 begin
   FHost.Engine.ClearStyleSheets;
   if FDark then
   begin
-    FHost.Engine.LoadStyleSheetFromFile(FindFile(FBaseName + '-dark.css'));
-    FHost.Engine.LoadStyleSheetFromFile(FindFile('nav-dark.css'));   // 公共导航条
+    pageCss := FBaseName + '-dark.css';
+    navCss := 'nav-dark.css';
   end
   else
   begin
-    FHost.Engine.LoadStyleSheetFromFile(FindFile(FBaseName + '-light.css'));
-    FHost.Engine.LoadStyleSheetFromFile(FindFile('nav-light.css'));  // 公共导航条
+    pageCss := FBaseName + '-light.css';
+    navCss := 'nav-light.css';
   end;
+  FHost.Engine.LoadStyleSheetFromFile(FindFile(pageCss));
+  // 组件库主题：浅色表是基座（组件样式 + 浅色 token），深色主题再叠加 token 覆盖表。
+  // 页面不使用组件库时文件不存在，跳过即可。
+  libBase := FindFile('ui' + PathDelim + 'theme' + PathDelim + 'lui-light.css');
+  if FileExists(libBase) then
+  begin
+    FHost.Engine.LoadStyleSheetFromFile(libBase);
+    if FDark then
+    begin
+      libOverride := FindFile('ui' + PathDelim + 'theme' + PathDelim + 'lui-dark.css');
+      if FileExists(libOverride) then
+        FHost.Engine.LoadStyleSheetFromFile(libOverride);
+    end;
+  end;
+  FHost.Engine.LoadStyleSheetFromFile(FindFile(navCss));   // 公共导航条（最后加载，同特异性时胜出）
   FHost.Invalidate;
 end;
 
 // 导航条：当前页按钮加 active（其余保持基础类，避免高亮残留）
 procedure TDemoForm.UpdateNav;
 const
-  Pages: array[0..4] of string = ('login', 'list', 'todo', 'script', 'm7');
+  Pages: array[0..5] of string = ('login', 'list', 'todo', 'script', 'm7', 'ui');
 var
   i: Integer;
   node: TXuiNode;
@@ -416,6 +435,22 @@ begin
     Exit;
   end;
 
+  // ui 页（组件库）：点一个 ui-button → 在 ui-input 里输入 → 切一次禁用态
+  if FBaseName = 'ui' then
+  begin
+    ClickAt(engine.Document.FindElementById('ui-btn-1'));
+    inputNode := engine.Document.FindElementById('ui-name');
+    if inputNode <> nil then
+    begin
+      ClickAt(inputNode);
+      engine.HandleTextInput('X');
+    end;
+    ClickAt(engine.Document.FindElementById('ui-lock'));
+    ClickAt(engine.Document.FindElementById('ui-lock'));
+    engine.HandleMouseMove(300, 480);
+    Exit;
+  end;
+
   // todo
   inputNode := engine.Document.FindElementById('new-todo');
   if inputNode <> nil then
@@ -468,6 +503,8 @@ begin
       page := 'script'
     else if arg = 'm7' then
       page := 'm7'
+    else if arg = 'ui' then
+      page := 'ui'
     else if arg = 'login' then
       page := 'login'
     else if arg = 'shot' then

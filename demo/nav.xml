@@ -8,4 +8,5 @@
   <button id="nav-todo" class="nav-btn" text="待办" to="todo" onclick="PageClick"/>
   <button id="nav-script" class="nav-btn" text="脚本" to="script" onclick="PageClick"/>
   <button id="nav-m7" class="nav-btn" text="响应式" to="m7" onclick="PageClick"/>
+  <button id="nav-ui" class="nav-btn" text="组件" to="ui" onclick="PageClick"/>
 </panel>
