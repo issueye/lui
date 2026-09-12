@@ -3,15 +3,16 @@ program lui_render;
 {$mode objfpc}{$H+}
 
 { lui 独立渲染器程序 (lui-render) — M9
-  兼具 CLI 离线导出与 GUI 实时交互查看功能。
+  兼具 CLI 离线导出与 GUI 实时交互查看功能。装配逻辑统一走 xui_app 装配门面
+  （与 demo1 共用，ADR 30）。
 
   零外部第三方依赖：使用 Free Pascal RTL + LazUtils + LCL + GDI/GDI+。
 
-  M9-P0（本版，ADR 30–33）：
+  M9-P0/P1（本版，ADR 30–33）：
   - CLI 规范收敛：-h 独占帮助；视口高度用 -H/--height；未知参数报错（退出码 2）
   - --version 输出版本；-o 输出目录不存在时自动创建
-  - SetupEngine 复位样式表；GUI 热重载/切主题销毁重建宿主
-    （修复重复重载时样式表与组件库脚本累积的缺陷） }
+  - 多输入批量 + --outdir + --theme both + --json 汇总（ADR 32 退出码 0/1/2/3）
+  - 装配统一走 xui_app 装配门面（复位样式表，重载不累积） }
 
 uses
   {$IFDEF UNIX}cthreads,{$ENDIF}
@@ -19,7 +20,7 @@ uses
   Classes, SysUtils, Types, Math, StrUtils,
   xui_types, xui_style, xui_dom, xui_xml, xui_layout, xui_render,
   xui_css_parser, xui_css_match, xui_engine, xui_events, xui_widget,
-  xui_input, xui_svg, xui_script, xui_script_dom, xui_script_bind,
+  xui_input, xui_svg, xui_script, xui_script_dom, xui_script_bind, xui_app,
   {$IFDEF WINDOWS}xui_render_gdiplus,{$ENDIF}
   xui_host;
 
@@ -29,15 +30,24 @@ const
 type
   { CLI / GUI 运行时配置参数 }
   TRenderOptions = record
-    InputFile: string;
-    OutputFile: string;
+    Inputs: TStringList;     // 输入文件（可多个 = 批量）
+    OutDir: string;          // --outdir（批量模式）
+    OutputFile: string;      // -o（单文件模式）
     Width: Integer;
     Height: Integer;
-    Theme: string;       // 'light' 或 'dark'
+    Theme: string;           // 'light' / 'dark' / 'both'
     ExtraCss: string;
     Watch: Boolean;
     Verbose: Boolean;
+    JsonOut: Boolean;        // --json：结果以 JSON 输出到 stdout
     IsCliMode: Boolean;
+  end;
+
+  TJobResult = record
+    Input: string;
+    Output: string;
+    Theme: string;
+    OK: Boolean;
   end;
 
 var
@@ -46,15 +56,17 @@ var
 procedure PrintUsage;
 begin
   WriteLn('lui 渲染器程序 (lui-render) v' + AppVersion);
-  WriteLn('用法: lui-render <输入文件.xml|svg> [选项]');
+  WriteLn('用法: lui-render <输入.xml|svg> [更多输入...] [选项]');
   WriteLn;
   WriteLn('选项:');
-  WriteLn('  -o, --output <文件.png>   离线渲染导出为 PNG 图片 (CLI 模式；目录不存在会自动创建)');
+  WriteLn('  -o, --output <文件.png>   单文件输出（CLI 模式；目录不存在会自动创建）');
+  WriteLn('  -O, --outdir <目录>       批量输出目录（与多个输入搭配使用）');
   WriteLn('  -w, --width <像素>        视口宽度 (默认 800)');
   WriteLn('  -H, --height <像素>       视口高度 (默认 600)');
-  WriteLn('  -t, --theme <light|dark>  界面主题风格 (默认 light)');
+  WriteLn('  -t, --theme <light|dark|both>  主题（both = 双主题各出一张）');
   WriteLn('  -c, --css <样式文件>      附加加载的自定义 CSS 样式文件');
-  WriteLn('  --watch                   监听输入文件变更并自动热重载');
+  WriteLn('  --watch                   监听输入文件变更并自动重跑');
+  WriteLn('  --json                    结果以 JSON 输出到 stdout（日志走 stderr）');
   WriteLn('  -v, --verbose             输出详细过程日志');
   WriteLn('  -V, --version             输出版本号');
   WriteLn('  -?, --help                显示此帮助说明');
@@ -86,9 +98,20 @@ var
     AVal := ParamStr(i);
   end;
 
+  procedure AddInput(const AFile: string);
+  begin
+    if not FileExists(AFile) then
+    begin
+      WriteLn(Format('错误: 输入文件不存在: "%s"', [AFile]));
+      Halt(1);
+    end;
+    Opt.Inputs.Add(AFile);
+  end;
+
 begin
   Result := True;
-  Opt.InputFile := '';
+  Opt.Inputs := TStringList.Create;
+  Opt.OutDir := '';
   Opt.OutputFile := '';
   Opt.Width := 800;
   Opt.Height := 600;
@@ -96,6 +119,7 @@ begin
   Opt.ExtraCss := '';
   Opt.Watch := False;
   Opt.Verbose := False;
+  Opt.JsonOut := False;
   Opt.IsCliMode := False;
 
   i := 1;
@@ -114,6 +138,8 @@ begin
     end
     else if (arg = '-o') or (arg = '--output') then
       NeedValue('-o/--output', Opt.OutputFile)
+    else if (arg = '-O') or (arg = '--outdir') then
+      NeedValue('-O/--outdir', Opt.OutDir)
     else if (arg = '-w') or (arg = '--width') then
     begin
       NeedValue('-w/--width', arg);
@@ -132,41 +158,38 @@ begin
     begin
       NeedValue('-t/--theme', arg);
       Opt.Theme := LowerCase(arg);
-      if (Opt.Theme <> 'light') and (Opt.Theme <> 'dark') then
-        ParamError('主题只能是 light 或 dark: ' + arg);
+      if (Opt.Theme <> 'light') and (Opt.Theme <> 'dark') and (Opt.Theme <> 'both') then
+        ParamError('主题只能是 light、dark 或 both: ' + arg);
     end
     else if (arg = '-c') or (arg = '--css') then
       NeedValue('-c/--css', Opt.ExtraCss)
     else if arg = '--watch' then
       Opt.Watch := True
+    else if arg = '--json' then
+      Opt.JsonOut := True
     else if (arg = '-v') or (arg = '--verbose') then
       Opt.Verbose := True
     else if (Copy(arg, 1, 1) = '-') and (arg <> '-') then
-      ParamError('未知选项: ' + arg)   // 未知参数报错（退出码 2），不再静默忽略
-    else if Opt.InputFile = '' then
-      Opt.InputFile := arg
+      ParamError('未知选项: ' + arg)
     else
-      ParamError('多余的位置参数: ' + arg);
+      AddInput(arg);
     Inc(i);
   end;
 
-  if Opt.InputFile = '' then
+  if Opt.Inputs.Count = 0 then
   begin
     WriteLn('错误: 未指定输入文件。');
     PrintUsage;
     Exit(False);
   end;
 
-  if not FileExists(Opt.InputFile) then
-  begin
-    WriteLn(Format('错误: 输入文件不存在: "%s"', [Opt.InputFile]));
-    Exit(False);
-  end;
+  if (Opt.OutputFile <> '') and (Opt.Inputs.Count > 1) then
+    ParamError('-o 只能与单个输入搭配；多输入请使用 -O/--outdir');
 
-  Opt.IsCliMode := (Opt.OutputFile <> '');
+  Opt.IsCliMode := (Opt.OutputFile <> '') or (Opt.OutDir <> '') or (Opt.Inputs.Count > 1);
 end;
 
-{ 寻找项目根目录与资源辅助 }
+{ 寻找项目根目录 }
 function FindRepoRoot: string;
 var
   dir: string;
@@ -178,6 +201,7 @@ var
   end;
 
 begin
+  Result := '';
   dir := GetCurrentDir;
   while (dir <> '') and (Length(dir) > 3) do
   begin
@@ -191,87 +215,6 @@ begin
     if LooksLikeRoot(dir) then
       Exit(dir);
     dir := ExtractFileDir(dir);
-  end;
-  Result := '';
-end;
-
-{ 构建并初始化渲染环境。
-  每次调用都会复位样式表（修复重复调用时样式与组件库脚本累积的缺陷）。 }
-procedure SetupEngine(AEngine: TXuiEngine; AScript: TXuiScript; var ABride: TXuiDomBridge;
-  const AInputFile: string; const ATheme: string; const AExtraCss: string);
-var
-  root, themePath, indexPath: string;
-  ext: string;
-  xmlContent: string;
-begin
-  root := FindRepoRoot;
-
-  // 1. 初始化脚本与 DOM 桥
-  if (AScript <> nil) and (ABride = nil) then
-  begin
-    ABride := TXuiDomBridge.Create(AEngine, AScript);
-    ABride.Install;
-    AEngine.AttachScript(AScript);
-  end;
-
-  // 2. 复位样式表：修复重载/切主题时样式累积（M9-P0 修复项）
-  AEngine.ClearStyleSheets;
-
-  // 3. 加载内置主题（深色模式在浅色基底上叠加覆盖 Token）
-  if root <> '' then
-  begin
-    themePath := root + PathDelim + 'ui' + PathDelim + 'theme' + PathDelim + 'lui-light.css';
-    if FileExists(themePath) then
-      AEngine.LoadStyleSheetFromFile(themePath);
-
-    if SameText(ATheme, 'dark') then
-    begin
-      themePath := root + PathDelim + 'ui' + PathDelim + 'theme' + PathDelim + 'lui-dark.css';
-      if FileExists(themePath) then
-        AEngine.LoadStyleSheetFromFile(themePath);
-    end;
-
-    indexPath := root + PathDelim + 'ui' + PathDelim + 'index.ts';
-    if (AScript <> nil) and FileExists(indexPath) then
-    begin
-      try
-        AScript.RunFile(indexPath);
-      except
-        on E: Exception do
-          WriteLn('警告: 组件库加载提示: ' + E.Message);
-      end;
-    end;
-  end;
-
-  // 4. 加载附加自定义 CSS 与智能关联样式
-  if (AExtraCss <> '') and FileExists(AExtraCss) then
-    AEngine.LoadStyleSheetFromFile(AExtraCss)
-  else
-  begin
-    // 未指定附加 CSS 时，尝试检测输入文件同目录下的关联样式
-    if FileExists(ChangeFileExt(AInputFile, '') + '-' + ATheme + '.css') then
-      AEngine.LoadStyleSheetFromFile(ChangeFileExt(AInputFile, '') + '-' + ATheme + '.css')
-    else if FileExists(ChangeFileExt(AInputFile, '') + '.css') then
-      AEngine.LoadStyleSheetFromFile(ChangeFileExt(AInputFile, '') + '.css');
-
-    if FileExists(ExtractFilePath(AInputFile) + 'nav-' + ATheme + '.css') then
-      AEngine.LoadStyleSheetFromFile(ExtractFilePath(AInputFile) + 'nav-' + ATheme + '.css');
-  end;
-
-  // 5. 加载输入文档
-  ext := LowerCase(ExtractFileExt(AInputFile));
-  if ext = '.svg' then
-  begin
-    // 纯 SVG 文件：包裹为全视口展示窗口
-    xmlContent := Format(
-      '<window style="margin:0;padding:0;background-color:#ffffff;display:flex;justify-content:center;align-items:center;">' +
-      '  <svg src="%s" width="100%%" height="100%%"/>' +
-      '</window>', [AInputFile]);
-    AEngine.LoadFromString(xmlContent);
-  end
-  else
-  begin
-    AEngine.LoadFromFile(AInputFile);
   end;
 end;
 
@@ -292,13 +235,12 @@ begin
   end;
 end;
 
-{ 离线渲染导出为图片 }
-function RenderToImage(const AInputFile, AOutputFile: string; AWidth, AHeight: Integer;
+{ 单页渲染：xui_app 装配（复位样式表 → 组件库主题 → ui/index.ts → 关联 CSS →
+  加载文档）→ 排版 → 绘制 → PNG }
+function RenderOne(const AInputFile, AOutputFile: string; AWidth, AHeight: Integer;
   const ATheme, AExtraCss: string; AVerbose: Boolean): Boolean;
 var
-  engine: TXuiEngine;
-  script: TXuiScript;
-  bridge: TXuiDomBridge;
+  app: TXuiApp;
   bmp: TBitmap;
   png: TPortableNetworkGraphic;
   renderer: TXuiCustomRenderer;
@@ -306,9 +248,7 @@ begin
   Result := False;
   if not EnsureOutputDir(AOutputFile) then
     Exit;
-  engine := TXuiEngine.Create;
-  script := TXuiScript.Create;
-  bridge := nil;
+  app := TXuiApp.CreateOwned;
   bmp := TBitmap.Create;
   png := TPortableNetworkGraphic.Create;
   try
@@ -326,15 +266,14 @@ begin
     renderer := TGdiRenderer.Create(bmp.Canvas);
     {$ENDIF}
 
-    engine.Renderer := renderer; // engine 拥有 renderer 实例
-    SetupEngine(engine, script, bridge, AInputFile, ATheme, AExtraCss);
+    app.Engine.Renderer := renderer; // engine 拥有 renderer 实例
 
     if AVerbose then
       WriteLn(Format('[信息] 正在排版与渲染: %s (%dx%d, 主题: %s)...', [AInputFile, AWidth, AHeight, ATheme]));
 
-    engine.Draw(bmp.Canvas, Types.Rect(0, 0, AWidth, AHeight));
+    app.Configure(AInputFile, ATheme, AExtraCss);
+    app.Engine.Draw(bmp.Canvas, Types.Rect(0, 0, AWidth, AHeight));
 
-    // 保存输出为 PNG 格式
     png.Assign(bmp);
     png.SaveToFile(AOutputFile);
     WriteLn(Format('[成功] 已渲染导出至: %s (%dx%d)', [AOutputFile, AWidth, AHeight]));
@@ -345,9 +284,86 @@ begin
   end;
   png.Free;
   bmp.Free;
-  if bridge <> nil then bridge.Free;
-  script.Free;
-  engine.Free;
+  app.Free;
+end;
+
+// 输出文件名推断（批量模式）：输出目录 + 输入主名 [-主题].png
+function BatchOutputName(const AOutDir, AInputFile, ATheme: string): string;
+begin
+  Result := IncludeTrailingPathDelimiter(AOutDir) +
+    ChangeFileExt(ExtractFileName(AInputFile), '') + '-' + ATheme + '.png';
+end;
+
+function IIf(const ACond: Boolean; const ATrue, AFalse: string): string;
+begin
+  if ACond then
+    Result := ATrue
+  else
+    Result := AFalse;
+end;
+
+function JsonEscape(const S: string): string;
+begin
+  Result := StringReplace(S, '\\', '\\\\', [rfReplaceAll]);
+  Result := StringReplace(Result, '"', '\\\"', [rfReplaceAll]);
+end;
+
+{ 批量执行：遍历输入 × 主题，逐项渲染并汇总结果（ADR 32 退出码分级） }
+procedure RunBatch;
+var
+  themes: array of string;
+  i, t, fails, total: Integer;
+  inp, outName: string;
+  itemsJson: string;
+begin
+  if Opt.Theme = 'both' then
+  begin
+    SetLength(themes, 2);
+    themes[0] := 'light';
+    themes[1] := 'dark';
+  end
+  else
+  begin
+    SetLength(themes, 1);
+    themes[0] := Opt.Theme;
+  end;
+
+  total := 0;
+  fails := 0;
+  itemsJson := '';
+  for i := 0 to Opt.Inputs.Count - 1 do
+  begin
+    inp := Opt.Inputs[i];
+    for t := Low(themes) to High(themes) do
+    begin
+      outName := BatchOutputName(Opt.OutDir, inp, themes[t]);
+      Inc(total);
+      if RenderOne(inp, outName, Opt.Width, Opt.Height, themes[t],
+        Opt.ExtraCss, Opt.Verbose and (not Opt.JsonOut)) then
+      begin
+        if Opt.JsonOut then
+          itemsJson := itemsJson + Format(
+            '  {"input": "%s", "output": "%s", "theme": "%s", "ok": true}%s',
+            [JsonEscape(inp), JsonEscape(StringReplace(outName, '\', '/', [rfReplaceAll])),
+             themes[t], iif(i < Opt.Inputs.Count - 1, ',', '')]) + LineEnding;
+      end
+      else
+      begin
+        Inc(fails);
+        if Opt.JsonOut then
+          itemsJson := itemsJson + Format(
+            '  {"input": "%s", "theme": "%s", "ok": false}%s',
+            [JsonEscape(inp), themes[t], iif(i < Opt.Inputs.Count - 1, ',', '')]) + LineEnding;
+      end;
+    end;
+  end;
+
+  if Opt.JsonOut then
+    WriteLn('{"total": ' + IntToStr(total) + ', "failed": ' + IntToStr(fails) +
+      ', "items": [' + LineEnding + itemsJson + ']}');
+
+  if fails > 0 then
+    Halt(3);   // 批量部分失败（ADR 32 退出码 3）
 end;
 
 { GUI 模式交互查看窗体 }
@@ -355,8 +371,7 @@ type
   TRenderViewerForm = class(TForm)
   private
     FHost: TXuiHost;
-    FScript: TXuiScript;
-    FBridge: TXuiDomBridge;
+    FApp: TXuiApp;
     FTheme: string;
     FInputFile: string;
     FExtraCss: string;
@@ -408,25 +423,22 @@ end;
 
 procedure TRenderViewerForm.DestroyAll;
 begin
-  // TXuiHost 自建并拥有 Engine/内部 Script/Bridge；viewer 另持有配套 Script/Bridge。
-  // 销毁顺序：先桥/脚本（引用 host 引擎），再宿主（级联释放引擎）。
-  if FBridge <> nil then FBridge.Free;
-  FBridge := nil;
-  if FScript <> nil then FScript.Free;
-  FScript := nil;
+  // TXuiApp 以附着模式引用宿主引擎/脚本；先释放门面再释放宿主（级联释放引擎）
+  FreeAndNil(FApp);
   FreeAndNil(FHost);
 end;
 
 procedure TRenderViewerForm.InitHost;
 begin
   if FHost = nil then
-    FHost := TXuiHost.Create(Self);
+    FHost := TXuiHost.Create(Self);   // TXuiHost 自建并拥有 Engine/Script/Bridge
   FHost.Align := alClient;
 
-  if FScript = nil then
-    FScript := TXuiScript.Create;
+  if FApp = nil then
+    FApp := TXuiApp.CreateAttached(FHost.Engine, FHost.Script);
 
-  SetupEngine(FHost.Engine, FScript, FBridge, FInputFile, FTheme, FExtraCss);
+  // M9：装配统一走门面（复位样式表 → 组件库主题 → ui/index.ts → 关联 CSS → 文档）
+  FApp.Configure(FInputFile, FTheme, FExtraCss);
   FHost.Invalidate;
 end;
 
@@ -492,34 +504,46 @@ begin
 
   if Opt.IsCliMode then
   begin
-    // CLI 模式：离线渲染并输出图片
-    if not RenderToImage(Opt.InputFile, Opt.OutputFile, Opt.Width, Opt.Height,
-      Opt.Theme, Opt.ExtraCss, Opt.Verbose) then
-      Halt(1);
-
     if Opt.Watch then
     begin
+      // --watch：先出一次图，再监听变更重跑
+      if (Opt.Inputs.Count = 1) and (Opt.OutputFile <> '') then
+        RenderOne(Opt.Inputs[0], Opt.OutputFile, Opt.Width, Opt.Height,
+          Opt.Theme, Opt.ExtraCss, Opt.Verbose and (not Opt.JsonOut))
+      else
+        RunBatch;
       WriteLn('[监听] 已开启文件监听模式，按 Ctrl+C 退出...');
-      lastAge := FileAge(Opt.InputFile);
+      lastAge := FileAge(Opt.Inputs[0]);
       while True do
       begin
         Sleep(300);
-        curAge := FileAge(Opt.InputFile);
+        curAge := FileAge(Opt.Inputs[0]);
         if (curAge <> -1) and (curAge <> lastAge) then
         begin
           lastAge := curAge;
-          WriteLn(Format('[变更检测] %s 发生改动，重新导出...', [Opt.InputFile]));
-          RenderToImage(Opt.InputFile, Opt.OutputFile, Opt.Width, Opt.Height,
-            Opt.Theme, Opt.ExtraCss, Opt.Verbose);
+          WriteLn(Format('[变更检测] %s 发生改动，重新导出...', [Opt.Inputs[0]]));
+          if (Opt.Inputs.Count = 1) and (Opt.OutputFile <> '') then
+            RenderOne(Opt.Inputs[0], Opt.OutputFile, Opt.Width, Opt.Height,
+              Opt.Theme, Opt.ExtraCss, Opt.Verbose and (not Opt.JsonOut))
+          else
+            RunBatch;
         end;
       end;
-    end;
+    end
+    else if (Opt.Inputs.Count = 1) and (Opt.OutputFile <> '') then
+    begin
+      if not RenderOne(Opt.Inputs[0], Opt.OutputFile, Opt.Width, Opt.Height,
+        Opt.Theme, Opt.ExtraCss, Opt.Verbose) then
+        Halt(1);
+    end
+    else
+      RunBatch;
   end
   else
   begin
-    // GUI 模式：窗口预览与交互
+    // GUI 模式：窗口预览与交互（单输入）
     Application.Initialize;
-    viewer := TRenderViewerForm.CreateViewer(Opt.InputFile, Opt.Width, Opt.Height,
+    viewer := TRenderViewerForm.CreateViewer(Opt.Inputs[0], Opt.Width, Opt.Height,
       Opt.Theme, Opt.ExtraCss, Opt.Watch);
     viewer.Show;
     Application.Run;
