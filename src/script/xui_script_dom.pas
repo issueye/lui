@@ -78,6 +78,11 @@ type
     procedure Install;
     // DOM 变更前调用：作废全部桥与监听（节点可能被释放）
     procedure ResetBridges;
+    // 绑定引擎注入：@event="expr" 的监听注册/注销（AEventName 形如 'click'）
+    procedure BindNodeEvent(ANode: TXuiNode; const AEventName: string;
+      const AHandler: TXuiJsValue; ABind: Boolean);
+    // 文档重建：桥缓存与监听表随节点一起作废，然后重扫绑定
+    procedure HandleResetBindings;
     function NodeValue(ANode: TXuiNode): TXuiJsValue;
     property DocumentObject: TXuiJsObject read FDocumentObj;
   end;
@@ -125,6 +130,33 @@ begin
   FListeners.Clear;
   if FBindingEngine <> nil then
     FBindingEngine.ResetScan;
+end;
+
+// @event="expr"：注册/注销节点监听（复用 node.on 的监听表；同类事件只保留最后一个）
+procedure TXuiDomBridge.BindNodeEvent(ANode: TXuiNode; const AEventName: string;
+  const AHandler: TXuiJsValue; ABind: Boolean);
+var
+  idx: Integer;
+  kind: TXuiEventKind;
+  listener: TXuiJsListener;
+begin
+  if ANode = nil then
+    Exit;
+  kind := KindFromName(AEventName);
+  if FindListener(ANode, kind, idx) then
+    FListeners.Delete(idx);
+  if not ABind then
+    Exit;
+  listener := TXuiJsListener.Create;
+  listener.Node := ANode;
+  listener.Kind := kind;
+  listener.Handler := AHandler;
+  FListeners.Add(listener);
+end;
+
+procedure TXuiDomBridge.HandleResetBindings;
+begin
+  ResetBridges;   // 旧节点上的桥缓存与监听表作废（ResetScan 在内部一并调用）
 end;
 
 function TXuiDomBridge.FindBridge(ANode: TXuiNode): TXuiNodeBridge;
@@ -456,8 +488,9 @@ var
 begin
   // M7：绑定引擎（扫描 x-* 绑定并在安全点刷新）
   FBindingEngine := TXuiBindingEngine.Create(FEngine, FScript);
+  FBindingEngine.OnNodeEvent := @BindNodeEvent;   // @event：绑定引擎注册/注销节点监听
   FScript.OnFlushReactive := @FBindingEngine.FlushIfDirty;
-  FScript.OnResetBindings := @FBindingEngine.ResetScan;
+  FScript.OnResetBindings := @HandleResetBindings;   // 换文档：桥/监听/绑定登记一并作废
   // document：find / add / body
   doc := FScript.Interp.CreateHostObject('Document');
   doc.SetOwn('find', FScript.Interp.CreateHostFunction('find', @DocumentMethod));

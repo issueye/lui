@@ -36,7 +36,11 @@ uses
 
 type
   TXuiBindKind = (bkText, bkClass, bkDisabled, bkShow, bkIf, bkModel, bkFor,
-    bkComponent, bkProp);
+    bkComponent, bkProp, bkEvent);
+
+  // DOM 桥注入的节点监听注册/注销（AEventName 形如 'click'；ABind=False 表示注销）
+  TXuiBindNodeEventProc = procedure(ANode: TXuiNode; const AEventName: string;
+    const AHandler: TXuiJsValue; ABind: Boolean) of object;
 
   // prop 声明项（M7-4/M7-5）：props 数组形式 = 只声明名字；对象形式可带 type/required/default
   TXuiPropSpec = class
@@ -104,9 +108,22 @@ type
     PropSpec: TXuiPropSpec;  // bkProp：声明项（弱引用；nil = 未声明，不校验）
     PropsObj: TXuiJsObject;  // bkProp：目标属性容器（reactive）
     PropName: string;        // bkProp：属性名
+    EventName: string;       // bkEvent：事件名（'click'/'input'/…）
+    EventEntry: TObject;     // bkEvent：TXuiBindEvent（弱引用；引擎注册表自有）
     Scope: TXuiJsEnv;        // 作用域（v-for 克隆；nil = 全局）
     Parts: TStringList;      // x-text 插值：偶数=字面量（Objects=nil），奇数=表达式（Objects=1）
     destructor Destroy; override;
+  end;
+
+  // 事件处理器（M8 ADR 22：@event="expr"）
+  // Fn 是注册给 DOM 桥的宿主函数；事件触发时在绑定作用域内求值表达式，结果是函数则调用并传入事件对象
+  TXuiBindEvent = class
+  public
+    Fn: TXuiJsFunction;      // 弱引用（对象由解释器持有；GC 经 MarkScopes 标记）
+    FnValue: TXuiJsValue;
+    Binding: TXuiBinding;    // 弱引用
+    Node: TXuiNode;          // 弱引用
+    EventName: string;
   end;
 
   TXuiBindingEngine = class
@@ -116,6 +133,8 @@ type
     FBindings: TObjectList;   // TXuiBinding（自有）
     FCache: TObjectList;      // TXuiBindProg（自有，按表达式源缓存）
     FComponents: TObjectList; // TXuiComponentDef（自有）
+    FEvents: TObjectList;     // TXuiBindEvent（自有；@event 的处理器注册表）
+    FOnNodeEvent: TXuiBindNodeEventProc;
     FScanned: Boolean;
     function CompileExpr(const ASrc: string): TXuiJsNode;
     function EvalOn(const ASrc: string; AScope: TXuiJsEnv): TXuiJsValue;
@@ -127,7 +146,12 @@ type
     procedure ApplyFor(ABinding: TXuiBinding);
     procedure ApplyForKeyed(ABinding: TXuiBinding);
     procedure ApplyNewBindings(AFromIndex: Integer);
-    procedure MarkScopes;     // GC 根：v-for 作用域环境
+    procedure BindEvent(ABinding: TXuiBinding);
+    procedure UnbindEvent(ABinding: TXuiBinding);
+    procedure DeleteBinding(AIndex: Integer);
+    function NativeEventDispatch(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
+    procedure MarkScopes;     // GC 根：v-for 作用域环境 / 事件处理器函数
     procedure PruneOwner(AOwner: TXuiBinding);
     procedure PruneCloneSubtree(ACloneRoot: TXuiNode);
     procedure PruneNodeBindings(ANode: TXuiNode; AKeep: TXuiBinding);
@@ -155,6 +179,8 @@ type
     procedure Flush;
     procedure ResetScan;      // 文档重建（热重载等）后重扫
     function HandleModelInput(ANode: TXuiNode): Boolean;   // xevInput 回写
+    // DOM 桥注入：注册/注销节点监听（AEventName 形如 'click'）
+    property OnNodeEvent: TXuiBindNodeEventProc read FOnNodeEvent write FOnNodeEvent;
   end;
 
 implementation
@@ -263,6 +289,51 @@ begin
     end;
 end;
 
+// 事件表达式属性的识别（M8 ADR 22）：
+//   x-onclick / x-on:click / x-oninput …   → 事件名（'click'/'input'…）
+// XML 属性名不能以 '@' 开头（Vue 的 @click 在 XML 里非法），故用 x-on<事件属性名> 形式，
+// 与既有 x-text/x-if/x-for 家族一致；组件宿主上它等价于回调 prop（onClick…）。
+function OnAttrEventName(const AAttrName: string; out AEventName: string): Boolean;
+var
+  n: string;
+begin
+  AEventName := '';
+  n := LowerCase(AAttrName);
+  if Pos('x-on', n) <> 1 then
+    Exit(False);
+  n := Copy(n, 5, MaxInt);          // 去掉 'x-on'
+  if (n <> '') and (n[1] = ':') then
+    Delete(n, 1, 1);
+  if n = '' then
+    Exit(False);
+  AEventName := n;
+  Result := True;
+end;
+
+// 事件名 → 首字母大写驼峰（'click' → 'Click'；'model-value' → 'ModelValue'）
+function CamelizeName(const AName: string): string;
+var
+  i: Integer;
+  upper: Boolean;
+begin
+  Result := AName;
+  upper := True;
+  i := 1;
+  while i <= Length(Result) do
+    if Result[i] = '-' then
+    begin
+      Delete(Result, i, 1);
+      upper := True;
+    end
+    else
+    begin
+      if upper and (Result[i] >= 'a') and (Result[i] <= 'z') then
+        Result[i] := Chr(Ord(Result[i]) - 32);
+      upper := False;
+      Inc(i);
+    end;
+end;
+
 procedure StripSlotAttr(ANode: TXuiNode);
 var
   i: Integer;
@@ -321,6 +392,7 @@ begin
   FBindings := TObjectList.Create(True);
   FCache := TObjectList.Create(True);
   FComponents := TObjectList.Create(True);
+  FEvents := TObjectList.Create(True);
   FScanned := False;
   FScript.Interp.AddOnCollectRoots(@MarkScopes);
   FScript.Interp.GlobalObject.SetOwn('component',
@@ -329,6 +401,7 @@ end;
 
 destructor TXuiBindingEngine.Destroy;
 begin
+  FEvents.Free;
   FComponents.Free;
   FCache.Free;
   FBindings.Free;
@@ -518,9 +591,92 @@ begin
 end;
 
 procedure TXuiBindingEngine.ResetScan;
+var
+  i: Integer;
 begin
   FScanned := False;
+  for i := 0 to FBindings.Count - 1 do
+    UnbindEvent(TXuiBinding(FBindings[i]));   // @event：注销监听并释放处理器
   FBindings.Clear;
+end;
+
+// 绑定删除的唯一出口：@event 需在此注销 DOM 桥监听（节点释放/克隆剪除都走这里）
+procedure TXuiBindingEngine.DeleteBinding(AIndex: Integer);
+begin
+  UnbindEvent(TXuiBinding(FBindings[AIndex]));
+  FBindings.Delete(AIndex);
+end;
+
+// @event="expr"：把宿主函数注册到节点事件上（只注册一次；表达式的求值在触发时进行，
+// 走绑定作用域，因此组件模板/迭代克隆内都能用）
+procedure TXuiBindingEngine.BindEvent(ABinding: TXuiBinding);
+var
+  entry: TXuiBindEvent;
+begin
+  if (ABinding.EventEntry <> nil) or (ABinding.Node = nil) or (ABinding.EventName = '') then
+    Exit;
+  entry := TXuiBindEvent.Create;
+  entry.Binding := ABinding;
+  entry.Node := ABinding.Node;
+  entry.EventName := ABinding.EventName;
+  entry.FnValue := FScript.Interp.CreateHostFunction('@' + entry.EventName,
+    @NativeEventDispatch);
+  entry.Fn := TXuiJsFunction(entry.FnValue.Obj);
+  ABinding.EventEntry := entry;
+  FEvents.Add(entry);
+  if Assigned(FOnNodeEvent) then
+    FOnNodeEvent(entry.Node, entry.EventName, entry.FnValue, True);
+end;
+
+procedure TXuiBindingEngine.UnbindEvent(ABinding: TXuiBinding);
+var
+  i: Integer;
+  entry: TXuiBindEvent;
+begin
+  if ABinding.EventEntry = nil then
+    Exit;
+  entry := TXuiBindEvent(ABinding.EventEntry);
+  ABinding.EventEntry := nil;
+  if Assigned(FOnNodeEvent) then
+    FOnNodeEvent(entry.Node, entry.EventName, entry.FnValue, False);
+  for i := 0 to FEvents.Count - 1 do
+    if FEvents[i] = entry then
+    begin
+      FEvents.Delete(i);
+      Break;
+    end;
+end;
+
+// 事件触发：在该绑定的作用域内求值；结果是函数则调用（传事件对象），否则视为语句表达式
+function TXuiBindingEngine.NativeEventDispatch(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+var
+  i: Integer;
+  b: TXuiBinding;
+  v: TXuiJsValue;
+begin
+  Result := FScript.Undefined;
+  for i := 0 to FEvents.Count - 1 do
+    if TXuiBindEvent(FEvents[i]).Fn = AFn then
+    begin
+      b := TXuiBindEvent(FEvents[i]).Binding;
+      if (b = nil) or (b.Expr = '') then
+        Exit;
+      try
+        v := EvalOn(b.Expr, b.Scope);
+        if FScript.Interp.IsCallable(v) then
+          Result := FScript.Interp.Call(v, AArgs);
+      except
+        // 组件/页面脚本写错不该崩应用：按脚本错误上报（与绑定求值一致）
+        on E: EXuiJsThrow do
+          FScript.ReportError('', '事件表达式错误（' + b.Expr + '）：' +
+            FScript.Interp.ToStringValue(E.Value), ssRuntime);
+        on E: Exception do
+          FScript.ReportError('', '事件表达式错误（' + b.Expr + '）：' + E.Message,
+            ssRuntime);
+      end;
+      Exit;
+    end;
 end;
 
 procedure TXuiBindingEngine.MarkScopes;
@@ -548,6 +704,9 @@ begin
       for j := 0 to TXuiBinding(FBindings[i]).Items.Count - 1 do
         FScript.Interp.MarkRootEnv(TXuiForItem(TXuiBinding(FBindings[i]).Items[j]).Env);
   end;
+  // @event 处理器函数保活（注册表由绑定引擎持有，不经 DOM 桥的宿主根）
+  for k := 0 to FEvents.Count - 1 do
+    FScript.Interp.MarkRootValue(TXuiBindEvent(FEvents[k]).FnValue);
 end;
 
 // 表达式 → AST（按源文缓存；解析失败上报 ssCompile 并返回 nil）
@@ -641,7 +800,7 @@ procedure TXuiBindingEngine.ScanNode(ANode: TXuiNode; AScope: TXuiJsEnv;
   AOwner: TXuiBinding; AOwnerRoot: TXuiNode);
 var
   i, ifIdx: Integer;
-  attr, expr, itemName, keyExpr: string;
+  attr, expr, itemName, keyExpr, evName: string;
   kind: TXuiBindKind;
   b: TXuiBinding;
   tpl: TXuiNode;
@@ -749,6 +908,13 @@ begin
   for i := 0 to ANode.Attributes.Count - 1 do
   begin
     attr := ANode.Attributes.Names[i];
+    if OnAttrEventName(attr, evName) then
+    begin
+      // x-onclick="expr"（M8 ADR 22）：事件触发时在绑定作用域求值；结果是函数则调用
+      b := RegBinding(bkEvent, Trim(ANode.Attributes.ValueFromIndex[i]));
+      b.EventName := evName;
+      Continue;
+    end;
     if not BindAttrName(attr, kind) then
     begin
       // 普通 text 属性含双花括号插值 → 也登记为文本绑定
@@ -855,6 +1021,11 @@ begin
       EvalOn(ABinding.Expr, ABinding.Scope), False, ABinding.CompName);
     Exit;
   end;
+  if ABinding.Kind = bkEvent then
+  begin
+    BindEvent(ABinding);   // 注册一次；后续触发在 NativeEventDispatch 内求值
+    Exit;
+  end;
   if (ABinding.Node = nil) or (ABinding.Kind in [bkFor, bkComponent]) then
     Exit;
   if (ABinding.Kind <> bkIf) and (ABinding.Node.Parent = nil) then
@@ -948,11 +1119,12 @@ var
   env: TXuiJsEnv;
   props: TXuiJsObject;
   doc: TXuiDocument;
-  attrName, attrValue, propName, slotName: string;
+  attrName, attrValue, propName, slotName, evName: string;
   pb: TXuiBinding;
   spec: TXuiPropSpec;
   dv: TXuiJsValue;
   placed: Boolean;
+  isEventAttr: Boolean;
 begin
   def := TXuiComponentDef(ABinding.CompDef);
   compNode := ABinding.Node;
@@ -967,12 +1139,17 @@ begin
   begin
     attrName := compNode.Attributes.Names[i];
     attrValue := compNode.Attributes.ValueFromIndex[i];
-    propName := PropNameOfAttr(attrName);   // :on-tap → onTap（kebab 转 camel）
+    // 组件宿主上的 x-onclick="Expr" = 回调 prop（onClick/onChange…，ADR 22 父级侧写法）
+    isEventAttr := OnAttrEventName(attrName, evName);
+    if isEventAttr then
+      propName := 'on' + CamelizeName(evName)
+    else
+      propName := PropNameOfAttr(attrName);   // :on-tap → onTap（kebab 转 camel）
     if (propName = '') or SameText(attrName, 'id') or SameText(attrName, 'class') or
        SameText(attrName, 'x-key') or SameText(attrName, 'slot') then
       Continue;   // id/class 由宿主转移到实例根；x-key/slot 与 props 无关
     spec := def.FindSpec(propName);
-    if (attrName <> '') and (attrName[1] = ':') then
+    if isEventAttr or ((attrName <> '') and (attrName[1] = ':')) then
     begin
       // 动态属性：登记 bkProp（父作用域求值 → 写 props，类型校验随每次刷新）
       pb := TXuiBinding.Create;
@@ -1276,7 +1453,7 @@ begin
     if TXuiBinding(FBindings[i]).Owner = AOwner then
     begin
       PruneOwner(TXuiBinding(FBindings[i]));
-      FBindings.Delete(i);
+      DeleteBinding(i);
     end;
 end;
 
@@ -1302,7 +1479,7 @@ begin
         IsUnder(TXuiBinding(FBindings[i]).Node, ACloneRoot)) then
     begin
       PruneOwner(TXuiBinding(FBindings[i]));
-      FBindings.Delete(i);
+      DeleteBinding(i);
     end;
 end;
 
@@ -1317,7 +1494,7 @@ begin
        IsUnder(TXuiBinding(FBindings[i]).Node, ANode) then
     begin
       PruneOwner(TXuiBinding(FBindings[i]));
-      FBindings.Delete(i);
+      DeleteBinding(i);
     end;
 end;
 

@@ -8930,6 +8930,50 @@ begin
       Check(Pos('not-reached', sink.Log.Text) = 0, 'watch 求值异常不执行回调');
       src := RunAndFlush('st.a = st.a + 1;');
       Check(Pos('good', src) > 0, 'watch 异常不阻断其它监听器与刷新链路');
+
+      // ---- M8-0 ADR 22：x-onclick="expr" 事件表达式（组件对外抛事件的地基）----
+
+      // 表达式与全局函数名两种写法（附：x-on:click 冒号别名）
+      RunAndFlush(
+        'const ev = reactive({ n: 0, calls: 0 });' + #10 +
+        'function OnTap() { ev.calls = ev.calls + 1; }');
+      engine.LoadFromString(
+        '<window>' +
+        '<button id="ev1" x-onclick="ev.n = ev.n + 1" text="b1"/>' +
+        '<button id="ev2" x-on:click="OnTap" text="b2"/>' +
+        '<label id="ev3" text="n={{ev.n}}/c={{ev.calls}}"/>' +
+        '</window>');
+      DrawEngine(engine);
+      ClickNode(engine, engine.Document.FindElementById('ev1'));
+      ClickNode(engine, engine.Document.FindElementById('ev2'));
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('ev3');
+      Check((node <> nil) and (node.Text = 'n=1/c=1'),
+        'x-onclick：表达式（赋值）与函数名两种写法都触发（含 x-on:click 别名）');
+
+      // 组件模板内用回调 prop：父级 x-onclick="Fn" 映射为 onClick prop
+      RunAndFlush(
+        'const cev = reactive({ taps: 0 });' + #10 +
+        'function OnHostTap() { cev.taps = cev.taps + 1; }' + #10 +
+        'component("ui-tap", { props: { onClick: { type: "function" } }, ' +
+        'template: "<panel class=\"tapbox\" x-onclick=\"props.onClick\"><slot/></panel>" });');
+      engine.LoadFromString(
+        '<window><ui-tap id="tap1" x-onclick="OnHostTap"><label id="tap-lbl" text="点我"/></ui-tap>' +
+        '<label id="tap-cnt" text="taps={{cev.taps}}"/></window>');
+      DrawEngine(engine);
+      ClickNode(engine, engine.Document.FindElementById('tap-lbl'));
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('tap-cnt');
+      Check((node <> nil) and (node.Text = 'taps=1'),
+        '组件 x-onclick：模板内 props.onClick 触发父级函数（子→父事件链路）');
+
+      // 表达式出错只上报，不崩应用
+      errs := script.ErrorCount;
+      engine.LoadFromString(
+        '<window><button id="ev4" x-onclick="ev.nope.deep" text="boom"/></window>');
+      DrawEngine(engine);
+      ClickNode(engine, engine.Document.FindElementById('ev4'));
+      Check(script.ErrorCount > errs, 'x-onclick：表达式出错上报为脚本错误（不崩应用）');
     finally
       bridge.Free;
     end;
