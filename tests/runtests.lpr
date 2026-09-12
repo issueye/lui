@@ -8128,7 +8128,7 @@ begin
     // fs 往返（含中文内容；路径用正斜杠避免 JS 字符串转义）
 
 
-    jsPath := StringReplace(tmpFile, '', '/', [rfReplaceAll]);
+    jsPath := StringReplace(tmpFile, PathDelim, '/', [rfReplaceAll]);
 
 
     src := RunAndPump(
