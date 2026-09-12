@@ -40,7 +40,7 @@ uses
 
 type
   TXuiBindKind = (bkText, bkClass, bkDisabled, bkShow, bkIf, bkModel, bkFor,
-    bkComponent, bkProp, bkEvent, bkAttr);
+    bkComponent, bkProp, bkEvent, bkAttr, bkPopup);
 
   // DOM 桥注入的节点监听注册/注销（AEventName 形如 'click'；ABind=False 表示注销）
   TXuiBindNodeEventProc = procedure(ANode: TXuiNode; const AEventName: string;
@@ -164,6 +164,7 @@ type
     procedure ApplyForKeyed(ABinding: TXuiBinding);
     procedure ApplyNewBindings(AFromIndex: Integer);
     procedure BindEvent(ABinding: TXuiBinding);
+    procedure ApplyPopup(ABinding: TXuiBinding);
     procedure UnbindEvent(ABinding: TXuiBinding);
     procedure UnbindModel(ABinding: TXuiBinding);
     function BindComponentModel(ABinding: TXuiBinding; AProps: TXuiJsObject;
@@ -205,6 +206,9 @@ type
     procedure Flush;
     procedure ResetScan;      // 文档重建（热重载等）后重扫
     function HandleModelInput(ANode: TXuiNode): Boolean;   // xevInput 回写
+    // 运行时新增子树（document.add / node.add）：就地登记绑定与组件实例；
+    // 作用域从最近的祖先绑定的作用域继承（挂进组件实例内时可见其 props）
+    procedure BindRuntimeSubtree(ANode: TXuiNode);
     // DOM 桥注入：注册/注销节点监听（AEventName 形如 'click'）
     property OnNodeEvent: TXuiBindNodeEventProc read FOnNodeEvent write FOnNodeEvent;
   end;
@@ -261,6 +265,8 @@ begin
   else if (n = 'placeholder') or (n = 'password') or (n = 'maxlength') or
           (n = 'style') then
     AKind := bkAttr      // M8：运行时属性/样式（style 由引擎处理，其余交行为识别）
+  else if n = 'popup' then
+    AKind := bkPopup     // M8：声明式浮层（挂到文档根 + 定位；placement/offset 用普通属性给）
   else
     Result := False;
 end;
@@ -724,6 +730,32 @@ begin
   FBindings.Clear;
 end;
 
+// 运行时新增子树：就地登记（不整树重扫——整树重扫会把已实例化的组件当普通节点、丢失 props 作用域）
+procedure TXuiBindingEngine.BindRuntimeSubtree(ANode: TXuiNode);
+var
+  i, scanFrom: Integer;
+  p: TXuiNode;
+  scope: TXuiJsEnv;
+begin
+  if ANode = nil then
+    Exit;
+  scope := nil;
+  p := ANode.Parent;
+  while (p <> nil) and (scope = nil) do
+  begin
+    for i := 0 to FBindings.Count - 1 do
+      if TXuiBinding(FBindings[i]).Node = p then
+      begin
+        scope := TXuiBinding(FBindings[i]).Scope;
+        Break;
+      end;
+    p := p.Parent;
+  end;
+  scanFrom := FBindings.Count;
+  ScanNode(ANode, scope, nil, nil);
+  ApplyNewBindings(scanFrom);
+end;
+
 // 绑定删除的唯一出口：@event / x-model 的运行时资源在此释放
 procedure TXuiBindingEngine.DeleteBinding(AIndex: Integer);
 begin
@@ -894,6 +926,35 @@ begin
       FModels.Delete(i);
       Break;
     end;
+end;
+
+// 声明式浮层（M8 ADR 24 可选增强）：x-popup="'anchorId'"（可空）+ x-popup-placement / x-popup-offset-x/y。
+// 每轮刷新：从模板父节点摘到文档根（只做一次），再按当前布局重新定位（浮层尺寸变化后自校正；
+// PlacePopup 内部对样式写入做了变化判断，重复刷新不会churn）。与 x-if 配合即"显示时浮出、隐藏时收回"。
+procedure TXuiBindingEngine.ApplyPopup(ABinding: TXuiBinding);
+var
+  anchor: TXuiNode;
+  aid, placement: string;
+  ox, oy: Integer;
+begin
+  if (ABinding.Node = nil) or (FEngine.Document = nil) or
+     (FEngine.Document.Root = nil) then
+    Exit;
+  if ABinding.Node.Parent = nil then
+    Exit;   // 被 x-if 摘除（隐藏）时不浮出；恢复显示后本绑定会重新浮出并定位
+  anchor := nil;
+  if Trim(ABinding.Expr) <> '' then
+  begin
+    aid := Trim(FScript.ToStringValue(EvalOn(ABinding.Expr, ABinding.Scope)));
+    if aid <> '' then
+      anchor := FEngine.Document.FindElementById(aid);
+  end;
+  placement := Trim(AttrValueOf(ABinding.Node, 'x-popup-placement'));
+  ox := StrToIntDef(Trim(AttrValueOf(ABinding.Node, 'x-popup-offset-x')), 0);
+  oy := StrToIntDef(Trim(AttrValueOf(ABinding.Node, 'x-popup-offset-y')), 0);
+  if ABinding.Node.Parent <> FEngine.Document.Root then
+    FEngine.AttachToOverlay(ABinding.Node);
+  FEngine.PlacePopup(ABinding.Node, anchor, placement, ox, oy);
 end;
 
 // 事件触发：在该绑定的作用域内求值；结果是函数则调用（传事件对象），否则视为语句表达式；
@@ -1096,7 +1157,10 @@ begin
       b.Kind := bkIf;
       b.Expr := Trim(ANode.Attributes.ValueFromIndex[i]);
       b.ParentRef := ANode.Parent;
-      b.Index := ANode.Parent.IndexOfChild(ANode);
+      if ANode.Parent <> nil then
+        b.Index := ANode.Parent.IndexOfChild(ANode)
+      else
+        b.Index := -1;   // 模板根在扫描期尚未挂入文档（父为 nil）
       b.Scope := AScope;
       b.Owner := AOwner;
       b.OwnerRoot := AOwnerRoot;
@@ -1287,6 +1351,11 @@ begin
   if ABinding.Kind = bkEvent then
   begin
     BindEvent(ABinding);   // 注册一次；后续触发在 NativeEventDispatch 内求值
+    Exit;
+  end;
+  if ABinding.Kind = bkPopup then
+  begin
+    ApplyPopup(ABinding);
     Exit;
   end;
   if (ABinding.Node = nil) or (ABinding.Kind in [bkFor, bkComponent]) then

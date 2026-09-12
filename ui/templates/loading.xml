@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-loading：加载提示（无 CSS animation，用字形 + 文案） -->
+<panel class="ui-loading">
+  <label class="ui-loading__spinner" text="◌"/>
+  <label class="ui-loading__text" :text="props.text"/>
+</panel>

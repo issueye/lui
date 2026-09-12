@@ -460,3 +460,239 @@ window {
 .ui-form-item.is-error .ui-input__field {
   border-color: var(--ui-color-danger);
 }
+
+/* ---------- 提示 / 加载 ---------- */
+
+.ui-alert {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border-radius: var(--ui-radius-sm);
+  background-color: var(--ui-color-fill);
+  border: 1px solid var(--ui-color-border-light);
+}
+
+.ui-alert__title {
+  font-size: var(--ui-font-size);
+  font-weight: bold;
+  color: var(--ui-color-text);
+  margin-bottom: 2px;
+}
+
+.ui-alert__text {
+  font-size: var(--ui-font-size-sm);
+  color: var(--ui-color-text-sub);
+}
+
+.ui-alert--success {
+  background-color: #eafaf0;
+  border-color: #b7e6c8;
+}
+
+.ui-alert--warning {
+  background-color: #fff7e6;
+  border-color: #ffdf9e;
+}
+
+.ui-alert--danger {
+  background-color: #fdecec;
+  border-color: #f7c1c1;
+}
+
+.ui-alert--info {
+  background-color: #eef4ff;
+  border-color: #c9dcff;
+}
+
+.ui-loading {
+  display: flex;
+  align-items: center;
+  column-gap: 6px;
+}
+
+.ui-loading__spinner {
+  font-size: var(--ui-font-size-lg);
+  color: var(--ui-color-primary);
+}
+
+.ui-loading__text {
+  font-size: var(--ui-font-size-sm);
+  color: var(--ui-color-text-sub);
+}
+
+/* ---------- 对话框 / 抽屉（根挂到文档根，宽高铺满整窗，内部再居中/靠边） ---------- */
+
+.ui-dialog {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.ui-dialog__mask {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.35);
+}
+
+.ui-dialog__panel {
+  background-color: var(--ui-color-bg);
+  border: 1px solid var(--ui-color-border-light);
+  border-radius: var(--ui-radius);
+  padding: 12px;
+}
+
+.ui-dialog__head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.ui-dialog__title {
+  flex: 1;
+  font-size: var(--ui-font-size-lg);
+  font-weight: bold;
+  color: var(--ui-color-text);
+}
+
+.ui-dialog__close,
+.ui-drawer__close {
+  width: 20px;
+  font-size: var(--ui-font-size);
+  color: var(--ui-color-text-sub);
+}
+
+.ui-dialog__close:hover,
+.ui-drawer__close:hover {
+  color: var(--ui-color-primary);
+}
+
+.ui-dialog__body {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 10px;
+}
+
+.ui-dialog__foot {
+  display: flex;
+  column-gap: 8px;
+  justify-content: flex-end;
+}
+
+.ui-drawer {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+  height: 100%;
+}
+
+.ui-drawer__mask {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.35);
+}
+
+.ui-drawer__panel {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--ui-color-bg);
+  border: 1px solid var(--ui-color-border-light);
+  padding: 12px;
+}
+
+.ui-drawer__head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.ui-drawer__title {
+  flex: 1;
+  font-size: var(--ui-font-size-lg);
+  font-weight: bold;
+  color: var(--ui-color-text);
+}
+
+.ui-drawer__body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- 命令式轻提示 / 通知 / 消息框 ---------- */
+
+.ui-message {
+  padding: 8px 14px;
+  background-color: var(--ui-color-bg);
+  border: 1px solid var(--ui-color-border-light);
+  border-radius: var(--ui-radius);
+}
+
+.ui-message__text {
+  font-size: var(--ui-font-size);
+  color: var(--ui-color-text);
+}
+
+.ui-notification {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 14px;
+  background-color: var(--ui-color-bg);
+  border: 1px solid var(--ui-color-border-light);
+  border-radius: var(--ui-radius);
+}
+
+.ui-notification__title {
+  font-size: var(--ui-font-size);
+  font-weight: bold;
+  color: var(--ui-color-text);
+  margin-bottom: 2px;
+}
+
+.ui-notification__text {
+  font-size: var(--ui-font-size-sm);
+  color: var(--ui-color-text-sub);
+}
+
+.ui-message-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ui-message-box__mask {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.35);
+}
+
+.ui-message-box__panel {
+  width: 280px;
+  padding: 14px;
+  background-color: var(--ui-color-bg);
+  border: 1px solid var(--ui-color-border-light);
+  border-radius: var(--ui-radius);
+}
+
+.ui-message-box__title {
+  font-size: var(--ui-font-size-lg);
+  font-weight: bold;
+  color: var(--ui-color-text);
+  margin-bottom: 6px;
+}
+
+.ui-message-box__text {
+  font-size: var(--ui-font-size);
+  color: var(--ui-color-text-sub);
+  margin-bottom: 12px;
+}

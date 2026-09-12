@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-dialog：模态对话框。根节点 x-if 控制显示、x-popup 挂到文档根（覆盖整窗 + 居中面板）；
+     遮罩点击 / 关闭按钮走 onClose，确定走 onOk（均为回调 props）。 -->
+<panel class="ui-dialog" x-if="props.visible" x-popup="" x-popup-placement="center">
+  <panel class="ui-dialog__mask" x-onclick="UiDialogClose(props)"/>
+  <panel class="ui-dialog__panel" :style="'width:' + props.width + 'px'">
+    <panel class="ui-dialog__head">
+      <label class="ui-dialog__title" :text="props.title"/>
+      <label class="ui-dialog__close" text="✕" x-onclick="UiDialogClose(props)"/>
+    </panel>
+    <panel class="ui-dialog__body">
+      <slot/>
+    </panel>
+    <panel class="ui-dialog__foot">
+      <ui-button id="ui-dialog-cancel" text="取消" x-onclick="UiDialogClose(props)"/>
+      <ui-button id="ui-dialog-ok" text="确定" type="primary" x-onclick="UiDialogOk(props)"/>
+    </panel>
+  </panel>
+</panel>

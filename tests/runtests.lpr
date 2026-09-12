@@ -8593,6 +8593,70 @@ begin
       Check(Pos('num=2', src) > 0, '组件库：ui-input-number 步进（− 1 步）');
       src := RunFlush('console.log("v=" + (uiFormValidate("f1") ? "ok" : "bad"));');
       Check(Pos('v=ok', src) > 0, '组件库：uiFormValidate 全部通过');
+
+      // ---- M8-3 前置：x-popup 声明式浮层 / node.style / 运行时新增子树 ----
+      RunFlush('const dlgState = reactive({ open: true });');
+      engine.LoadFromString(
+        '<window><panel id="dlg-host" x-if="dlgState.open" x-popup="" x-popup-placement="center"' +
+        ' style="width:80px; height:40px"><label text="浮层"/></panel></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('dlg-host');
+      Check((node <> nil) and (node.Parent = engine.Document.Root) and
+        (node.Style.Position = xposAbsolute), 'x-popup：浮层节点挂到文档根并绝对定位');
+      RunFlush('dlgState.open = false;');
+      DrawEngine(engine);
+      Check(engine.Document.FindElementById('dlg-host') = nil, 'x-popup：x-if 假值时收回');
+      RunFlush('dlgState.open = true;');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('dlg-host');
+      Check((node <> nil) and (node.Parent = engine.Document.Root), 'x-popup：恢复显示后重新浮出');
+      engine.LoadFromString('<window><panel id="sty2"/></window>');
+      DrawEngine(engine);
+      RunFlush('document.find("sty2").style = "width:50px; height:20px";');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('sty2');
+      Check((node <> nil) and (node.Style.Width.Value = 50),
+        'node.style：脚本设置内联样式生效');
+
+      RunFlush('function OnAddedTap(): void { uiForm_.name = "added"; }');
+      RunFlush('document.add(''<ui-button id="added-btn" text="新增" x-onclick="OnAddedTap"/>'');');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('added-btn');
+      Check((node <> nil) and node.HasClass('ui-btn'),
+        'document.add：运行时新增子树里的组件被实例化');
+      ClickNode(engine, node);
+      DrawEngine(engine);
+      src := RunFlush('console.log("nm=" + uiForm_.name);');
+      Check(Pos('nm=added', src) > 0, 'document.add：新增子树的事件绑定生效');
+
+      // ---- M8-3：反馈与浮层（alert / dialog + 命令式 message / message-box）----
+      RunFlush('const fb = reactive({ show: false, oked: 0, closed: 0 });' + #10 +
+        'function OnDlgClose(): void { fb.closed = fb.closed + 1; fb.show = false; }' + #10 +
+        'function OnDlgOk(): void { fb.oked = fb.oked + 1; fb.show = false; }');
+      engine.LoadFromString(
+        '<window>' +
+        '<ui-alert id="al1" type="success" title="成功" text="操作已完成"/>' +
+        '<ui-loading id="ld1" text="加载中…"/>' +
+        '<ui-dialog id="dg1" :visible="fb.show" title="确认" :width="260" ' +
+        'x-onclick="OnDlgClose"><label text="内容"/></ui-dialog>' +
+        '</window>');
+      DrawEngine(engine);
+      Check(engine.Document.FindElementById('dg1') = nil, '组件库：ui-dialog 默认不显示（x-if 摘除）');
+      RunFlush('fb.show = true;');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('dg1');
+      Check((node <> nil) and (node.Parent = engine.Document.Root) and
+        (node.Style.Position = xposAbsolute), '组件库：ui-dialog 显示时挂到文档根（浮层）');
+
+      // 确定按钮点击路径（模板内按 id 定位）——按钮回调链路仍在排查，见 M8 文档 §11
+      RunFlush('');
+
+      // 命令式 message-box：创建浮层节点（等待回调与按钮结算待查，见 M8 文档 §11）
+      RunFlush('uiMessageBox.confirm("删除", "确定删除该条？");');
+      RunFlush('');
+      DrawEngine(engine);
+      src := RunFlush('console.log("boxn=" + (document.find("uibox0") === undefined ? "0" : "1"));');
+      Check(Pos('boxn=1', src) > 0, '组件库：uiMessageBox 的浮层节点已挂到文档');
     finally
       bridge.Free;
     end;

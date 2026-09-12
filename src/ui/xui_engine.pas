@@ -133,6 +133,7 @@ type
     procedure AttachToOverlay(ANode: TXuiNode);
     procedure PlacePopup(APopup, AAnchor: TXuiNode; const APlacement: string;
       AOffsetX, AOffsetY: Integer);
+    procedure EnsureStyles;   // 运行时定位前保障样式已计算（Style=nil 时 BoxRect 会崩）
     procedure ApplyNodeData(ANode: TXuiNode);                      // M7-3：对既有子树补装配（组件实例化用）
     procedure ClearChildren(AParent: TXuiNode);
     procedure SetText(ANode: TXuiNode; const AText: string);
@@ -1157,6 +1158,17 @@ begin
   Result := Result + APosition;
 end;
 
+// 运行时定位前的保障：样式尚未计算（Style=nil，例如首轮 flush 早于首次布局）时先算一次，
+// 否则 BoxRect/ContentBox 访问会崩
+procedure TXuiEngine.EnsureStyles;
+begin
+  if FDocumentDirty and (FDocument <> nil) and (FDocument.Root <> nil) then
+  begin
+    ComputeDocumentStyles(FDocument, FStyleSheets);
+    FDocumentDirty := False;
+  end;
+end;
+
 // M8 ADR 24：浮层定位。写内联 style（position/left/top），因此随样式重算保留；
 // AAnchor = nil 时按文档根内容区定位（placement 可用 'center'）。
 // 位置按当前布局的 BoxRect 计算，浮层内容尺寸变化后再次调用即可重新对齐。
@@ -1165,10 +1177,11 @@ procedure TXuiEngine.PlacePopup(APopup, AAnchor: TXuiNode; const APlacement: str
 var
   ar, pr, base: TRect;
   x, y, l, t: Integer;
-  place: string;
+  place, newStyle: string;
 begin
   if (APopup = nil) or (FDocument = nil) or (FDocument.Root = nil) then
     Exit;
+  EnsureStyles;   // 首轮 flush 可能早于首次样式计算
   place := LowerCase(Trim(APlacement));
   if place = '' then
     place := 'bottom-start';
@@ -1227,9 +1240,13 @@ begin
 
   x := l;
   y := t;
-  APopup.Attributes.Values['style'] := MergePositionStyle(APopup.AttributeValue('style'),
+  newStyle := MergePositionStyle(APopup.AttributeValue('style'),
     Format('position:absolute; left:%dpx; top:%dpx', [x, y]));
-  InvalidateStyles;
+  if APopup.AttributeValue('style') <> newStyle then
+  begin
+    APopup.Attributes.Values['style'] := newStyle;
+    InvalidateStyles;   // 位置/样式变化才失效（重复刷新不 churn）
+  end;
 end;
 
 procedure TXuiEngine.RemoveElement(ANode: TXuiNode);

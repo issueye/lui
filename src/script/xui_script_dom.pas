@@ -278,6 +278,8 @@ begin
     AValue := FScript.Num(node.ScrollTop)
   else if AName = 'count' then
     AValue := FScript.Num(node.Count)
+  else if AName = 'style' then
+    AValue := FScript.Str(node.AttributeValue('style'))
   else if AName = 'rect' then
   begin
     // M8：元素矩形（供浮层定位/测量；来自最近一次布局的 border-box）
@@ -337,6 +339,12 @@ begin
     FEngine.InvalidateLayout;
     Result := True;
   end
+  else if AName = 'style' then
+  begin
+    // M8：内联样式（组件/库按 props 或测量结果定位用；引擎负责失效重算）
+    FEngine.SetNodeRuntimeAttr(node, 'style', FScript.ToStringValue(AValue));
+    Result := True;
+  end
   else if AName = 'id' then
   begin
     s := FScript.ToStringValue(AValue);
@@ -353,6 +361,7 @@ function TXuiDomBridge.NodeMethod(AFn: TXuiJsFunction; AThis: TXuiJsValue;
 var
   node: TXuiNode;
   name: string;
+  added: TXuiNode;
   i, idx: Integer;
   listener: TXuiJsListener;
 begin
@@ -378,7 +387,10 @@ begin
   begin
     if System.Length(AArgs) < 1 then
       Exit;
-    Exit(NodeValue(FEngine.AddElement(node, FScript.ToStringValue(AArgs[0]))));
+    added := FEngine.AddElement(node, FScript.ToStringValue(AArgs[0]));
+    if added <> nil then
+      FBindingEngine.BindRuntimeSubtree(added);   // 新子树就地登记绑定/组件实例
+    Exit(NodeValue(added));
   end;
   if name = 'remove' then
   begin
@@ -435,6 +447,7 @@ function TXuiDomBridge.DocumentMethod(AFn: TXuiJsFunction; AThis: TXuiJsValue;
   const AArgs: TXuiJsValueArray): TXuiJsValue;
 var
   name: string;
+  added: TXuiNode;
 begin
   Result := FScript.Undefined;
   name := AFn.Name;
@@ -449,8 +462,11 @@ begin
     if (System.Length(AArgs) < 1) or (FEngine.Document = nil) or
        (FEngine.Document.Root = nil) then
       Exit;
-    Exit(NodeValue(FEngine.AddElement(FEngine.Document.Root,
-      FScript.ToStringValue(AArgs[0]))));
+    added := FEngine.AddElement(FEngine.Document.Root,
+      FScript.ToStringValue(AArgs[0]));
+    if added <> nil then
+      FBindingEngine.BindRuntimeSubtree(added);   // 新子树就地登记绑定/组件实例
+    Exit(NodeValue(added));
   end;
   if name = 'body' then
   begin

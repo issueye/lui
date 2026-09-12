@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-alert：内联提示（type 决定配色；title 为空时不渲染标题行） -->
+<panel class="ui-alert" :class="UiAlertClass(props.type)">
+  <label class="ui-alert__title" x-if="props.title !== ''" :text="props.title"/>
+  <label class="ui-alert__text" :text="props.text"/>
+</panel>
