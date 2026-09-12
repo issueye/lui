@@ -8592,6 +8592,65 @@ begin
       Check(Pos('mounted', src) > 0, 'onMount 在首次刷新后调用');
       RunAndFlush('st.a = 9;');
       Check(Pos('w5->9', sink.Log.Text) > 0, 'watch 捕获新旧值');
+
+      // ---- M7-2：嵌套响应式 / 数组变更通知 / :class 对象语法 / watch immediate ----
+
+      // 嵌套对象属性写入触发刷新（深度标记）
+      RunAndFlush(
+        'const st2 = reactive({ inner: { v: "d1" } });');
+      script.Run('function SetInner2(v: string): boolean { st2.inner.v = v; return true; }', 'si2.ts');
+      engine.LoadFromString(
+        '<window><label id="t3" x-text="st2.inner.v"/></window>');
+      DrawEngine(engine);
+      Check(engine.Document.FindElementById('t3').Text = 'd1', '嵌套对象初始渲染');
+      script.CallGlobal('SetInner2', [script.Str('d2')]);
+      script.FlushReactive;
+      DrawEngine(engine);
+      Check(engine.Document.FindElementById('t3').Text = 'd2',
+        '嵌套响应式：深层属性写入触发绑定更新');
+
+      // 数组 push 触发 x-for 重建
+      engine.LoadFromString(
+        '<window><panel id="lst" x-for="it in state.items"><label x-text="it.n"/></panel></window>');
+      DrawEngine(engine);
+      RunAndFlush('state.items.push({ n: "w" });');
+      node := engine.Document.FindElementById('lst');
+      Check(node.Count = 4, '数组 push 触发 x-for 重建');
+
+      // keyed v-for：重排与删除按 key 复用
+      RunAndFlush(
+        'const keyed = reactive({ rows: [{ id: 1, n: "A" }, { id: 2, n: "B" }, { id: 3, n: "C" }] });');
+      engine.LoadFromString(
+        '<window><panel id="kl" x-for="r in keyed.rows"><label x-text="r.n" x-key="r.id"/></panel></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('kl');
+      Check((node.Count = 3) and (node[0].Text = 'A') and (node[2].Text = 'C'),
+        'keyed x-for 初始渲染');
+      script.Run('function Reorder(): boolean { keyed.rows = [{ id: 3, n: "C2" }, { id: 1, n: "A" }]; return true; }', 're.ts');
+      script.CallGlobal('Reorder', []);
+      script.FlushReactive;
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('kl');
+      Check((node.Count = 2) and (node[0].Text = 'C2') and (node[1].Text = 'A'),
+        'keyed x-for：重排与删除按 key 正确');
+
+      // :class 对象语法
+      RunAndFlush(
+        'const cs = reactive({ on: true });');
+      engine.LoadFromString(
+        '<window><label id="cl" class="base" x-class="{ hot: cs.on, cold: !cs.on }" text="cls"/></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('cl');
+      Check(node.HasClass('hot') and (not node.HasClass('cold')), ':class 对象语法（真值键生效）');
+      RunAndFlush('cs.on = false;');
+      node := engine.Document.FindElementById('cl');
+      Check(node.HasClass('cold') and (not node.HasClass('hot')), ':class 对象语法随状态切换');
+
+      // watch immediate
+      src := RunAndFlush(
+        'const wi = reactive({ v: 3 });' + #10 +
+        'watch(function () { return wi.v; }, function (nv, ov) { console.log("wi" + nv + "/" + ov); }, { immediate: true });');
+      Check(Pos('wi3/undefined', src) > 0, 'watch immediate 注册即回调');
     finally
       bridge.Free;
     end;

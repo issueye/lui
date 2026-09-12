@@ -3,12 +3,13 @@ unit xui_script_bind;
 {$mode objfpc}{$H+}
 
 { 声明式绑定引擎（M7，参照 Vue 3 模板能力子集）：
-    x-text="expr"          文本绑定（支持双花括号插值，如 "共 N 条" 中嵌入表达式；冒号别名 :text 同样生效）
-    x-class="expr"         追加类名（保留节点静态 class）
+    x-text="expr"          文本绑定（支持双花括号插值；冒号别名 :text 同样生效）
+    x-class="expr"         追加类名：字符串 / 对象（真值键生效）/ 数组
     x-disabled="expr"      可用性绑定
     x-show="expr"          显隐（切换内置 .xui-hidden 类 → display:none）
     x-if="expr"            条件渲染：假摘除子树（保活），真时原位恢复
-    x-for="item in expr"   列表渲染：容器按数组重建克隆子树，作用域注入 item/index
+    x-for="item in expr"   列表渲染：容器按数组重建克隆子树，作用域注入 item/index；
+                           模板子节点上的 x-key="expr" 启用键控 diff（按 key 复用/移除/重排）
     x-model="state.path"   input 双向绑定（路径形式，输入事件回写）
 
   响应式模型（ADR 19）：绑定集合静态登记，reactive 写入置脏，安全点批量重求值（flush），
@@ -32,6 +33,13 @@ type
     Ast: TXuiJsNode;
   end;
 
+  TXuiForItem = class        // 键控 x-for：已渲染条目
+  public
+    Key: string;
+    Node: TXuiNode;          // 克隆根（弱引用；由文档持有）
+    Env: TXuiJsEnv;          // 迭代作用域（弱引用；GC 经绑定标记）
+  end;
+
   TXuiBinding = class
   public
     Node: TXuiNode;          // 弱引用
@@ -42,8 +50,13 @@ type
     Index: Integer;          // x-if：原位置
     Detached: Boolean;       // x-if：当前是否已摘除
     TemplateRef: TXuiNode;   // x-for：模板子树（自有克隆）
+    KeyExpr: string;         // x-for：x-key 表达式（空 = 非键控，按长度重建）
+    Keys: TStringList;       // x-for：已渲染 key（有序）
+    CloneList: TList;        // x-for：克隆根节点（弱引用；与 Keys 平行）
+    Items: TObjectList;      // x-for：TXuiForItem（自有）
     ItemName: string;        // x-for：迭代变量名
-    Owner: TXuiBinding;      // 克隆绑定的归属（x-for 主绑定），重建时一并摘除
+    Owner: TXuiBinding;      // 克隆绑定的归属（x-for 主绑定）
+    OwnerRoot: TXuiNode;     // 克隆绑定的子树根（按克隆摘除绑定用）
     Scope: TXuiJsEnv;        // 作用域（v-for 克隆；nil = 全局）
     Parts: TStringList;      // x-text 插值：偶数=字面量（Objects=nil），奇数=表达式（Objects=1）
     destructor Destroy; override;
@@ -60,11 +73,15 @@ type
     function EvalOn(const ASrc: string; AScope: TXuiJsEnv): TXuiJsValue;
     function EvalBool(const ASrc: string; AScope: TXuiJsEnv): Boolean;
     function ScopeOf(AScope: TXuiJsEnv): TXuiJsEnv;
-    procedure ScanNode(ANode: TXuiNode; AScope: TXuiJsEnv; AOwner: TXuiBinding);
+    procedure ScanNode(ANode: TXuiNode; AScope: TXuiJsEnv; AOwner: TXuiBinding;
+      AOwnerRoot: TXuiNode = nil);
     procedure ApplyBinding(ABinding: TXuiBinding);
     procedure ApplyFor(ABinding: TXuiBinding);
+    procedure ApplyForKeyed(ABinding: TXuiBinding);
     procedure MarkScopes;     // GC 根：v-for 作用域环境
     procedure PruneOwner(AOwner: TXuiBinding);
+    procedure PruneClone(ABinding: TXuiBinding; ACloneRoot: TXuiNode);
+    function ClassValueToString(const AValue: TXuiJsValue): string;
   public
     constructor Create(AEngine: TXuiEngine; AScript: TXuiScript);
     destructor Destroy; override;
@@ -141,6 +158,8 @@ destructor TXuiBinding.Destroy;
 begin
   Parts.Free;
   TemplateRef.Free;
+  Keys.Free;
+  Items.Free;
   inherited Destroy;
 end;
 
@@ -172,11 +191,15 @@ end;
 
 procedure TXuiBindingEngine.MarkScopes;
 var
-  i: Integer;
+  i, j: Integer;
 begin
   for i := 0 to FBindings.Count - 1 do
+  begin
     if TXuiBinding(FBindings[i]).Scope <> nil then
       FScript.Interp.MarkRootEnv(TXuiBinding(FBindings[i]).Scope);
+    for j := 0 to TXuiBinding(FBindings[i]).Items.Count - 1 do
+      FScript.Interp.MarkRootEnv(TXuiForItem(TXuiBinding(FBindings[i]).Items[j]).Env);
+  end;
 end;
 
 // 表达式 → AST（按源文缓存；解析失败上报 ssCompile 并返回 nil）
@@ -189,7 +212,7 @@ var
 begin
   key := Trim(ASrc);
   for i := 0 to FCache.Count - 1 do
-    if (FCache[i] is TXuiBindProg) and
+    if (TXuiBindProg(FCache[i]).Prog <> nil) and
        (TXuiBindProg(FCache[i]).Prog.FileName = '#' + key) then
       Exit(TXuiBindProg(FCache[i]).Ast);
   item := TXuiBindProg.Create;
@@ -238,24 +261,58 @@ begin
   Result := FScript.Interp.ToBoolValue(EvalOn(ASrc, AScope));
 end;
 
-procedure TXuiBindingEngine.PruneOwner(AOwner: TXuiBinding);
+// :class 值 → 类串：字符串原样；对象取真值键；数组逐元素展开
+function TXuiBindingEngine.ClassValueToString(const AValue: TXuiJsValue): string;
 var
   i: Integer;
+  o: TXuiJsObject;
+  s: string;
 begin
-  for i := FBindings.Count - 1 downto 0 do
-    if TXuiBinding(FBindings[i]).Owner = AOwner then
-      FBindings.Delete(i);
+  Result := '';
+  if AValue.Kind <> jvObject then
+    Exit(FScript.ToStringValue(AValue));
+  if AValue.Obj = nil then
+    Exit;
+  if AValue.Obj is TXuiJsArray then
+  begin
+    for i := 0 to TXuiJsArray(AValue.Obj).Length - 1 do
+    begin
+      s := ClassValueToString(TXuiJsArray(AValue.Obj).Items[i]);
+      if s <> '' then
+        Result := Trim(Result + ' ' + s);
+    end;
+    Exit;
+  end;
+  o := AValue.Obj;
+  for i := 0 to o.Props.Count - 1 do
+    if FScript.Interp.ToBoolValue(TXuiJsProp(o.Props[i]).Value) then
+      Result := Trim(Result + ' ' + TXuiJsProp(o.Props[i]).Name);
 end;
 
 procedure TXuiBindingEngine.ScanNode(ANode: TXuiNode; AScope: TXuiJsEnv;
-  AOwner: TXuiBinding);
+  AOwner: TXuiBinding; AOwnerRoot: TXuiNode);
 var
   i, ifIdx: Integer;
-  attr, expr, itemName: string;
+  attr, expr, itemName, keyExpr: string;
   kind: TXuiBindKind;
   b: TXuiBinding;
+  tpl: TXuiNode;
   hasIf, hasFor: Boolean;
   p: Integer;
+
+  function RegBinding(AKind: TXuiBindKind; const ASrc: string): TXuiBinding;
+  begin
+    b := TXuiBinding.Create;
+    b.Node := ANode;
+    b.Kind := AKind;
+    b.Scope := AScope;
+    b.Owner := AOwner;
+    b.OwnerRoot := AOwnerRoot;
+    b.Expr := ASrc;
+    FBindings.Add(b);
+    Result := b;
+  end;
+
 begin
   if ANode = nil then
     Exit;
@@ -266,20 +323,20 @@ begin
     if BindAttrName(ANode.Attributes.Names[i], kind) and (kind = bkIf) then
     begin
       hasIf := True;
-      ifIdx := ANode.Parent.IndexOfChild(ANode);
       b := TXuiBinding.Create;
       b.Node := ANode;
       b.Kind := bkIf;
       b.Expr := Trim(ANode.Attributes.ValueFromIndex[i]);
       b.ParentRef := ANode.Parent;
-      b.Index := ifIdx;
+      b.Index := ANode.Parent.IndexOfChild(ANode);
       b.Scope := AScope;
       b.Owner := AOwner;
+      b.OwnerRoot := AOwnerRoot;
       FBindings.Add(b);
       Break;
     end;
 
-  // x-for：容器级列表渲染（模板 = 第一个子节点）
+  // x-for：容器级列表渲染（模板 = 第一个子节点；其 x-key 启用键控 diff）
   hasFor := False;
   for i := 0 to ANode.Attributes.Count - 1 do
     if BindAttrName(ANode.Attributes.Names[i], kind) and (kind = bkFor) then
@@ -297,13 +354,22 @@ begin
       b.ItemName := itemName;
       b.Scope := AScope;
       b.Owner := AOwner;
+      b.OwnerRoot := AOwnerRoot;
+      b.Keys := TStringList.Create;
+      b.Items := TObjectList.Create(True);
       if ANode.Count > 0 then
       begin
-        b.TemplateRef := CloneSubtree(ANode[0]);   // 模板快照（自有）
+        tpl := ANode[0];
+        b.TemplateRef := CloneSubtree(tpl);
+        keyExpr := '';
+        for p := 0 to tpl.Attributes.Count - 1 do
+          if (LowerCase(tpl.Attributes.Names[p]) = 'x-key') or
+             (LowerCase(tpl.Attributes.Names[p]) = ':key') then
+            keyExpr := Trim(tpl.Attributes.Values[tpl.Attributes.Names[p]]);
+        b.KeyExpr := keyExpr;
         FEngine.ClearChildren(ANode);
       end;
       FBindings.Add(b);
-      // 克隆在 ApplyFor 时登记（作用域 = 迭代环境）
       Exit;   // 容器子树由模板替代，不再扫描原子树
     end;
 
@@ -321,6 +387,7 @@ begin
         b.Kind := bkText;
         b.Scope := AScope;
         b.Owner := AOwner;
+        b.OwnerRoot := AOwnerRoot;
         b.Expr := Trim(ANode.Attributes.ValueFromIndex[i]);
         b.Parts := TStringList.Create;
         SplitInterp(b.Expr, b.Parts);
@@ -331,11 +398,7 @@ begin
     if kind = bkIf then
       Continue;   // 已在循环前登记
     expr := Trim(ANode.Attributes.ValueFromIndex[i]);
-    b := TXuiBinding.Create;
-    b.Node := ANode;
-    b.Kind := kind;
-    b.Scope := AScope;
-    b.Owner := AOwner;
+    RegBinding(kind, expr);
     if kind = bkText then
     begin
       b.Expr := expr;
@@ -344,46 +407,55 @@ begin
         b.Parts := TStringList.Create;
         SplitInterp(expr, b.Parts);
       end;
-    end
-    else
-      b.Expr := expr;
+    end;
     if (kind = bkClass) or (kind = bkShow) then
       b.Base := Trim(StringReplace(Trim(ANode.Attributes.Values['class']),
         LineEnding, ' ', [rfReplaceAll]));
-    FBindings.Add(b);
   end;
 
   // 递归子树（x-for 容器除外）
   if not hasFor then
     for i := 0 to ANode.Count - 1 do
-      ScanNode(ANode[i], AScope, AOwner);
+      ScanNode(ANode[i], AScope, AOwner, AOwnerRoot);
 end;
 
 procedure TXuiBindingEngine.Flush;
 var
   i: Integer;
+  b: TXuiBinding;
 begin
   if not FScanned then
   begin
     if (FEngine.Document = nil) or (FEngine.Document.Root = nil) then
       Exit;
-    ScanNode(FEngine.Document.Root, nil, nil);
+    ScanNode(FEngine.Document.Root, nil, nil, nil);
     FScanned := True;
   end;
-  for i := 0 to FBindings.Count - 1 do
+  if FBindings.Count > 0 then
+    FScript.Interp.BumpReactiveVersion;
+  i := 0;
+  while i < FBindings.Count do
+  begin
     try
-      if TXuiBinding(FBindings[i]).Kind = bkFor then
-        ApplyFor(TXuiBinding(FBindings[i]))
+      b := TXuiBinding(FBindings[i]);
+      if b.Kind = bkFor then
+        ApplyFor(b)
       else
-        ApplyBinding(TXuiBinding(FBindings[i]));
+        ApplyBinding(b);
     except
-      on E: EXuiJsThrow do ;   // 绑定求值异常：本轮跳过（模板先于数据就绪是常态）
-      on E: EXuiJsRuntime do ; 
+      // 绑定求值异常：本轮跳过（模板先于数据就绪是常态，如脚本尚未定义状态）
+      on E: EXuiJsThrow do ;
+      on E: EXuiJsRuntime do ;
     end;
+    // ApplyFor 可能增删绑定（x-for 重建），不可假定索引稳定
+    if i >= FBindings.Count then
+      Break;
+    Inc(i);
+  end;
   FScript.Interp.ClearReactiveDirty;
   FScript.Interp.RunWatchers;
   if FScript.Interp.MountHookCount > 0 then
-    FScript.Interp.RunMountHooks;   // onMount：注册即在下次刷新后排空（各执行一次）
+    FScript.Interp.RunMountHooks;   // onMount：注册后的首次刷新执行（各一次）
 end;
 
 procedure TXuiBindingEngine.FlushIfDirty;
@@ -426,7 +498,7 @@ begin
       end;
     bkClass:
       begin
-        cls := FScript.ToStringValue(EvalOn(ABinding.Expr, ABinding.Scope));
+        cls := ClassValueToString(EvalOn(ABinding.Expr, ABinding.Scope));
         if ABinding.Base <> '' then
           cls := ABinding.Base + ' ' + cls;
         FEngine.SetClass(ABinding.Node, Trim(cls));
@@ -476,7 +548,7 @@ begin
   end;
 end;
 
-// x-for：数组长度变化 → 清空重建克隆子树；否则原地重求值克隆绑定
+// x-for 非键控：数组长度变化 → 清空重建克隆子树
 procedure TXuiBindingEngine.ApplyFor(ABinding: TXuiBinding);
 var
   arrV: TXuiJsValue;
@@ -504,8 +576,135 @@ begin
     env.Define(ABinding.ItemName, arr.Items[i]);
     env.Define('index', FScript.Num(i));
     FEngine.AttachElement(ABinding.Node, clone);
-    ScanNode(clone, env, ABinding);
+    ScanNode(clone, env, ABinding, clone);
   end;
+  // 新克隆的绑定需要立即求值一次（本轮 flush 内完成首渲染）
+  for i := 0 to FBindings.Count - 1 do
+    if (TXuiBinding(FBindings[i]).Owner = ABinding) and
+       (TXuiBinding(FBindings[i]).Kind <> bkFor) then
+      ApplyBinding(TXuiBinding(FBindings[i]));
+end;
+
+procedure TXuiBindingEngine.PruneOwner(AOwner: TXuiBinding);
+var
+  i: Integer;
+begin
+  for i := FBindings.Count - 1 downto 0 do
+    if TXuiBinding(FBindings[i]).Owner = AOwner then
+      FBindings.Delete(i);
+end;
+
+// 摘除单个克隆的绑定（按克隆根匹配）
+procedure TXuiBindingEngine.PruneClone(ABinding: TXuiBinding; ACloneRoot: TXuiNode);
+var
+  i: Integer;
+begin
+  for i := FBindings.Count - 1 downto 0 do
+    if (TXuiBinding(FBindings[i]).Owner = ABinding) and
+       (TXuiBinding(FBindings[i]).OwnerRoot = ACloneRoot) then
+      FBindings.Delete(i);
+end;
+
+// x-for 键控 diff：按 x-key 复用/移除/重排克隆；无 x-key 时退化为长度重建
+procedure TXuiBindingEngine.ApplyForKeyed(ABinding: TXuiBinding);
+var
+  arrV: TXuiJsValue;
+  arr: TXuiJsArray;
+  i, j2, oldIdx, target: Integer;
+  clone: TXuiNode;
+  env: TXuiJsEnv;
+  newKeys: TStringList;
+  newClones: array of TObject;
+  newEnvs: array of TXuiJsEnv;
+  used: array of Boolean;
+  removed: TXuiNode;
+begin
+  arrV := EvalOn(ABinding.Expr, ABinding.Scope);
+  if not ((arrV.Kind = jvObject) and (arrV.Obj is TXuiJsArray)) then
+  begin
+    FScript.ReportError('', 'x-for 的表达式必须是数组', ssRuntime);
+    Exit;
+  end;
+  arr := TXuiJsArray(arrV.Obj);
+
+  newKeys := TStringList.Create;
+  try
+    SetLength(newClones, arr.Length);
+    SetLength(newEnvs, arr.Length);
+    SetLength(used, ABinding.CloneList.Count);
+    for i := 0 to High(used) do
+      used[i] := False;
+
+    // 逐条目：求 key、建迭代作用域；同 key 复用旧克隆与其绑定
+    for i := 0 to arr.Length - 1 do
+    begin
+      env := FScript.Interp.NewChildEnv(FScript.Interp.GlobalEnv);
+      env.Define(ABinding.ItemName, arr.Items[i]);
+      env.Define('index', FScript.Num(i));
+      newKeys.Add(FScript.ToStringValue(EvalOn(ABinding.KeyExpr, env)));
+      newEnvs[i] := env;
+      oldIdx := ABinding.Keys.IndexOf(newKeys[i]);
+      if (oldIdx >= 0) and (not used[oldIdx]) then
+      begin
+        used[oldIdx] := True;
+        newClones[i] := TObject(ABinding.CloneList[oldIdx]);
+        // 旧克隆的绑定作用域改指新 env（复用节点、更新数据）
+        for j2 := FBindings.Count - 1 downto 0 do
+          if (TXuiBinding(FBindings[j2]).Owner = ABinding) and
+             (TXuiBinding(FBindings[j2]).OwnerRoot = TXuiNode(ABinding.CloneList[oldIdx])) then
+            TXuiBinding(FBindings[j2]).Scope := env;
+      end;
+    end;
+
+    // 移除：未被复用的旧克隆（连带其绑定）
+    for i := ABinding.CloneList.Count - 1 downto 0 do
+      if not used[i] then
+      begin
+        removed := TXuiNode(ABinding.CloneList[i]);
+        PruneClone(ABinding, removed);
+        if removed.Parent <> nil then
+          removed.Parent.RemoveChild(removed);
+        removed.Free;
+      end;
+
+    // 新建：无对应旧 key 的条目
+    for i := 0 to arr.Length - 1 do
+      if newClones[i] = nil then
+      begin
+        clone := CloneSubtree(ABinding.TemplateRef);
+        FEngine.AttachElement(ABinding.Node, clone);
+        ScanNode(clone, newEnvs[i], ABinding, clone);
+        newClones[i] := TObject(clone);
+      end;
+
+    // 重排：使容器子节点顺序与 newKeys 一致
+    for i := 0 to arr.Length - 1 do
+    begin
+      clone := TXuiNode(newClones[i]);
+      target := i;
+      if ABinding.Node.IndexOfChild(clone) <> target then
+      begin
+        ABinding.Node.RemoveChild(clone);
+        ABinding.Node.InsertChild(target, clone);
+      end;
+    end;
+
+    // 更新簿记
+    ABinding.Keys.Assign(newKeys);
+    ABinding.CloneList.Clear;
+    ABinding.Items.Clear;
+    for i := 0 to arr.Length - 1 do
+    begin
+      ABinding.CloneList.Add(newClones[i]);
+      ABinding.Items.Add(TXuiForItem.Create);
+      TXuiForItem(ABinding.Items.Last).Key := newKeys[i];
+      TXuiForItem(ABinding.Items.Last).Node := TXuiNode(newClones[i]);
+      TXuiForItem(ABinding.Items.Last).Env := newEnvs[i];
+    end;
+  finally
+    newKeys.Free;
+  end;
+
   // 新克隆的绑定需要立即求值一次（本轮 flush 内完成首渲染）
   for i := 0 to FBindings.Count - 1 do
     if (TXuiBinding(FBindings[i]).Owner = ABinding) and
