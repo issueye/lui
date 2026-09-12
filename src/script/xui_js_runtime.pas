@@ -57,7 +57,9 @@ type
     Cb: TXuiJsValue;
     HasLast: Boolean;
     Last: TXuiJsValue;
+    LastSnap: string;     // deep watch：上次快照（内容指纹）
     Immediate: Boolean;   // opts.immediate：注册即回调一次
+    Deep: Boolean;        // opts.deep：新旧值按深度比较（对象/数组内容）
   end;
   // 宿主对象的动态属性（DOM 桥：node.text 等）
   TXuiJsNativePropGet = function(AObj: TXuiJsObject; const AName: string;
@@ -338,7 +340,8 @@ type
       const AArgs: TXuiJsValueArray): TXuiJsValue;
     function ComputedGet(AObj: TXuiJsObject; const AName: string;
       out AValue: TXuiJsValue): Boolean;
-    procedure MarkReactiveDeep(AObj: TXuiJsObject; ADepth: Integer);
+    function EqualDeep(const A, B: TXuiJsValue): Boolean;
+    function DeepSnapshot(const AValue: TXuiJsValue): string;
     procedure NotifyArrayWrite(AObj: TXuiJsObject);
     function NativeGlobalFn(AFn: TXuiJsFunction; AThis: TXuiJsValue;
       const AArgs: TXuiJsValueArray): TXuiJsValue;
@@ -434,6 +437,7 @@ type
     function ArgAtPublic(const AArgs: TXuiJsValueArray; AIndex: Integer): TXuiJsValue;
     procedure MarkRootValue(const AValue: TXuiJsValue);
     procedure MarkRootEnv(AEnv: TXuiJsEnv);
+    procedure MarkReactiveDeep(AObj: TXuiJsObject; ADepth: Integer);   // 深度响应式标记（M7-2，绑定引擎用）
     procedure NotifyReactiveWrite(AObj: TXuiJsObject);    // 数组等方法型写入的变更通知               // 供绑定引擎标记作用域环境
     function GlobalEnv: TXuiJsEnv;                        // M7 绑定求值的根环境
     function NewChildEnv(AParent: TXuiJsEnv): TXuiJsEnv;  // v-for 作用域
@@ -1507,6 +1511,70 @@ function TXuiJsInterp.MountHookCount: Integer;
 begin
   Result := FMountHooks.Count;
 end;
+// 深度相等比较（watch deep）：对象/数组逐成员递归，严格相等语义
+function TXuiJsInterp.EqualDeep(const A, B: TXuiJsValue): Boolean;
+var
+  i, j: Integer;
+  ao, bo: TXuiJsObject;
+  aa, ba: TXuiJsArray;
+begin
+  if StrictEquals(A, B) then
+    Exit(True);
+  if (A.Kind <> jvObject) or (B.Kind <> jvObject) then
+    Exit(False);
+  if (A.Obj = nil) or (B.Obj = nil) then
+    Exit(A.Obj = B.Obj);
+  ao := A.Obj;
+  bo := B.Obj;
+  if ao.JsClass <> bo.JsClass then
+    Exit(False);
+  if (ao is TXuiJsArray) and (bo is TXuiJsArray) then
+  begin
+    aa := TXuiJsArray(ao);
+    ba := TXuiJsArray(bo);
+    if aa.Length <> ba.Length then
+      Exit(False);
+    for i := 0 to aa.Length - 1 do
+      if not EqualDeep(aa.Items[i], ba.Items[i]) then
+        Exit(False);
+    Exit(True);
+  end;
+  if (ao.Props.Count <> bo.Props.Count) then
+    Exit(False);
+  for i := 0 to ao.Props.Count - 1 do
+  begin
+    if TXuiJsProp(ao.Props[i]).Name <> TXuiJsProp(bo.Props[i]).Name then
+      Exit(False);
+    if not EqualDeep(TXuiJsProp(ao.Props[i]).Value, TXuiJsProp(bo.Props[i]).Value) then
+      Exit(False);
+  end;
+  Result := True;
+end;
+
+// 内容指纹（deep watch 快照）
+function TXuiJsInterp.DeepSnapshot(const AValue: TXuiJsValue): string;
+var
+  i: Integer;
+begin
+  if AValue.Kind <> jvObject then
+    Exit(ToStringValue(AValue));
+  if AValue.Obj = nil then
+    Exit('null');
+  if AValue.Obj is TXuiJsArray then
+  begin
+    Result := '[';
+    for i := 0 to TXuiJsArray(AValue.Obj).Length - 1 do
+      Result := Result + DeepSnapshot(TXuiJsArray(AValue.Obj).Items[i]) + ',';
+    Result := Result + ']';
+    Exit;
+  end;
+  Result := '{';
+  for i := 0 to AValue.Obj.Props.Count - 1 do
+    Result := Result + TXuiJsProp(AValue.Obj.Props[i]).Name + ':' +
+      DeepSnapshot(TXuiJsProp(AValue.Obj.Props[i]).Value) + ',';
+  Result := Result + '}';
+end;
+
 procedure TXuiJsInterp.RunWatchers;
 var
   i: Integer;
@@ -1518,9 +1586,20 @@ begin
   begin
     w := TXuiJsWatcher(FWatchers[i]);
     nv := CallFunction(w.Fn, MakeUndefined, []);
-    changed := w.HasLast and (not StrictEquals(nv, w.Last));
-    if changed then
-      CallFunction(w.Cb, MakeUndefined, [nv, w.Last]);
+    if w.Deep then
+    begin
+      // deep：以内容快照比较（原对象可能被原地修改，引用与旧值相同）
+      changed := w.HasLast and (DeepSnapshot(nv) <> w.LastSnap);
+      w.LastSnap := DeepSnapshot(nv);
+      if changed then
+        CallFunction(w.Cb, MakeUndefined, [nv, MakeUndefined]);
+    end
+    else
+    begin
+      changed := w.HasLast and (not StrictEquals(nv, w.Last));
+      if changed then
+        CallFunction(w.Cb, MakeUndefined, [nv, w.Last]);
+    end;
     w.Last := nv;
     w.HasLast := True;
   end;
@@ -1618,6 +1697,9 @@ begin
     w.Fn := src;
     w.Cb := ArgAt(AArgs, 1);
     w.HasLast := False;
+    if (ArgAt(AArgs, 2).Kind = jvObject) and
+       ToBoolValue(ArgAt(AArgs, 2).Obj.GetOwn('deep')) then
+      w.Deep := True;
     // opts.immediate：注册立即以 (新值, undefined) 回调一次
     if (ArgAt(AArgs, 2).Kind = jvObject) and
        ToBoolValue(ArgAt(AArgs, 2).Obj.GetOwn('immediate')) then

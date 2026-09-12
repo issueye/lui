@@ -21,11 +21,22 @@ interface
 
 uses
   Classes, SysUtils, Contnrs,
-  xui_types, xui_dom, xui_engine, xui_script,
+  xui_types, xui_dom, xui_xml, xui_engine, xui_script,
   xui_js_token, xui_js_parser, xui_js_runtime;
 
 type
-  TXuiBindKind = (bkText, bkClass, bkDisabled, bkShow, bkIf, bkModel, bkFor);
+  TXuiBindKind = (bkText, bkClass, bkDisabled, bkShow, bkIf, bkModel, bkFor,
+    bkComponent, bkProp);
+
+  // 组件定义（component('name', {props: [...], template: '...'}) 注册；注册表自有）
+  TXuiComponentDef = class
+  public
+    Name: string;
+    TemplateStr: string;
+    Props: TStringList;
+    constructor Create(const AName: string);
+    destructor Destroy; override;
+  end;
 
   TXuiBindProg = class       // 表达式 AST 缓存项
   public
@@ -57,6 +68,9 @@ type
     ItemName: string;        // x-for：迭代变量名
     Owner: TXuiBinding;      // 克隆绑定的归属（x-for 主绑定）
     OwnerRoot: TXuiNode;     // 克隆绑定的子树根（按克隆摘除绑定用）
+    CompDef: TObject;        // bkComponent：TXuiComponentDef（弱引用；注册表自有）
+    PropsObj: TXuiJsObject;  // bkProp：目标属性容器（reactive）
+    PropName: string;        // bkProp：属性名
     Scope: TXuiJsEnv;        // 作用域（v-for 克隆；nil = 全局）
     Parts: TStringList;      // x-text 插值：偶数=字面量（Objects=nil），奇数=表达式（Objects=1）
     destructor Destroy; override;
@@ -68,6 +82,7 @@ type
     FScript: TXuiScript;
     FBindings: TObjectList;   // TXuiBinding（自有）
     FCache: TObjectList;      // TXuiBindProg（自有，按表达式源缓存）
+    FComponents: TObjectList; // TXuiComponentDef（自有）
     FScanned: Boolean;
     function CompileExpr(const ASrc: string): TXuiJsNode;
     function EvalOn(const ASrc: string; AScope: TXuiJsEnv): TXuiJsValue;
@@ -82,6 +97,12 @@ type
     procedure PruneOwner(AOwner: TXuiBinding);
     procedure PruneClone(ABinding: TXuiBinding; ACloneRoot: TXuiNode);
     function ClassValueToString(const AValue: TXuiJsValue): string;
+    procedure InstantiateComponent(ABinding: TXuiBinding);
+    function NativeComponent(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function FindComponentDef(const AName: string): TXuiComponentDef;
+    function FindTagNode(ARoot: TXuiNode; const ATag: string;
+      out AParent: TXuiNode; out AIndex: Integer): TXuiNode;
   public
     constructor Create(AEngine: TXuiEngine; AScript: TXuiScript);
     destructor Destroy; override;
@@ -172,15 +193,110 @@ begin
   FScript := AScript;
   FBindings := TObjectList.Create(True);
   FCache := TObjectList.Create(True);
+  FComponents := TObjectList.Create(True);
   FScanned := False;
   FScript.Interp.AddOnCollectRoots(@MarkScopes);
+  FScript.Interp.GlobalObject.SetOwn('component',
+    FScript.Interp.CreateHostFunction('component', @NativeComponent));
 end;
 
 destructor TXuiBindingEngine.Destroy;
 begin
+  FComponents.Free;
   FCache.Free;
   FBindings.Free;
   inherited Destroy;
+end;
+
+{ 组件定义 }
+
+constructor TXuiComponentDef.Create(const AName: string);
+begin
+  inherited Create;
+  Name := LowerCase(AName);
+  Props := TStringList.Create;
+end;
+
+destructor TXuiComponentDef.Destroy;
+begin
+  Props.Free;
+  inherited Destroy;
+end;
+
+function TXuiBindingEngine.FindComponentDef(const AName: string): TXuiComponentDef;
+var
+  i: Integer;
+begin
+  for i := 0 to FComponents.Count - 1 do
+    if TXuiComponentDef(FComponents[i]).Name = LowerCase(AName) then
+      Exit(TXuiComponentDef(FComponents[i]));
+  Result := nil;
+end;
+
+// component(name, {props: [...], template: '...'}) 注册组件
+function TXuiBindingEngine.NativeComponent(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+var
+  name: string;
+  defn: TXuiJsObject;
+  def: TXuiComponentDef;
+  pv: TXuiJsValue;
+  arr: TXuiJsArray;
+  i: Integer;
+begin
+  name := LowerCase(FScript.ToStringValue(FScript.Interp.ArgAtPublic(AArgs, 0)));
+  if (FScript.Interp.ArgAtPublic(AArgs, 1).Kind <> jvObject) or (FScript.Interp.ArgAtPublic(AArgs, 1).Obj = nil) then
+    raise EXuiJsRuntime.Create('component 的第二个参数必须是 {props, template} 对象');
+  defn := FScript.Interp.ArgAtPublic(AArgs, 1).Obj;
+  def := FindComponentDef(name);
+  if def = nil then
+  begin
+    def := TXuiComponentDef.Create(name);
+    FComponents.Add(def);
+  end;
+  def.TemplateStr := FScript.ToStringValue(defn.GetOwn('template'));
+  pv := defn.GetOwn('props');
+  def.Props.Clear;
+  if (pv.Kind = jvObject) and (pv.Obj is TXuiJsArray) then
+  begin
+    arr := TXuiJsArray(pv.Obj);
+    for i := 0 to arr.Length - 1 do
+      def.Props.Add(FScript.ToStringValue(arr.Items[i]));
+  end;
+  Result := FScript.Undefined;
+end;
+
+// 在子树中按标签名查找节点（组件模板的 <slot> 定位）
+function TXuiBindingEngine.FindTagNode(ARoot: TXuiNode; const ATag: string;
+  out AParent: TXuiNode; out AIndex: Integer): TXuiNode;
+
+  function Search(ANode: TXuiNode): TXuiNode;
+  var
+    k: Integer;
+    r: TXuiNode;
+  begin
+    Result := nil;
+    for k := 0 to ANode.Count - 1 do
+    begin
+      if SameText(ANode[k].Tag, ATag) then
+        Exit(ANode[k]);
+      r := Search(ANode[k]);
+      if r <> nil then
+        Exit(r);
+    end;
+  end;
+
+begin
+  AParent := nil;
+  AIndex := -1;
+  if ARoot = nil then
+    Exit(nil);
+  Result := Search(ARoot);
+  if (Result <> nil) and (Result.Parent <> nil) then
+  begin
+    AParent := Result.Parent;
+    AIndex := AParent.IndexOfChild(Result);
+  end;
 end;
 
 procedure TXuiBindingEngine.ResetScan;
@@ -336,6 +452,24 @@ begin
       Break;
     end;
 
+  // 组件：标签命中已注册组件 → 登记 bkComponent 并实例化
+  //（slot 内容按父作用域登记——Vue 语义；实例化时移入模板槽位）
+  if FindComponentDef(ANode.Tag) <> nil then
+  begin
+    b := TXuiBinding.Create;
+    b.Node := ANode;
+    b.Kind := bkComponent;
+    b.CompDef := FindComponentDef(ANode.Tag);
+    b.Scope := AScope;
+    b.Owner := AOwner;
+    b.OwnerRoot := AOwnerRoot;
+    FBindings.Add(b);
+    for i := 0 to ANode.Count - 1 do
+      ScanNode(ANode[i], AScope, AOwner, AOwnerRoot);
+    InstantiateComponent(b);
+    Exit;   // 宿主标签已被实例子树替换
+  end;
+
   // x-for：容器级列表渲染（模板 = 第一个子节点；其 x-key 启用键控 diff）
   hasFor := False;
   for i := 0 to ANode.Attributes.Count - 1 do
@@ -471,10 +605,17 @@ var
   show: Boolean;
   parts: TStringList;
 begin
-  if (ABinding.Node = nil) or (ABinding.Kind = bkFor) then
+  if ABinding.Kind = bkProp then
+  begin
+    // 组件属性更新：写入 props 容器（reactive），模板绑定随后自动重求值
+    FScript.Interp.SetPropValue(FScript.Interp.ObjectValue(ABinding.PropsObj),
+      ABinding.PropName, EvalOn(ABinding.Expr, ABinding.Scope));
+    Exit;
+  end;
+  if (ABinding.Node = nil) or (ABinding.Kind in [bkFor, bkComponent]) then
     Exit;
   if (ABinding.Kind <> bkIf) and (ABinding.Node.Parent = nil) then
-    Exit;   // 已被 x-if 摘除的子树：跳过其余绑定
+    Exit;   // 已被 x-if 摘除的子树：跳过其余绑定（bkIf 自身需恢复）
 
   case ABinding.Kind of
     bkText:
@@ -523,6 +664,7 @@ begin
     bkIf:
       begin
         show := EvalBool(ABinding.Expr, ABinding.Scope);
+        WriteLn('[bkif] show=', show, ' detached=', ABinding.Detached, ' idx=', ABinding.Index);
         if show and ABinding.Detached then
         begin
           if (ABinding.ParentRef <> nil) and
@@ -546,6 +688,121 @@ begin
         end;
       end;
   end;
+end;
+
+// 组件实例化：解析模板 → 建 props 容器（reactive）→ 移入 slot 内容 →
+// 替换宿主标签 → 装配行为 → 以组件作用域登记实例绑定。动态属性经 bkProp 随刷新更新。
+procedure TXuiBindingEngine.InstantiateComponent(ABinding: TXuiBinding);
+var
+  def: TXuiComponentDef;
+  compNode, instRoot, host: TXuiNode;
+  slotNode, slotParent, child: TXuiNode;
+  slotIdx, idx, i: Integer;
+  env: TXuiJsEnv;
+  props: TXuiJsObject;
+  doc: TXuiDocument;
+  attrName, attrValue, propName, cls: string;
+  pb: TXuiBinding;
+begin
+  def := TXuiComponentDef(ABinding.CompDef);
+  compNode := ABinding.Node;
+  if compNode = nil then
+    Exit;
+
+  // 属性容器（reactive）：静态属性立即赋值，:prop 动态属性登记 bkProp 绑定
+  props := FScript.Interp.CreateHostObject('Props');
+  props.Reactive := True;
+  FScript.Interp.MarkReactiveDeep(props, 4);
+  for i := 0 to compNode.Attributes.Count - 1 do
+  begin
+    attrName := compNode.Attributes.Names[i];
+    attrValue := compNode.Attributes.ValueFromIndex[i];
+    propName := attrName;
+    if (propName <> '') and (propName[1] = ':') then
+      Delete(propName, 1, 1);
+    if (propName = '') or SameText(attrName, 'id') or SameText(attrName, 'class') or
+       SameText(attrName, 'x-key') then
+      Continue;   // id/class 由宿主转移到实例根；x-key 与组件无关
+    if propName[1] = ':' then
+      Continue;   // 不发生（已剥离）
+    if (attrName <> '') and (attrName[1] = ':') then
+    begin
+      // 动态属性：登记 bkProp（父作用域求值 → 写 props）
+      pb := TXuiBinding.Create;
+      pb.Kind := bkProp;
+      pb.PropsObj := props;
+      pb.PropName := propName;
+      pb.Expr := Trim(attrValue);
+      pb.Scope := ABinding.Scope;
+      pb.Owner := ABinding;
+      pb.OwnerRoot := compNode;
+      FBindings.Add(pb);
+      FScript.Interp.SetPropValue(FScript.Interp.ObjectValue(props), propName,
+        EvalOn(Trim(attrValue), ABinding.Scope));
+    end
+    else
+      props.SetOwn(propName, FScript.Str(attrValue));   // 静态属性（字符串）
+  end;
+
+  // 解析模板（v1 要求单根）
+  doc := nil;
+  instRoot := nil;
+  try
+    doc := LoadDocumentFromXML('<xui-root>' + def.TemplateStr + '</xui-root>', '');
+    if (doc.Root = nil) or (doc.Root.Count = 0) then
+      raise EXuiJsRuntime.Create('组件模板缺少根节点');
+    instRoot := doc.Root[0];
+    doc.Root.RemoveChild(instRoot);   // 摘出实例根，避免随临时文档释放
+  except
+    on E: Exception do
+    begin
+      doc.Free;
+      FScript.ReportError('', '组件 ' + def.Name + ' 模板错误：' + E.Message, ssCompile);
+      Exit;
+    end;
+  end;
+  doc.Free;
+
+  // 宿主 id/class 转移到实例根
+  if compNode.Id <> '' then
+    instRoot.Id := compNode.Id;
+  for i := 0 to compNode.ClassList.Count - 1 do
+    if instRoot.ClassList.IndexOf(compNode.ClassList[i]) < 0 then
+      instRoot.ClassList.Add(compNode.ClassList[i]);
+
+  // slot：把宿主标签的子节点移入槽位；无子内容则移除槽位标记
+  slotNode := FindTagNode(instRoot, 'slot', slotParent, slotIdx);
+  if slotNode <> nil then
+  begin
+    while compNode.Count > 0 do
+    begin
+      child := compNode[0];
+      compNode.RemoveChild(child);
+      slotParent.InsertChild(slotIdx, child);
+      Inc(slotIdx);
+    end;
+    slotParent.RemoveChild(slotNode);
+    slotNode.Free;
+  end
+  else
+    FEngine.ClearChildren(compNode);   // 无 slot：丢弃宿主子内容
+
+  // 替换宿主标签
+  host := compNode.Parent;
+  idx := host.IndexOfChild(compNode);
+  host.RemoveChild(compNode);
+  host.InsertChild(idx, instRoot);
+  compNode.Free;
+  ABinding.Node := nil;
+
+  // 装配行为与静态绑定（slot 内容的既有行为有防重复入守卫）
+  FEngine.ApplyNodeData(instRoot);
+  FEngine.InvalidateStyles;
+
+  // 以组件作用域登记实例绑定（props 经 env 暴露）
+  env := FScript.Interp.NewChildEnv(FScript.Interp.GlobalEnv);
+  env.Define('props', FScript.Interp.ObjectValue(props));
+  ScanNode(instRoot, env, ABinding, instRoot);
 end;
 
 // x-for 非键控：数组长度变化 → 清空重建克隆子树

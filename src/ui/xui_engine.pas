@@ -129,6 +129,7 @@ type
     function AddElement(AParent: TXuiNode; const AXMLFragment: string): TXuiNode;
     procedure RemoveElement(ANode: TXuiNode);
     procedure AttachElement(AParent: TXuiNode; ANode: TXuiNode);   // M7：运行时挂载节点（行为/样式装配）
+    procedure ApplyNodeData(ANode: TXuiNode);                      // M7-3：对既有子树补装配（组件实例化用）
     procedure ClearChildren(AParent: TXuiNode);
     procedure SetText(ANode: TXuiNode; const AText: string);
     procedure SetClass(ANode: TXuiNode; const AClassName: string);
@@ -1073,6 +1074,12 @@ begin
   AParent.AddChild(Result);
   ApplyNodeDataRecursive(Result);
   InvalidateStyles;
+end;
+
+// M7-3：对既有子树补装配行为与静态绑定（不移动节点）
+procedure TXuiEngine.ApplyNodeData(ANode: TXuiNode);
+begin
+  ApplyNodeDataRecursive(ANode);
 end;
 
 // M7：把运行时构建的节点挂入文档（重建行为、解析静态绑定、样式失效）

@@ -8651,6 +8651,49 @@ begin
         'const wi = reactive({ v: 3 });' + #10 +
         'watch(function () { return wi.v; }, function (nv, ov) { console.log("wi" + nv + "/" + ov); }, { immediate: true });');
       Check(Pos('wi3/undefined', src) > 0, 'watch immediate 注册即回调');
+
+      // watch deep：嵌套对象属性变化触发（内容快照比较）
+      RunAndFlush(
+        'const dw = reactive({ o: { v: 1 } });' + #10 +
+        'watch(function () { return dw.o; }, function (nv, ov) { console.log("deep-fire"); }, { deep: true });');
+      Check(sink.Log.Text = '', 'deep watch 基线不触发');
+      RunAndFlush('dw.o.v = 2;');
+      Check(Pos('deep-fire', sink.Log.Text) > 0, 'watch deep 捕获嵌套变化');
+
+      // ---- M7-3：组件化（props / 动态 prop / slot / 函数 prop）----
+
+      // 静态 prop + 函数 prop：组件内调用父传入的函数
+      RunAndFlush(
+        'function Dbl(n: number): number { return n * 2; }' + #10 +
+        'component("badge", { props: ["count", "f"], template: "<panel class=\"badge\"><label x-text=\"props.f(props.count)\"/></panel>" });');
+      engine.LoadFromString(
+        '<window><badge count="7" :f="Dbl"/></window>');
+      DrawEngine(engine);
+      node := engine.Document.Root[0];
+      Check((node.Count = 1) and (node[0].Text = '14'),
+        '组件实例化：静态 prop 与函数 prop');
+
+      // 动态 prop：随父状态更新
+      RunAndFlush('const bc = reactive({ n: 9 });');
+      engine.LoadFromString(
+        '<window><badge :count="bc.n" :f="Dbl"/></window>');
+      DrawEngine(engine);
+      node := engine.Document.Root[0];
+      Check((node.Count = 1) and (node[0].Text = '18'), '动态 prop 初始渲染');
+      RunAndFlush('bc.n = 11;');
+      node := engine.Document.Root[0];
+      Check((node.Count = 1) and (node[0].Text = '22'), '动态 prop 随父状态更新');
+
+      // slot：宿主子内容移入组件槽位，按父作用域求值
+      RunAndFlush(
+        'const slotState = reactive({ msg: "SLOT-OK" });' + #10 +
+        'component("my-box", { props: [], template: "<panel class=\"box\"><slot/></panel>" });');
+      engine.LoadFromString(
+        '<window><my-box><label id="sl" x-text="slotState.msg"/></my-box></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('sl');
+      Check((node <> nil) and (node.Text = 'SLOT-OK') and
+        (node.Parent.Tag = 'panel'), 'slot 内容移入组件槽位并按父作用域求值');
     finally
       bridge.Free;
     end;
