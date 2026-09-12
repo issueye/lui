@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-progress：进度条组件。支持 percentage 百分比和 status 状态配色 -->
+<panel class="ui-progress" :class="UiProgressClass(props.status)">
+  <panel class="ui-progress__outer" :style="'height:' + props.strokeWidth + 'px'">
+    <panel class="ui-progress__inner" :style="'width:' + props.percentage + '%; height:' + props.strokeWidth + 'px'"/>
+  </panel>
+  <label class="ui-progress__text" x-if="props.showText" :text="props.percentage + '%'"/>
+</panel>

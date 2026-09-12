@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-tooltip：文字提示。借助 x-popup 实现相对宿主定位 -->
+<panel class="ui-tooltip-wrap">
+  <slot/>
+  <panel class="ui-tooltip" x-if="props.visible" x-popup="" :x-popup-placement="props.placement">
+    <label class="ui-tooltip__text" :text="props.content"/>
+  </panel>
+</panel>

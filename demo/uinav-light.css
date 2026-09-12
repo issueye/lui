@@ -1,0 +1,59 @@
+/* lui M8 导航增强组件演示页 —— 浅色主题布局样式 */
+
+window {
+  background-color: #eef1f5;
+}
+
+.page {
+  padding: 14px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  column-gap: 8px;
+  margin-bottom: 10px;
+}
+
+.title {
+  font-size: 16px;
+  font-weight: bold;
+  color: #1f1f1f;
+  margin: 0;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.ghost {
+  width: 72px;
+  height: 30px;
+  font-size: 13px;
+  color: #4b5563;
+  background-color: #ffffff;
+  border: 1px solid #d7dbe2;
+  border-radius: 5px;
+  transition: all 150ms ease;
+}
+
+.ghost:hover {
+  background-color: #f2f4f8;
+}
+
+.step-footer {
+  display: flex;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.status-tip {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.tab-pane-box {
+  padding: 8px 4px;
+  font-size: 13px;
+  color: #374151;
+}

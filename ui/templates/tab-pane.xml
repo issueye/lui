@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-tab-pane：选项卡面板。根据 active 属性显示/隐藏内容 -->
+<panel class="ui-tab-pane" x-show="props.active">
+  <slot/>
+</panel>

@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- M8-4：数据展示类组件演示（Tag / Badge / Progress / Avatar / Collapse / Pagination / Table）
+     逻辑在 uidisp.ts；样式由 ui/theme/lui-light.css 与 demo/uidisp-light.css 提供 -->
+<window title="数据展示组件" width="440" height="860">
+  <script src="../ui/index.ts"/>
+  <script src="uidisp.ts"/>
+  <include src="nav.xml"/>
+  <panel class="page">
+    <panel class="header">
+      <label class="title" text="数据展示类组件"/>
+      <panel class="spacer"/>
+      <button id="theme" class="ghost" text="换肤" onclick="ThemeClick"/>
+      <button id="go-dlg" class="ghost" text="浮层反馈" to="uidlg" onclick="PageClick"/>
+    </panel>
+
+    <!-- 1. 标签与徽标 -->
+    <ui-card title="标签与徽标 Tag &amp; Badge">
+      <ui-space size="8">
+        <ui-tag text="默认" type="default"/>
+        <ui-tag text="主要" type="primary"/>
+        <ui-tag text="成功" type="success"/>
+        <ui-tag text="警告" type="warning"/>
+        <ui-tag text="危险" type="danger"/>
+      </ui-space>
+      <ui-divider/>
+      <ui-space size="8">
+        <ui-tag text="可关闭" type="primary" :closable="true" :on-close="OnTagClose1"/>
+        <ui-tag text="大标签" type="success" size="large" :closable="true" :on-close="OnTagClose2"/>
+        <ui-tag text="小标签" type="info" size="small"/>
+      </ui-space>
+      <ui-divider/>
+      <ui-space size="24">
+        <ui-badge :value="state.badgeNum" :max="99">
+          <ui-button text="消息" size="small" x-onclick="AddBadge"/>
+        </ui-badge>
+        <ui-badge :value="120" :max="99" type="warning">
+          <ui-button text="待办" size="small"/>
+        </ui-badge>
+        <ui-badge :dot="true">
+          <ui-button text="红点" size="small"/>
+        </ui-badge>
+        <ui-button text="+10徽标" size="small" type="primary" x-onclick="AddBadge"/>
+      </ui-space>
+    </ui-card>
+
+    <!-- 2. 头像与进度条 -->
+    <ui-card title="头像与进度条 Avatar &amp; Progress">
+      <ui-space size="16">
+        <ui-avatar text="U" :size="36" shape="circle"/>
+        <ui-avatar text="UI" :size="36" shape="square"/>
+        <ui-avatar text="LUI" :size="42" shape="circle"/>
+        <panel class="progress-col">
+          <ui-progress :percentage="state.progress" status="primary"/>
+          <ui-progress :percentage="100" status="success"/>
+          <ui-progress :percentage="35" status="exception"/>
+        </panel>
+        <ui-button text="步进" size="small" x-onclick="IncProgress"/>
+      </ui-space>
+    </ui-card>
+
+    <!-- 3. 折叠面板 -->
+    <ui-card title="折叠面板 Collapse">
+      <ui-collapse id="demo-col">
+        <ui-collapse-item id="col-item-1" title="组件库核心架构说明" :active="state.collapseOpen" :on-toggle="ToggleCollapse">
+          <label class="desc-text" text="lui 组件体系基于 FPC 原生无依赖纯代码实现，采用声明式模板、响应式数据流与双向绑定机制，具备出色的轻量化与跨平台渲染性能。"/>
+        </ui-collapse-item>
+      </ui-collapse>
+    </ui-card>
+
+    <!-- 4. 数据表格与分页 -->
+    <ui-card title="表格与分页 Table &amp; Pagination">
+      <ui-table id="main-table" :columns="state.tableCols" :data="state.tableData"/>
+      <panel class="page-footer">
+        <ui-pagination id="main-pg" :current="state.page" :page-size="state.pageSize" :total="state.total"
+          :on-prev="OnPrevPage" :on-next="OnNextPage"/>
+      </panel>
+    </ui-card>
+  </panel>
+</window>

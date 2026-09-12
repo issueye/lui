@@ -131,7 +131,8 @@ begin
     pageCss := FBaseName + '-light.css';
     navCss := 'nav-light.css';
   end;
-  FHost.Engine.LoadStyleSheetFromFile(FindFile(pageCss));
+  if FileExists(FindFile(pageCss)) then   // 页面私有样式可缺省（如 dialog_preview）
+    FHost.Engine.LoadStyleSheetFromFile(FindFile(pageCss));
   // 组件库主题：浅色表是基座（组件样式 + 浅色 token），深色主题再叠加 token 覆盖表。
   // 页面不使用组件库时文件不存在，跳过即可。
   libBase := FindFile('ui' + PathDelim + 'theme' + PathDelim + 'lui-light.css');
@@ -152,7 +153,7 @@ end;
 // 导航条：当前页按钮加 active（其余保持基础类，避免高亮残留）
 procedure TDemoForm.UpdateNav;
 const
-  Pages: array[0..5] of string = ('login', 'list', 'todo', 'script', 'm7', 'ui');
+  Pages: array[0..8] of string = ('login', 'list', 'todo', 'script', 'm7', 'ui', 'uidlg', 'uidisp', 'uinav');
 var
   i: Integer;
   node: TXuiNode;
@@ -351,10 +352,17 @@ begin
 end;
 
 procedure TDemoForm.LogError(const APrefix, AMessage: string);
+var
+  i: Integer;
+  frames: PCodePointer;
 begin
   with TStringList.Create do
   try
     Add(APrefix + ': ' + AMessage);
+    Add('Backtrace:');
+    frames := ExceptFrames;
+    for i := 0 to ExceptFrameCount - 1 do
+      Add(BackTraceStrFunc(frames[i]));
     SaveToFile(ExtractFilePath(ParamStr(0)) + 'shot-error.txt');
   finally
     Free;
@@ -474,6 +482,28 @@ begin
     Exit;
   end;
 
+  // uidlg 页：打开对话框展示模态遮罩与居中浮层
+  if FBaseName = 'uidlg' then
+  begin
+    ClickAt(engine.Document.FindElementById('btn-open-dialog'));
+    engine.HandleMouseMove(10, 10);
+    Exit;
+  end;
+
+  // uidisp 页：数据展示页交互模拟（点击第一行与轻微移动）
+  if FBaseName = 'uidisp' then
+  begin
+    engine.HandleMouseMove(10, 10);
+    Exit;
+  end;
+
+  // uinav 页：导航页交互模拟
+  if FBaseName = 'uinav' then
+  begin
+    engine.HandleMouseMove(10, 10);
+    Exit;
+  end;
+
   // todo
   inputNode := engine.Document.FindElementById('new-todo');
   if inputNode <> nil then
@@ -528,8 +558,16 @@ begin
       page := 'm7'
     else if arg = 'ui' then
       page := 'ui'
+    else if arg = 'uidlg' then
+      page := 'uidlg'
+    else if arg = 'uidisp' then
+      page := 'uidisp'
+    else if arg = 'uinav' then
+      page := 'uinav'
     else if arg = 'uiform' then
       page := 'ui-form'
+    else if arg = 'uidialog' then
+      page := 'dialog_preview'
     else if arg = 'login' then
       page := 'login'
     else if arg = 'shot' then
@@ -592,6 +630,10 @@ begin
           Form.Host.PaintTo(bmp.Canvas, 0, 0);
           shotFile := ExtractFilePath(ParamStr(0)) + 'shot.png';
           bmp.SaveToFile(shotFile);
+          if dark then
+            bmp.SaveToFile(ExtractFilePath(ParamStr(0)) + page + '-dark.png')
+          else
+            bmp.SaveToFile(ExtractFilePath(ParamStr(0)) + page + '-light.png');
         finally
           bmp.Free;
         end;

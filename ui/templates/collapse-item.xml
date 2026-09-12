@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-collapse-item：折叠项。title 为标题，active 控制展开，展开项含边框和内边距 -->
+<panel class="ui-collapse-item" :class="props.active ? 'is-active' : ''">
+  <panel class="ui-collapse-item__head" x-onclick="props.onToggle">
+    <label class="ui-collapse-item__title" :text="props.title"/>
+    <panel class="ui-collapse-item__spacer"/>
+    <label class="ui-collapse-item__arrow" :text="props.active ? '▲' : '▼'"/>
+  </panel>
+  <panel class="ui-collapse-item__body" x-if="props.active">
+    <slot/>
+  </panel>
+</panel>

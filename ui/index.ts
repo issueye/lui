@@ -7,5 +7,7 @@ ui.include("components/button.ts");
 ui.include("components/input.ts");
 ui.include("components/form.ts");
 ui.include("components/feedback.ts");
+ui.include("components/display.ts");
+ui.include("components/nav.ts");
 
 console.log("lui ui 组件库已加载（" + ui.version + "）");

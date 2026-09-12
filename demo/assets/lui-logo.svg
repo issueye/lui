@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="#1677ff" />
+  <!-- 外环光晕装饰 -->
+  <circle cx="64" cy="64" r="48" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.3" />
+  <!-- L 字母流线矢量 -->
+  <path d="M 36 32 L 36 88 L 76 88 C 82 88 86 84 86 78 C 86 72 82 68 76 68 L 52 68 L 52 32 Z" fill="#ffffff" />
+  <!-- 科技光点与弧线 -->
+  <circle cx="86" cy="42" r="8" fill="#52c41a" />
+  <path d="M 68 36 C 76 34 84 38 90 46" fill="none" stroke="#faad14" stroke-width="4" />
+</svg>

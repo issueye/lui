@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-collapse：折叠面板容器 -->
+<panel class="ui-collapse">
+  <slot/>
+</panel>

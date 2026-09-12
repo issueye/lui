@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-dropdown：下拉菜单。点击触发器切换菜单展开，复用 x-popup 实现浮层定位 -->
+<panel class="ui-dropdown-wrap">
+  <slot/>
+  <panel class="ui-dropdown" x-if="props.visible" x-popup="" :x-popup-placement="props.placement">
+    <panel class="ui-dropdown__menu" x-for="it in props.items">
+      <panel class="ui-dropdown__item" :class="it.danger ? 'is-danger' : ''" x-onclick="UiDropdownCommand(props, it)">
+        <label class="ui-dropdown__text" :text="it.label"/>
+      </panel>
+    </panel>
+  </panel>
+</panel>

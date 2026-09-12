@@ -633,7 +633,14 @@ begin
   else if ANode.Text <> '' then
   begin
     ANode.ContentHeight := 0;
-    contentH := WrapText(ANode.Text, style, contentW, ACtx.Measure, ANode.TextLines);
+    if ANode.Tag = 'button' then
+    begin
+      SetLength(ANode.TextLines, 1);
+      ANode.TextLines[0] := ANode.Text;
+      contentH := LineHeightPx(style);
+    end
+    else
+      contentH := WrapText(ANode.Text, style, contentW, ACtx.Measure, ANode.TextLines);
   end
   else
   begin

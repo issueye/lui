@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-step：步骤条单项。支持图标/序号、标题、描述 -->
+<panel :class="UiStepStatusClass(props.status)">
+  <panel class="ui-step__head">
+    <panel class="ui-step__icon">
+      <label class="ui-step__number" :text="UiStepNumberText(props.step, props.status)"/>
+    </panel>
+    <panel class="ui-step__line"/>
+  </panel>
+  <panel class="ui-step__main">
+    <label class="ui-step__title" :text="props.title"/>
+    <label class="ui-step__desc" x-show="props.desc !== ''" :text="props.desc"/>
+  </panel>
+</panel>

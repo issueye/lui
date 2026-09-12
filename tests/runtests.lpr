@@ -37,7 +37,7 @@ uses
   xui_css_token, xui_css_parser, xui_css_match, xui_render, xui_engine,
 
 
-  xui_events, xui_widget, xui_input,
+  xui_events, xui_widget, xui_input, xui_svg,
 
 
   xui_js_token, xui_js_parser, xui_js_runtime, xui_script, xui_script_dom,
@@ -1028,6 +1028,7 @@ type
 
 
     FKinds: TStringList;  // 调用序列：fill / frame / roundfill / roundframe / text / push / pop
+    PathCount: Integer;   // RenderPath 调用次数（SVG 矢量渲染验证）
 
 
     FTexts: TStringList;  // DrawText 的文本（按绘制顺序）
@@ -1064,6 +1065,8 @@ type
 
 
     procedure PopClip; override;
+    procedure RenderPath(const ACmds: TXuiPathCmdArray; const AFill, AStroke: TXuiColor;
+      AStrokeWidth: Single); override;
 
 
     function LineHeight(ACurrent: TXuiStyle): Single; override;
@@ -1098,6 +1101,12 @@ type
 
 
 
+
+procedure TFakeRenderer.RenderPath(const ACmds: TXuiPathCmdArray;
+  const AFill, AStroke: TXuiColor; AStrokeWidth: Single);
+begin
+  Inc(PathCount);
+end;
 
 constructor TFakeRenderer.Create;
 
@@ -8442,6 +8451,30 @@ end;
 
 { ---------- M8：组件库（ui/）---------- }
 
+const
+  // 与 ui/components/basic.ts 的 UiSvgIconPaths.close 一致（绑定更新断言用）
+  UiIconPathCloseD =
+    'M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z';
+
+// 子树内按类名找第一个节点（深度优先）
+function FindFirstByClass(ARoot: TXuiNode; const AClass: string): TXuiNode;
+var
+  i: Integer;
+  found: TXuiNode;
+begin
+  Result := nil;
+  if ARoot = nil then
+    Exit;
+  if ARoot.HasClass(AClass) then
+    Exit(ARoot);
+  for i := 0 to ARoot.Count - 1 do
+  begin
+    found := FindFirstByClass(ARoot[i], AClass);
+    if found <> nil then
+      Exit(found);
+  end;
+end;
+
 // 仓库内相对路径定位（从仓库根或 tests 目录运行都能找到）
 function RepoPath(const ARelative: string): string;
 begin
@@ -8464,6 +8497,7 @@ var
   node, btn: TXuiNode;
   theme, index: string;
   errs, seq: Integer;
+  pathCountBefore: Integer;
   src: string;
 
   function RunFlush(const ACode: string): string;
@@ -8638,7 +8672,7 @@ begin
         '<ui-alert id="al1" type="success" title="成功" text="操作已完成"/>' +
         '<ui-loading id="ld1" text="加载中…"/>' +
         '<ui-dialog id="dg1" :visible="fb.show" title="确认" :width="260" ' +
-        'x-onclick="OnDlgClose"><label text="内容"/></ui-dialog>' +
+        ':on-close="OnDlgClose" :on-ok="OnDlgOk"><label text="内容"/></ui-dialog>' +
         '</window>');
       DrawEngine(engine);
       Check(engine.Document.FindElementById('dg1') = nil, '组件库：ui-dialog 默认不显示（x-if 摘除）');
@@ -8648,15 +8682,278 @@ begin
       Check((node <> nil) and (node.Parent = engine.Document.Root) and
         (node.Style.Position = xposAbsolute), '组件库：ui-dialog 显示时挂到文档根（浮层）');
 
-      // 确定按钮点击路径（模板内按 id 定位）——按钮回调链路仍在排查，见 M8 文档 §11
-      RunFlush('');
+      // 确定按钮点击路径（模板内按 id 定位）
+      node := engine.Document.FindElementById('ui-dialog-ok');
+      Check(node <> nil, '组件库：ui-dialog-ok 按钮存在');
+      ClickNode(engine, node);
+      DrawEngine(engine);
+      src := RunFlush('console.log("oked=" + fb.oked + ",closed=" + fb.closed);');
+      Check(Pos('oked=1', src) > 0, '组件库：ui-dialog 点击确定触发 onOk 回调');
+      Check(engine.Document.FindElementById('dg1') = nil, '组件库：onOk 改状态后 ui-dialog 自动关闭');
 
-      // 命令式 message-box：创建浮层节点（等待回调与按钮结算待查，见 M8 文档 §11）
-      RunFlush('uiMessageBox.confirm("删除", "确定删除该条？");');
-      RunFlush('');
+      // ---- M8-3+：SVG 图标库（ui-svg-icon）+ 弹窗关闭按钮为矢量 SVG ----
+      // 实例化后宿主 id 转移到模板根：ic1 即 <svg> 节点（其子为 <path>）
+
+      // ui-svg-icon 渲染：path 的 d 来自图标库（close），经 RenderPath 矢量绘制
+      engine.LoadFromString(
+        '<window><ui-svg-icon id="ic1" name="close" size="14"/></window>');
+      pathCountBefore := fake.PathCount;
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('ic1');
+      Check((node <> nil) and (node.Tag = 'svg') and (node.Count >= 1) and
+            (node[0].Tag = 'path'), '组件库：ui-svg-icon 实例根为 svg 且含 path');
+      Check(node[0].AttributeValue('d', '') = UiIconPathCloseD,
+        '组件库：path 的 d 来自图标库 close');
+      Check(fake.PathCount > pathCountBefore,
+        '组件库：ui-svg-icon 经矢量路径渲染（RenderPath 被调用）');
+
+      // 动态换图标：:name 切换 → 子 path 的 d 属性更新 → svg 重解析再渲染
+      RunFlush('const icst = reactive({ n: "check" });');
+      engine.LoadFromString(
+        '<window><ui-svg-icon id="ic2" :name="icst.n" size="14"/></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('ic2');
+      Check((node <> nil) and (node[0].Tag = 'path') and
+            (node[0].AttributeValue('d', '') <> UiIconPathCloseD),
+        '组件库：动态图标初始为 check（d 非 close 路径）');
+      RunFlush('icst.n = "close";');
+      DrawEngine(engine);
+      Check(node[0].AttributeValue('d', '') = UiIconPathCloseD,
+        '组件库：动态换图标后 svg 重解析（d 更新为 close 路径）');
+
+      // 弹窗关闭按钮：dialog 模板的关闭控件为 SVG 图标（非文本 ✕）
+      // （前面图标用例已换文档：重新装载对话框实例；fb 全局状态仍在）
+      engine.LoadFromString(
+        '<window>' +
+        '<ui-dialog id="dg1" :visible="fb.show" title="确认" :width="260" ' +
+        ':on-close="OnDlgClose" :on-ok="OnDlgOk"><label text="内容"/></ui-dialog>' +
+        '</window>');
+      DrawEngine(engine);
+      RunFlush('fb.show = true;');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('dg1');
+      Check(node <> nil, '组件库：ui-dialog 再次显示');
+      btn := FindFirstByClass(node, 'ui-dialog__close');
+      Check((btn <> nil) and (btn.Count = 1) and (btn[0].Tag = 'svg') and
+            (btn[0].Count >= 1) and (btn[0][0].Tag = 'path'),
+        '组件库：弹窗关闭按钮为 ui-svg-icon（svg>path）');
+      Check(btn[0][0].AttributeValue('d', '') = UiIconPathCloseD,
+        '组件库：关闭按钮 path 来自图标库 close');
+      // 点击关闭（面板承载 x-onclick：点击 svg/面板命中后冒泡到绑定节点）
+      ClickNode(engine, btn);
+      src := RunFlush('console.log("closed=" + fb.closed);');
+      Check(Pos('closed=1', src) > 0, '组件库：SVG 关闭按钮点击触发 onClose');
+      RunFlush('fb.show = false;');
+
+      // 命令式 message-box：创建浮层节点与按钮结算
+      sink.LastError := '';
+      src := RunFlush('let boxResult = -1;' + #10 +
+        'uiMessageBox.confirm("删除", "确定删除该条？").then(function(res: boolean): void { boxResult = (res ? 1 : 0); });');
       DrawEngine(engine);
       src := RunFlush('console.log("boxn=" + (document.find("uibox0") === undefined ? "0" : "1"));');
       Check(Pos('boxn=1', src) > 0, '组件库：uiMessageBox 的浮层节点已挂到文档');
+      node := engine.Document.FindElementById('uibox-ok');
+      Check(node <> nil, '组件库：uiMessageBox 确定按钮存在');
+      ClickNode(engine, node);
+      script.DrainMicrotasks;
+      DrawEngine(engine);
+      src := RunFlush('console.log("res=" + boxResult);');
+      Check(Pos('res=1', src) > 0, '组件库：uiMessageBox 点击确定 Promise 被 resolve 为 true');
+      Check(engine.Document.FindElementById('uibox0') = nil, '组件库：uiMessageBox 结算后浮层节点自 DOM 移除');
+
+      // ---- M8-4：数据展示类组件（Tag / Badge / Progress / Avatar / Collapse / Pagination / Table / Tooltip / Popover） ----
+      RunFlush('const dispState = reactive({ ' +
+        'tagClosed: 0, tagClosable: true, ' +
+        'badgeVal: 150, ' +
+        'progress: 75, ' +
+        'colActive: false, colToggled: 0, ' +
+        'page: 1, paged: 0, ' +
+        'tblData: [{ id: "1", name: "Alice" }, { id: "2", name: "Bob" }], ' +
+        'tblCols: [{ prop: "id", label: "ID" }, { prop: "name", label: "姓名" }] ' +
+        '});' + #10 +
+        'function OnTagClose(): void { dispState.tagClosed = 1; }' + #10 +
+        'function OnColToggle(): void { dispState.colActive = !dispState.colActive; dispState.colToggled = dispState.colToggled + 1; }' + #10 +
+        'function OnPageNext(): void { dispState.page = dispState.page + 1; dispState.paged = dispState.paged + 1; }');
+
+      engine.LoadFromString(
+        '<window>' +
+        '<ui-tag id="t1" text="成功标签" type="success" :closable="dispState.tagClosable" :on-close="OnTagClose"/>' +
+        '<ui-badge id="bg1" :value="dispState.badgeVal" :max="99"><label text="消息"/></ui-badge>' +
+        '<ui-badge id="bg2" dot="true"><label text="待办"/></ui-badge>' +
+        '<ui-progress id="prg1" :percentage="dispState.progress" status="success"/>' +
+        '<ui-avatar id="av1" text="L" size="40" shape="circle"/>' +
+        '<ui-collapse id="cp1">' +
+        '<ui-collapse-item id="cpi1" title="折叠标题" :active="dispState.colActive" :on-toggle="OnColToggle">' +
+        '<label id="cpi-text" text="折叠详情文本"/>' +
+        '</ui-collapse-item>' +
+        '</ui-collapse>' +
+        '<ui-pagination id="pg1" :current="dispState.page" :total="55" :page-size="10" :on-next="OnPageNext"/>' +
+        '<ui-table id="tb1" :columns="dispState.tblCols" :data="dispState.tblData"/>' +
+        '<ui-tooltip id="tt1" content="提示内容"><label text="悬停"/></ui-tooltip>' +
+        '<ui-popover id="pop1" title="卡片标题" content="卡片正文"><label text="点击"/></ui-popover>' +
+        '</window>');
+      DrawEngine(engine);
+
+      // ui-tag 校验与关闭回调
+      node := engine.Document.FindElementById('t1');
+      Check((node <> nil) and node.HasClass('ui-tag') and node.HasClass('ui-tag--success'),
+        '组件库：ui-tag 带有成功配色修饰类');
+      // 子节点中的关闭图标
+      btn := nil;
+      for seq := 0 to node.Count - 1 do
+        if node[seq].HasClass('ui-tag__close') then
+        begin
+          btn := node[seq];
+          Break;
+        end;
+      Check(btn <> nil, '组件库：ui-tag closable 关闭按钮存在');
+      ClickNode(engine, btn);
+      DrawEngine(engine);
+      src := RunFlush('console.log("tag=" + dispState.tagClosed);');
+      Check(Pos('tag=1', src) > 0, '组件库：ui-tag 点击关闭触发 onClose 回调');
+
+      // ui-badge 溢出截断与小红点
+      node := engine.Document.FindElementById('bg1');
+      Check((node <> nil) and (node.Count >= 2) and (node[1].Count >= 1) and
+        (node[1][0].Text = '99+'), '组件库：ui-badge 数值超出 max 截断显示 99+');
+      node := engine.Document.FindElementById('bg2');
+      Check((node <> nil) and (node.Count >= 2) and node[1].HasClass('is-dot'),
+        '组件库：ui-badge dot 模式带有 is-dot 样式');
+
+      // ui-progress 进度与状态修饰类
+      node := engine.Document.FindElementById('prg1');
+      Check((node <> nil) and node.HasClass('ui-progress') and node.HasClass('is-success'),
+        '组件库：ui-progress 带有 is-success 状态类');
+      Check((node.Count >= 2) and (node[1].Text = '75%'),
+        '组件库：ui-progress 进度文字显示 75%');
+
+      // ui-avatar 样式与尺寸
+      node := engine.Document.FindElementById('av1');
+      Check((node <> nil) and node.HasClass('ui-avatar') and node.HasClass('ui-avatar--circle'),
+        '组件库：ui-avatar 圆形头像');
+
+      // ui-collapse 折叠与展开
+      Check(engine.Document.FindElementById('cpi-text') = nil,
+        '组件库：ui-collapse-item active=false 时详情折叠隐藏');
+      node := engine.Document.FindElementById('cpi1');
+      Check((node <> nil) and (node.Count >= 1), '组件库：ui-collapse-item 头节点存在');
+      ClickNode(engine, node[0]);   // 点击 head 触发 onToggle
+      DrawEngine(engine);
+      src := RunFlush('console.log("col=" + dispState.colActive);');
+      Check(Pos('col=true', src) > 0, '组件库：ui-collapse-item 点击头部切换展开状态');
+      Check(engine.Document.FindElementById('cpi-text') <> nil,
+        '组件库：ui-collapse-item 展开后内容节点进入 DOM');
+
+      // ui-pagination 分页与计算
+      node := engine.Document.FindElementById('pg1');
+      Check((node <> nil) and (node.Count >= 4) and (node[2].Text = '1 / 6'),
+        '组件库：ui-pagination 总页数正确计算为 1 / 6');
+      ClickNode(engine, node[3]);   // 点击下一页按钮
+      DrawEngine(engine);
+      src := RunFlush('console.log("page=" + dispState.page);');
+      Check(Pos('page=2', src) > 0, '组件库：ui-pagination 点击下一页触发回调');
+
+      // ui-table 渲染
+      node := engine.Document.FindElementById('tb1');
+      Check((node <> nil) and (node.Count = 2), '组件库：ui-table 渲染出表头与表体两大部分');
+      Check((node[1].Count = 2), '组件库：ui-table 表体由 x-for 渲染出 2 行数据');
+
+      // ui-tooltip & ui-popover 挂载
+      Check(engine.Document.FindElementById('tt1') <> nil, '组件库：ui-tooltip 宿主就绪');
+      Check(engine.Document.FindElementById('pop1') <> nil, '组件库：ui-popover 宿主就绪');
+
+      // ---- M8-5：导航增强类组件（Tabs / Menu / Breadcrumb / Dropdown / Steps / Backtop） ----
+      RunFlush('const navState = reactive({ ' +
+        'tab: "t1", tabSwitched: 0, ' +
+        'menuClicked: 0, ' +
+        'crumbClicked: 0, ' +
+        'backtopClicked: 0, ' +
+        'tabList: [{ name: "t1", label: "标签一" }, { name: "t2", label: "标签二" }], ' +
+        'dropItems: [{ key: "edit", label: "编辑" }, { key: "del", label: "删除", danger: true }] ' +
+        '});' + #10 +
+        'function OnNavTab(name: string): void { navState.tab = name; navState.tabSwitched = navState.tabSwitched + 1; }' + #10 +
+        'function OnNavMenu(): void { navState.menuClicked = navState.menuClicked + 1; }' + #10 +
+        'function OnCrumbClick(): void { navState.crumbClicked = navState.crumbClicked + 1; }' + #10 +
+        'function OnBacktop(): void { navState.backtopClicked = 1; }');
+
+      engine.LoadFromString(
+        '<window>' +
+        '<ui-tabs id="tabs1" :items="navState.tabList" :active="navState.tab" :on-change="OnNavTab">' +
+        '<ui-tab-pane name="t1" :active="navState.tab === ''t1''"><label id="pane1" text="内容一"/></ui-tab-pane>' +
+        '<ui-tab-pane name="t2" :active="navState.tab === ''t2''"><label id="pane2" text="内容二"/></ui-tab-pane>' +
+        '</ui-tabs>' +
+        '<ui-menu id="menu1" mode="horizontal">' +
+        '<ui-menu-item id="m1" name="home" title="首页" :active="true" :on-click="OnNavMenu"/>' +
+        '<ui-menu-item id="m2" name="settings" title="设置" :disabled="true"/>' +
+        '</ui-menu>' +
+        '<ui-breadcrumb id="bc1">' +
+        '<ui-breadcrumb-item id="bc-item-1" text="首页" :on-click="OnCrumbClick"/>' +
+        '<ui-breadcrumb-item id="bc-item-2" text="组件" :last="true"/>' +
+        '</ui-breadcrumb>' +
+        '<ui-dropdown id="dp1" :items="navState.dropItems">' +
+        '<ui-button id="dp-btn" text="下拉操作"/>' +
+        '</ui-dropdown>' +
+        '<ui-steps id="st1" :current="2">' +
+        '<ui-step id="st-item-1" :step="1" title="已完成" status="finish"/>' +
+        '<ui-step id="st-item-2" :step="2" title="进行中" status="process"/>' +
+        '<ui-step id="st-item-3" :step="3" title="等待中" status="wait"/>' +
+        '</ui-steps>' +
+        '<ui-backtop id="bt1" :on-click="OnBacktop"/>' +
+        '</window>');
+      DrawEngine(engine);
+
+      // 1. ui-tabs 校验与点击切换
+      node := engine.Document.FindElementById('tabs1');
+      Check((node <> nil) and node.HasClass('ui-tabs'), '组件库：ui-tabs 根节点样式生效');
+      Check((node.Count >= 2) and (node[0].Count = 2), '组件库：ui-tabs 渲染出两个头部标签项');
+      Check(node[0][0].HasClass('is-active'), '组件库：ui-tabs 首个标签为激活态 is-active');
+      Check(not node[0][1].HasClass('is-active'), '组件库：ui-tabs 第二个标签非激活态');
+      ClickNode(engine, node[0][1]);   // 点击第二个 tab
+      DrawEngine(engine);
+      src := RunFlush('console.log("tab=" + navState.tab + ",sw=" + navState.tabSwitched);');
+      Check((Pos('tab=t2', src) > 0) and (Pos('sw=1', src) > 0), '组件库：ui-tabs 点击切换并触发回调');
+
+      // 2. ui-menu 模式与菜单项状态
+      node := engine.Document.FindElementById('menu1');
+      Check((node <> nil) and node.HasClass('ui-menu--horizontal'), '组件库：ui-menu 横向模式生效');
+      node := engine.Document.FindElementById('m1');
+      Check((node <> nil) and node.HasClass('is-active'), '组件库：ui-menu-item 激活态生效');
+      ClickNode(engine, node);
+      DrawEngine(engine);
+      src := RunFlush('console.log("menu=" + navState.menuClicked);');
+      Check(Pos('menu=1', src) > 0, '组件库：ui-menu-item 点击触发回调');
+      node := engine.Document.FindElementById('m2');
+      Check((node <> nil) and node.HasClass('is-disabled'), '组件库：ui-menu-item 禁用态生效');
+
+      // 3. ui-breadcrumb 面包屑导航与最后一项
+      node := engine.Document.FindElementById('bc-item-1');
+      Check(node <> nil, '组件库：ui-breadcrumb-item 项存在');
+      ClickNode(engine, node[0]);
+      DrawEngine(engine);
+      src := RunFlush('console.log("crumb=" + navState.crumbClicked);');
+      Check(Pos('crumb=1', src) > 0, '组件库：ui-breadcrumb-item 点击触发回调');
+      node := engine.Document.FindElementById('bc-item-2');
+      Check((node <> nil) and node[0].HasClass('is-last'), '组件库：ui-breadcrumb-item 末项带 is-last 样式');
+
+      // 4. ui-steps 步骤条状态与图标
+      node := engine.Document.FindElementById('st-item-1');
+      Check((node <> nil) and node.HasClass('is-finish') and (node[0][0][0].Text = '✓'),
+        '组件库：ui-step 完成态带 is-finish 并呈现完成对勾');
+      node := engine.Document.FindElementById('st-item-2');
+      Check((node <> nil) and node.HasClass('is-process') and (node[0][0][0].Text = '2'),
+        '组件库：ui-step 进行中带 is-process 并呈现序号');
+      node := engine.Document.FindElementById('st-item-3');
+      Check((node <> nil) and node.HasClass('is-wait'),
+        '组件库：ui-step 待处理带 is-wait');
+
+      // 5. ui-dropdown & ui-backtop 挂载与回调
+      Check(engine.Document.FindElementById('dp1') <> nil, '组件库：ui-dropdown 宿主就绪');
+      node := engine.Document.FindElementById('bt1');
+      Check((node <> nil) and node.HasClass('ui-backtop'), '组件库：ui-backtop 节点就绪');
+      ClickNode(engine, node);
+      DrawEngine(engine);
+      src := RunFlush('console.log("bt=" + navState.backtopClicked);');
+      Check(Pos('bt=1', src) > 0, '组件库：ui-backtop 点击触发回调');
     finally
       bridge.Free;
     end;
@@ -10428,30 +10725,104 @@ begin
 
 
   {$ELSE}
-
-
   Check(True, '非 Windows 平台无 GDI+ 后端');
-
-
   {$ENDIF}
-
-
 end;
 
+procedure TestSvgSupport;
+var
+  cmds: TXuiPathCmdArray;
+  doc: TXuiSvgDoc;
+  shape: TSvgShape;
+  engine: TXuiEngine;
+  fake: TFakeRenderer;
+  svgNode: TXuiNode;
+  xml: string;
+begin
+  WriteLn('--- SVG 矢量图形支持 ---');
 
+  // 1. Path 词法解析：直线与闭合
+  cmds := ParseSvgPath('M 10 20 L 30 40 H 50 V 60 Z');
+  Check(Length(cmds) = 5, 'SVG Path: 直线与闭合指令解析');
+  if Length(cmds) >= 5 then
+  begin
+    Check((cmds[0].Kind = pckMoveTo) and (Round(cmds[0].P1.X) = 10) and (Round(cmds[0].P1.Y) = 20), 'MoveTo 坐标');
+    Check((cmds[1].Kind = pckLineTo) and (Round(cmds[1].P1.X) = 30) and (Round(cmds[1].P1.Y) = 40), 'LineTo 坐标');
+    Check((cmds[2].Kind = pckLineTo) and (Round(cmds[2].P1.X) = 50) and (Round(cmds[2].P1.Y) = 40), 'H 水平线坐标');
+    Check((cmds[3].Kind = pckLineTo) and (Round(cmds[3].P1.X) = 50) and (Round(cmds[3].P1.Y) = 60), 'V 垂直线坐标');
+    Check(cmds[4].Kind = pckClose, 'Close 闭合指令');
+  end;
 
+  // 2. 贝塞尔曲线：三次与平滑
+  cmds := ParseSvgPath('M0,0 C 10 20, 30 40, 50 60 S 70 80, 90 100');
+  Check(Length(cmds) = 3, 'SVG Path: 贝塞尔 C/S 指令');
+  if Length(cmds) >= 3 then
+  begin
+    Check(cmds[1].Kind = pckBezierTo, '三次贝塞尔 C');
+    Check(cmds[2].Kind = pckBezierTo, '平滑三次贝塞尔 S 自动计算反射控制点');
+    Check((Round(cmds[2].P1.X) = 70) and (Round(cmds[2].P1.Y) = 80), '平滑反射控制点精确计算');
+  end;
 
+  // 3. 椭圆弧 A 指令
+  cmds := ParseSvgPath('M 0 0 A 25 25 0 0 1 50 50');
+  Check(Length(cmds) > 1, 'SVG Path: 椭圆弧 A 转贝塞尔');
+
+  // 4. SVG XML 解析
+  xml := '<svg viewBox="0 0 100 100" width="100" height="100">' +
+         '  <circle cx="50" cy="50" r="40" fill="#ff0000" stroke="#0000ff" stroke-width="2"/>' +
+         '  <rect x="10" y="10" width="80" height="80" rx="5" fill="none" stroke="currentColor"/>' +
+         '  <line x1="0" y1="0" x2="100" y2="100" stroke="#00ff00"/>' +
+         '  <polygon points="10,10 90,10 50,90" fill="#ffff00"/>' +
+         '</svg>';
+  doc := TXuiSvgDoc.Create;
+  try
+    doc.LoadFromString(xml);
+    Check(doc.HasViewBox, 'SVG 文档解析 viewBox 成功');
+    Check(Round(doc.ViewBox.Right) = 100, 'viewBox 宽度正确');
+    Check(doc.Shapes.Count = 4, 'SVG 图元解析数量为 4 (circle, rect, line, polygon)');
+
+    // 检查 rect 形状的 currentColor
+    shape := TSvgShape(doc.Shapes[1]);
+    Check(shape.IsCurrentColorStroke, 'rect 描边正确识别 currentColor');
+    Check(not shape.HasFill, 'rect fill 为 none');
+
+    // 检查渲染与坐标变换（无异常）
+    fake := TFakeRenderer.Create;
+    try
+      doc.Render(fake, Rect(0, 0, 200, 200), XuiRGB(255, 255, 255));
+      Check(True, 'SVG Render 视口映射与缩放绘制完成');
+    finally
+      fake.Free;
+    end;
+  finally
+    doc.Free;
+  end;
+
+  // 5. 与 UI 引擎集成：<svg> 节点行为
+  engine := NewTestEngine(fake);
+  try
+    engine.LoadFromString(
+      '<window>' +
+      '  <svg id="s1" width="32" height="32" viewBox="0 0 24 24">' +
+      '    <circle cx="12" cy="12" r="10" stroke="currentColor" fill="none"/>' +
+      '  </svg>' +
+      '</window>');
+    svgNode := engine.Document.FindElementById('s1');
+    Check(svgNode <> nil, 'UI 引擎成功生成 <svg> 节点');
+    Check(svgNode.Behavior is TXuiSvgBehavior, 'svg 节点已挂载 TXuiSvgBehavior 行为');
+    Check(TXuiBehavior(svgNode.Behavior).SuppressChildrenRendering, 'svg 行为抑制子图元普通流式渲染');
+    DrawEngine(engine);
+    Check(True, '引擎 Paint SVG 流程无异常');
+  finally
+    engine.Free;
+  end;
+end;
 
 begin
-
-
   Measurer := TFakeMeasurer.Create;
-
-
   try
-
-
     WriteLn('=== lui 单元测试 ===');
+    TestSvgSupport;
 
 
 

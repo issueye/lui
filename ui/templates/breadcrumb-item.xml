@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-breadcrumb-item：面包屑单项。最后一项不高亮且不呈现分隔符 -->
+<panel class="ui-breadcrumb-item">
+  <label class="ui-breadcrumb-item__link" :class="props.last ? 'is-last' : ''" :text="props.text" x-onclick="props.onClick"/>
+  <label class="ui-breadcrumb-item__separator" x-show="!props.last" :text="props.separator"/>
+</panel>

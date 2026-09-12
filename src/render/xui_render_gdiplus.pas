@@ -47,6 +47,8 @@ type
 
 const
   SmoothingModeAntiAlias = 4;
+  TextRenderingHintAntiAliasGridFit = 3;
+  TextRenderingHintAntiAlias = 4;
   TextRenderingHintClearTypeGridFit = 5;
   PixelOffsetModeHalf = 4;
   UnitPixel = 2;
@@ -76,11 +78,15 @@ function GdipSetTextRenderingHint(AGraphics: PGpGraphics; AMode: Integer): GpSta
   stdcall; external 'gdiplus.dll';
 function GdipSetPixelOffsetMode(AGraphics: PGpGraphics; AMode: Integer): GpStatus;
   stdcall; external 'gdiplus.dll';
+function GdipSetTextContrast(AGraphics: PGpGraphics; AContrast: LongWord): GpStatus;
+  stdcall; external 'gdiplus.dll';
 function GdipCreateSolidFill(AColor: LongWord; out ABrush: PGpBrush): GpStatus;
   stdcall; external 'gdiplus.dll';
 function GdipDeleteBrush(ABrush: PGpBrush): GpStatus;
   stdcall; external 'gdiplus.dll';
 function GdipFillRectangle(AGraphics: PGpGraphics; ABrush: PGpBrush;
+  AX, AY, AWidth, AHeight: Single): GpStatus; stdcall; external 'gdiplus.dll';
+function GdipDrawRectangle(AGraphics: PGpGraphics; APen: PGpPen;
   AX, AY, AWidth, AHeight: Single): GpStatus; stdcall; external 'gdiplus.dll';
 function GdipFillPath(AGraphics: PGpGraphics; ABrush: PGpBrush;
   APath: PGpPath): GpStatus; stdcall; external 'gdiplus.dll';
@@ -94,6 +100,12 @@ function GdipCreatePath(ABrushMode: Integer; out APath: PGpPath): GpStatus;
 function GdipDeletePath(APath: PGpPath): GpStatus; stdcall; external 'gdiplus.dll';
 function GdipAddPathArc(APath: PGpPath; AX, AY, AWidth, AHeight,
   AStartAngle, ASweepAngle: Single): GpStatus; stdcall; external 'gdiplus.dll';
+function GdipAddPathLine(APath: PGpPath; X1, Y1, X2, Y2: Single): GpStatus;
+  stdcall; external 'gdiplus.dll';
+function GdipAddPathBezier(APath: PGpPath; X1, Y1, X2, Y2, X3, Y3, X4, Y4: Single): GpStatus;
+  stdcall; external 'gdiplus.dll';
+function GdipStartPathFigure(APath: PGpPath): GpStatus;
+  stdcall; external 'gdiplus.dll';
 function GdipClosePathFigure(APath: PGpPath): GpStatus;
   stdcall; external 'gdiplus.dll';
 function GdipCreateFontFamilyFromName(AName: PWideChar;
@@ -149,7 +161,7 @@ type
     function MakePen(const AColor: TXuiColor; AWidth: Single): PGpPen;
     function EnsureFont(AStyle: TXuiStyle): PGpFont;
     function EnsureFormat(AStyle: TXuiStyle): PGpStringFormat;
-    procedure DrawRoundPath(ARect: TRect; ARadius: Single; ABrush: PGpBrush;
+    procedure DrawRoundPath(x, y, w, h: Single; ARadius: Single; ABrush: PGpBrush;
       APen: PGpPen);
     procedure ApplyClip(const ARect: TRect);
   public
@@ -166,6 +178,8 @@ type
     procedure FillRoundRect(const R: TRect; ARadius: Single; const AColor: TXuiColor); override;
     procedure FrameRoundRect(const R: TRect; ARadius, AWidth: Single;
       const AColor: TXuiColor); override;
+    procedure RenderPath(const ACmds: TXuiPathCmdArray; const AFill, AStroke: TXuiColor;
+      AStrokeWidth: Single); override;
   end;
 
 var
@@ -182,6 +196,96 @@ begin
   FillChar(input, SizeOf(input), 0);
   input.GdiplusVersion := 1;
   Result := GdiplusStartup(GdiPlusToken, @input, @output) = 0;
+end;
+
+var
+  GFontResolverCache: TStringList = nil;
+
+function ResolveFontFamilyName(const ACandidates: string): string;
+var
+  list: TStringList;
+  i, idx: Integer;
+  item: string;
+  testFam: PGpFontFamily;
+  wide: UnicodeString;
+  found: Boolean;
+const
+  FALLBACK_FONTS: array[0..5] of string = (
+    'Microsoft YaHei UI',
+    'Microsoft YaHei',
+    'Segoe UI',
+    'PingFang SC',
+    'Tahoma',
+    'Arial'
+  );
+begin
+  if Trim(ACandidates) = '' then
+    Exit('Microsoft YaHei UI');
+
+  if GFontResolverCache = nil then
+    GFontResolverCache := TStringList.Create;
+
+  idx := GFontResolverCache.IndexOfName(ACandidates);
+  if idx >= 0 then
+    Exit(GFontResolverCache.ValueFromIndex[idx]);
+
+  Result := '';
+  found := False;
+  list := TStringList.Create;
+  try
+    list.Delimiter := ',';
+    list.StrictDelimiter := True;
+    list.DelimitedText := ACandidates;
+    for i := 0 to list.Count - 1 do
+    begin
+      item := Trim(list[i]);
+      item := StringReplace(item, '"', '', [rfReplaceAll]);
+      item := StringReplace(item, '''', '', [rfReplaceAll]);
+      item := Trim(item);
+      if (item = '') or
+         (SameText(item, 'sans-serif')) or
+         (SameText(item, 'serif')) or
+         (SameText(item, 'monospace')) or
+         (SameText(item, 'system-ui')) or
+         (SameText(item, 'cursive')) or
+         (SameText(item, 'fantasy')) then
+        Continue;
+
+      testFam := nil;
+      wide := UnicodeString(item);
+      if (GdipCreateFontFamilyFromName(PWideChar(wide), nil, testFam) = 0) and (testFam <> nil) then
+      begin
+        GdipDeleteFontFamily(testFam);
+        Result := item;
+        found := True;
+        Break;
+      end;
+    end;
+
+    if not found then
+    begin
+      for i := Low(FALLBACK_FONTS) to High(FALLBACK_FONTS) do
+      begin
+        item := FALLBACK_FONTS[i];
+        testFam := nil;
+        wide := UnicodeString(item);
+        if (GdipCreateFontFamilyFromName(PWideChar(wide), nil, testFam) = 0) and (testFam <> nil) then
+        begin
+          GdipDeleteFontFamily(testFam);
+          Result := item;
+          found := True;
+          Break;
+        end;
+      end;
+    end;
+
+    if not found then
+      Result := 'Microsoft YaHei UI';
+
+    GFontResolverCache.Values[ACandidates] := Result;
+  finally
+    list.Free;
+  end;
 end;
 
 { TGdiPlusRenderer }
@@ -230,6 +334,7 @@ begin
     GdipSetSmoothingMode(FGraphics, SmoothingModeAntiAlias);
     GdipSetTextRenderingHint(FGraphics, TextRenderingHintClearTypeGridFit);
     GdipSetPixelOffsetMode(FGraphics, PixelOffsetModeHalf);
+    GdipSetTextContrast(FGraphics, 3);
   end;
 end;
 
@@ -249,6 +354,7 @@ begin
     begin
       GdipSetTextRenderingHint(FMeasureGraphics, TextRenderingHintClearTypeGridFit);
       GdipSetPixelOffsetMode(FMeasureGraphics, PixelOffsetModeHalf);
+      GdipSetTextContrast(FMeasureGraphics, 3);
     end;
   end;
   Result := FMeasureGraphics;
@@ -282,8 +388,10 @@ var
   key: string;
   style: Integer;
   family: UnicodeString;
+  resolvedName: string;
 begin
-  key := AStyle.FontFamily + '|' + IntToStr(Round(AStyle.FontSize * 4)) +
+  resolvedName := ResolveFontFamilyName(AStyle.FontFamily);
+  key := resolvedName + '|' + IntToStr(Round(AStyle.FontSize * 4)) +
     '|' + BoolToStr(AStyle.FontBold, 'B', 'R');
   if (FFont <> nil) and (key = FFontKey) then
     Exit(FFont);
@@ -300,12 +408,11 @@ begin
   end;
   if FMeasureGraphics = nil then
     MeasureGraphics;
-  // 字体名先落局部变量，避免 PWideChar 指向已释放的临时字符串
-  family := UnicodeString(AStyle.FontFamily);
+  // 使用经过候选栈探测后已验证存在的系统字体
+  family := UnicodeString(resolvedName);
   if GdipCreateFontFamilyFromName(PWideChar(family), nil, FFontFamily) <> 0 then
   begin
     FFontFamily := nil;
-    // 字体族不存在时回退系统默认（GDI+ 常见的 GenericSansSerif 替代）
     family := 'Microsoft YaHei UI';
     GdipCreateFontFamilyFromName(PWideChar(family), nil, FFontFamily);
   end;
@@ -325,25 +432,16 @@ end;
 
 function TGdiPlusRenderer.EnsureFormat(AStyle: TXuiStyle): PGpStringFormat;
 begin
-  if (FFormat <> nil) and (FFormatAlign = AStyle.TextAlign) then
-    Exit(FFormat);
   if FFormat <> nil then
-  begin
-    GdipDeleteStringFormat(FFormat);
-    FFormat := nil;
-  end;
+    Exit(FFormat);
   GdipCreateStringFormat(0, 0, FFormat);
   if FFormat = nil then
     Exit(nil);
-  case AStyle.TextAlign of
-    xtaCenter: GdipSetStringFormatAlign(FFormat, StringAlignmentCenter);
-    xtaRight: GdipSetStringFormatAlign(FFormat, StringAlignmentFar);
-  else
-    GdipSetStringFormatAlign(FFormat, StringAlignmentNear);
-  end;
+  // 水平与垂直对齐均保持 Near（起始锚点已在 DrawText 中按 AStyle.TextAlign 手动计算精确像素，
+  // 避免 GDI+ 在布局矩形内进行二次居中叠加，防止居中按钮文字向右偏斜）
+  GdipSetStringFormatAlign(FFormat, StringAlignmentNear);
   GdipSetStringFormatLineAlign(FFormat, StringAlignmentNear);
   GdipSetStringFormatFlags(FFormat, StringFormatFlagsNoWrap);
-  FFormatAlign := AStyle.TextAlign;
   Result := FFormat;
 end;
 
@@ -368,22 +466,19 @@ begin
   FrameRoundRect(R, 0, AWidth, AColor);
 end;
 
-procedure TGdiPlusRenderer.DrawRoundPath(ARect: TRect; ARadius: Single;
+procedure TGdiPlusRenderer.DrawRoundPath(x, y, w, h: Single; ARadius: Single;
   ABrush: PGpBrush; APen: PGpPen);
 var
   path: PGpPath;
   d: Single;
-  x, y, w, h: Single;
 begin
   if (FGraphics = nil) or ((ABrush = nil) and (APen = nil)) then
+    Exit;
+  if (w <= 0) or (h <= 0) then
     Exit;
   GdipCreatePath(FillModeAlternate, path);
   if path = nil then
     Exit;
-  x := ARect.Left;
-  y := ARect.Top;
-  w := ARect.Right - ARect.Left;
-  h := ARect.Bottom - ARect.Top;
   d := Min(Min(ARadius * 2, w), h);
   if d > 0 then
   begin
@@ -421,7 +516,7 @@ begin
   if ARadius <= 0 then
     GdipFillRectangle(FGraphics, brush, R.Left, R.Top, R.Right - R.Left, R.Bottom - R.Top)
   else
-    DrawRoundPath(R, ARadius, brush, nil);
+    DrawRoundPath(R.Left, R.Top, R.Right - R.Left, R.Bottom - R.Top, ARadius, brush, nil);
   GdipDeleteBrush(brush);
 end;
 
@@ -429,13 +524,33 @@ procedure TGdiPlusRenderer.FrameRoundRect(const R: TRect; ARadius, AWidth: Singl
   const AColor: TXuiColor);
 var
   pen: PGpPen;
+  half: Single;
+  x, y, w, h, strokeRad: Single;
 begin
-  if (FGraphics = nil) or (FOpacity <= 0.001) then
+  if (FGraphics = nil) or (FOpacity <= 0.001) or (AWidth <= 0) then
     Exit;
   pen := MakePen(AColor, AWidth);
   if pen = nil then
     Exit;
-  DrawRoundPath(R, ARadius, nil, pen);
+
+  // 关键：笔触中心线内缩 AWidth * 0.5（Half Stroke Inset）。
+  // 1. 彻底解决 1px 边框在居中描边模型下跨两个物理像素被羽化成 2px 粗糙虚边的问题，线条极致锐利细腻；
+  // 2. 严格将边框闭合在 BoxRect 内部，绝不向外溢出 0.5px 污染父级背景。
+  half := AWidth * 0.5;
+  x := R.Left + half;
+  y := R.Top + half;
+  w := (R.Right - R.Left) - AWidth;
+  h := (R.Bottom - R.Top) - AWidth;
+
+  if (w > 0) and (h > 0) then
+  begin
+    strokeRad := Max(0, ARadius - half);
+    if strokeRad > 0 then
+      DrawRoundPath(x, y, w, h, strokeRad, nil, pen)
+    else
+      GdipDrawRectangle(FGraphics, pen, x, y, w, h);
+  end;
+
   GdipDeletePen(pen);
 end;
 
@@ -463,6 +578,14 @@ begin
   if brush = nil then
     Exit;
 
+  // 渲染质量与透明度自适应：
+  // 当整体透明度或文本颜色存在半透明时，ClearType 亚像素在无衬底区域容易产生彩边杂色；
+  // 此时自动切换为灰度抗锯齿平滑；而在常规不透明状态下保持亚像素 ClearType。
+  if (FOpacity < 0.99) or (AStyle.TextColor.A < 250) then
+    GdipSetTextRenderingHint(FGraphics, TextRenderingHintAntiAliasGridFit)
+  else
+    GdipSetTextRenderingHint(FGraphics, TextRenderingHintClearTypeGridFit);
+
   wide := UnicodeString(AText);
   // GDI+ 会按布局矩形裁剪文本，且自身排版取整会吃掉末尾字符。
   // 这里自算锚点（宽度用与 GDI 后端一致的测量值）并给出宽裕矩形，避免任何裁剪，
@@ -478,12 +601,17 @@ begin
   layout.Width := textW + 32;
   layout.Height := Max(1, R.Bottom - R.Top);
 
-  // 单行垂直居中（与 GDI 后端保持同一文本契约）
+  // 单行垂直居中（与 GDI 后端保持同一文本契约，并消除中文字体 baseline 视觉下沉）
   GdipMeasureString(FGraphics, PWideChar(wide), Length(wide), font, layout,
     format, bounds, nil, nil);
   dy := ((R.Bottom - R.Top) - bounds.Height) / 2;
   if dy > 0 then
+  begin
+    // 视觉重心微校正：中文字符字型中心微偏下，字号 <= 16 时向上微调 0.5px 使居中更挺拔
+    if AStyle.FontSize <= 16 then
+      dy := dy - 0.5;
     layout.Y := layout.Y + dy;
+  end;
 
   GdipDrawString(FGraphics, PWideChar(wide), Length(wide), font, layout,
     format, brush);
@@ -497,6 +625,7 @@ var
   size: Windows.TSize;
   wide: UnicodeString;
   family: UnicodeString;
+  resolvedName: string;
   weight: Integer;
 begin
   // GDI+ 的 GdipMeasureString 会额外计入两侧内边距（比实际字宽大 5-7px），
@@ -516,8 +645,9 @@ begin
     weight := 700
   else
     weight := 400;
-  // 注意：WideString 必须放进局部变量，直接 PWideChar(WideString(...)) 会留悬垂指针
-  family := UnicodeString(AStyle.FontFamily);
+  // 统一度量与绘制字体：使用经过候选栈解析后的同一系统字体
+  resolvedName := ResolveFontFamilyName(AStyle.FontFamily);
+  family := UnicodeString(resolvedName);
   font := CreateFontW(-Round(Max(1, AStyle.FontSize)), 0, 0, 0, weight, 0, 0, 0,
     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
     DEFAULT_PITCH or FF_DONTCARE, PWideChar(family));
@@ -586,10 +716,91 @@ begin
   Result := ACurrent.FontSize * ACurrent.LineHeight;
 end;
 
+procedure TGdiPlusRenderer.RenderPath(const ACmds: TXuiPathCmdArray;
+  const AFill, AStroke: TXuiColor; AStrokeWidth: Single);
+var
+  g: PGpGraphics;
+  path: PGpPath;
+  brush: PGpBrush;
+  pen: PGpPen;
+  curPt: TXuiPointF;
+  i: Integer;
+  cmd: TXuiPathCmd;
+  hasFill, hasStroke: Boolean;
+begin
+  if (Length(ACmds) = 0) or (FOpacity <= 0.01) then
+    Exit;
+  hasFill := (AFill.A > 0) and (EffectiveAlpha(AFill) > 0);
+  hasStroke := (AStroke.A > 0) and (EffectiveAlpha(AStroke) > 0) and (AStrokeWidth > 0.01);
+  if (not hasFill) and (not hasStroke) then
+    Exit;
+
+  g := EnsureGraphics;
+  if g = nil then
+    Exit;
+
+  if GdipCreatePath(FillModeAlternate, path) <> 0 then
+    Exit;
+
+  curPt.X := 0;
+  curPt.Y := 0;
+
+  for i := 0 to High(ACmds) do
+  begin
+    cmd := ACmds[i];
+    case cmd.Kind of
+      pckMoveTo:
+      begin
+        GdipStartPathFigure(path);
+        curPt := cmd.P1;
+      end;
+      pckLineTo:
+      begin
+        GdipAddPathLine(path, curPt.X, curPt.Y, cmd.P1.X, cmd.P1.Y);
+        curPt := cmd.P1;
+      end;
+      pckBezierTo:
+      begin
+        GdipAddPathBezier(path, curPt.X, curPt.Y, cmd.P1.X, cmd.P1.Y,
+          cmd.P2.X, cmd.P2.Y, cmd.P3.X, cmd.P3.Y);
+        curPt := cmd.P3;
+      end;
+      pckClose:
+      begin
+        GdipClosePathFigure(path);
+      end;
+    end;
+  end;
+
+  if hasFill then
+  begin
+    brush := MakeBrush(AFill);
+    if brush <> nil then
+    begin
+      GdipFillPath(g, brush, path);
+      GdipDeleteBrush(brush);
+    end;
+  end;
+
+  if hasStroke then
+  begin
+    pen := MakePen(AStroke, AStrokeWidth);
+    if pen <> nil then
+    begin
+      GdipDrawPath(g, pen, path);
+      GdipDeletePen(pen);
+    end;
+  end;
+
+  GdipDeletePath(path);
+end;
+
 initialization
   GdiPlusAvailable := GdiPlusStartupOnce;
 
 finalization
+  if GFontResolverCache <> nil then
+    FreeAndNil(GFontResolverCache);
   if GdiPlusAvailable then
     GdiplusShutdown(GdiPlusToken);
 

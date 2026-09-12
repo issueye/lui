@@ -73,11 +73,23 @@ window {
 }
 
 .check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 16px;
   height: 16px;
   background-color: #ffffff;
-  border: 1px solid #c9cdd4;
+  border: 1px solid #d1d5db;
   border-radius: 4px;
+  transition: all 120ms ease;
+}
+
+.check .check-mark {
+  display: none;
+}
+
+.item:hover .check {
+  border-color: #22c55e;
 }
 
 .text {
@@ -116,8 +128,16 @@ window {
 }
 
 .item.done .check {
-  background-color: #21a366;
-  border-color: #21a366;
+  background-color: #22c55e;
+  border-color: #22c55e;
+}
+
+.item.done .check .check-mark {
+  display: flex;
+  font-size: 11px;
+  font-weight: bold;
+  line-height: 1;
+  color: #ffffff;
 }
 
 .item.done .text {

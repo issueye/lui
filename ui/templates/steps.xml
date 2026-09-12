@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-steps：步骤条容器。包含若干 ui-step -->
+<panel class="ui-steps" :class="props.direction === 'vertical' ? 'ui-steps--vertical' : 'ui-steps--horizontal'">
+  <slot/>
+</panel>

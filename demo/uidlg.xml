@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- M8-3：反馈与浮层演示（ui-alert / ui-loading / ui-dialog / ui-drawer / uiMessage / uiMessageBox）
+     逻辑在 uidlg.ts；样式由 ui/theme/lui-light.css 与 demo/uidlg-light.css 提供 -->
+<window title="反馈与浮层" width="420" height="740">
+  <script src="../ui/index.ts"/>
+  <script src="uidlg.ts"/>
+  <include src="nav.xml"/>
+  <panel class="page">
+    <panel class="header">
+      <label class="title" text="反馈与浮层组件"/>
+      <panel class="spacer"/>
+      <button id="theme" class="ghost" text="换肤" onclick="ThemeClick"/>
+      <button id="go-ui" class="ghost" text="基础组件" to="ui" onclick="PageClick"/>
+    </panel>
+
+    <ui-card title="警告提示 Alert">
+      <ui-space size="8" direction="vertical">
+        <ui-alert type="info" title="消息提示" text="这是一个常规的信息通知条目。"/>
+        <ui-alert type="success" title="成功提示" text="您的数据已成功同步至云端。"/>
+        <ui-alert type="warning" title="安全告警" text="请定期更新您的访问凭证。"/>
+        <ui-alert type="danger" title="错误提示" text="系统未能连接至目标数据库节点。"/>
+      </ui-space>
+    </ui-card>
+
+    <ui-card title="模态与浮层交互">
+      <ui-space size="8">
+        <ui-button id="btn-open-dialog" text="打开对话框" type="primary" x-onclick="OpenDialog"/>
+        <ui-button id="btn-open-drawer" text="打开抽屉" x-onclick="OpenDrawer"/>
+        <ui-button id="btn-confirm" text="异步确认框" type="danger" x-onclick="TriggerConfirm"/>
+      </ui-space>
+      <ui-divider/>
+      <ui-space size="8">
+        <ui-button text="成功消息" type="success" size="small" x-onclick="ShowMsgSuccess"/>
+        <ui-button text="警告消息" type="warning" size="small" x-onclick="ShowMsgWarning"/>
+        <ui-button text="错误消息" type="danger" size="small" x-onclick="ShowMsgError"/>
+        <ui-button text="公告提示" size="small" x-onclick="TriggerAlert"/>
+      </ui-space>
+      <label class="hint" x-text="'当前状态：' + state.statusText"/>
+    </ui-card>
+
+    <ui-card title="加载状态 Loading">
+      <ui-space size="10">
+        <ui-loading text="后台同步中..."/>
+      </ui-space>
+    </ui-card>
+
+    <!-- 模态对话框实例 -->
+    <ui-dialog id="demo-dialog" title="系统配置修改" :visible="state.dialogVisible" width="340"
+      :on-ok="OnDialogOk" :on-close="OnDialogClose">
+      <ui-space size="8" direction="vertical">
+        <ui-text text="确认修改核心配置文件？此操作将触发服务重载。"/>
+        <ui-input placeholder="请输入确认口令"/>
+      </ui-space>
+    </ui-dialog>
+
+    <!-- 侧边抽屉实例 -->
+    <ui-drawer id="demo-drawer" title="消息详情面板" :visible="state.drawerVisible" width="280"
+      :on-close="OnDrawerClose">
+      <ui-space size="8" direction="vertical">
+        <ui-text text="这里是抽屉内部的详细信息区。"/>
+        <ui-text type="sub" text="支持包含任意子组件，用于侧边查看详情、编辑扩展属性。"/>
+        <ui-button text="关闭抽屉" size="small" x-onclick="OnDrawerClose"/>
+      </ui-space>
+    </ui-drawer>
+  </panel>
+</window>

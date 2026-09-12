@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-pagination：分页器。包含总计文本、上下页按钮与当前页码指示 -->
+<panel class="ui-pagination">
+  <label class="ui-pagination__total" :text="'共 ' + props.total + ' 条'"/>
+  <ui-button text="&lt;" size="small" :disabled="!UiCanPrev(props.current)" :on-click="props.onPrev"/>
+  <label class="ui-pagination__pager" :text="props.current + ' / ' + UiPageCount(props.total, props.pageSize)"/>
+  <ui-button text="&gt;" size="small" :disabled="!UiCanNext(props.current, props.total, props.pageSize)" :on-click="props.onNext"/>
+</panel>

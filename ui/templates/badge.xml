@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-badge：徽标组件。支持数字溢出与小红点 dot 模式 -->
+<panel class="ui-badge">
+  <slot/>
+  <panel class="ui-badge__sup" x-if="!props.hidden" :class="UiBadgeClass(props.type, props.dot)">
+    <label class="ui-badge__text" x-if="!props.dot" :text="UiBadgeText(props.value, props.max)"/>
+  </panel>
+</panel>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-avatar：头像组件。支持图片与字符头像，支持圆形与方形 -->
+<panel class="ui-avatar" :class="'ui-avatar--' + props.shape"
+  :style="'width:' + props.size + 'px; height:' + props.size + 'px; border-radius:' + (props.shape === 'circle' ? (props.size / 2) + 'px' : '6px')">
+  <image class="ui-avatar__img" x-if="props.src !== ''" :src="props.src"/>
+  <label class="ui-avatar__text" x-if="props.src === ''" :text="props.text"/>
+</panel>

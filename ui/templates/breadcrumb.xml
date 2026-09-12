@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-breadcrumb：面包屑容器 -->
+<panel class="ui-breadcrumb">
+  <slot/>
+</panel>

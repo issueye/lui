@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-tag：标签组件。type 控制配色，closable 呈现关闭图标 -->
+<panel class="ui-tag" :class="UiTagClass(props.type, props.size)">
+  <label class="ui-tag__text" :text="props.text"/>
+  <slot/>
+  <panel class="ui-tag__close" x-if="props.closable" x-onclick="props.onClose">
+    <ui-svg-icon name="close" size="9"/>
+  </panel>
+</panel>

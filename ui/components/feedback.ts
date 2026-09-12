@@ -164,16 +164,24 @@ function UiBoxCancel(event): void {
 function UiBox(title, text, withCancel) {
   const id = "uibox" + UiToastSeq.n;
   UiToastSeq.n = UiToastSeq.n + 1;
-  let buttons = "<ui-button text=\"确定\" type=\"primary\" x-onclick=\"UiBoxOk\"/>";
+  let buttons = "<ui-button id=\"uibox-ok\" text=\"确定\" type=\"primary\" x-onclick=\"UiBoxOk\"/>";
   if (withCancel) {
-    buttons = "<ui-button text=\"取消\" x-onclick=\"UiBoxCancel\"/>" + buttons;
+    buttons = "<ui-button id=\"uibox-cancel\" text=\"取消\" x-onclick=\"UiBoxCancel\"/>" + buttons;
   }
   const node = document.add("<panel id=\"" + id + "\" class=\"ui-message-box\">" +
     "<panel class=\"ui-message-box__mask\"/>" +
     "<panel class=\"ui-message-box__panel\">" +
+    "<panel class=\"ui-message-box__head\">" +
     "<label class=\"ui-message-box__title\" text=\"" + UiEsc(title) + "\"/>" +
+    "</panel>" +
+    "<panel class=\"ui-message-box__divider\"/>" +
+    "<panel class=\"ui-message-box__body\">" +
     "<label class=\"ui-message-box__text\" text=\"" + UiEsc(text) + "\"/>" +
-    "<ui-space size=\"8\">" + buttons + "</ui-space>" +
+    "</panel>" +
+    "<panel class=\"ui-message-box__divider\"/>" +
+    "<panel class=\"ui-message-box__foot\">" +
+    buttons +
+    "</panel>" +
     "</panel></panel>");
   UiBoxPlace(node);
   ui.setTimeout(function () { UiBoxPlace(node); }, 40);

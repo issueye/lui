@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- ui-button：原生 button 行为 + 类型/尺寸修饰类；点击经回调 prop 抛给父级 -->
-<button class="ui-btn" :class="UiBtnClass(props.type, props.size)" :text="props.text"
+<!-- ui-button：原生 button 行为 + 类型/尺寸/圆角/朴素修饰类；点击经回调 prop 抛给父级 -->
+<button class="ui-btn" :class="UiBtnClass(props.type, props.size, props.round, props.plain, props.circle)" :text="props.text"
   :disabled="props.disabled" x-onclick="props.onClick"/>

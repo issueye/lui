@@ -493,7 +493,7 @@ begin
   if prop = 'display' then
   begin
     if vl = 'none' then AStyle.Display := xdispNone
-    else if vl = 'flex' then AStyle.Display := xdispFlex
+    else if (vl = 'flex') or (vl = 'inline-flex') then AStyle.Display := xdispFlex
     else AStyle.Display := xdispBlock;
     Exit;
   end;
@@ -586,9 +586,6 @@ begin
   if prop = 'font-family' then
   begin
     first := Trim(AValue);
-    i := Pos(',', first);
-    if i > 0 then
-      first := Copy(first, 1, i - 1);
     first := StringReplace(first, '"', '', [rfReplaceAll]);
     first := StringReplace(first, '''', '', [rfReplaceAll]);
     if Trim(first) <> '' then

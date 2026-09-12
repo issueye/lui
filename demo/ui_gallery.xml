@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- lui 组件库全景画廊（全组件美化全家福展示） -->
+<window title="lui 组件库全景画廊" width="560" height="980">
+  <script src="../ui/index.ts"/>
+  <panel class="page" style="padding: 20px; background-color: var(--ui-color-bg-soft);">
+    <!-- 头部横幅 -->
+    <panel class="header" style="margin-bottom: 16px; border-bottom: 1px solid var(--ui-color-border-light); padding-bottom: 12px;">
+      <panel style="display:flex; flex-direction:column;">
+        <label style="font-size:20px; font-weight:bold; color:var(--ui-color-text);" text="lui UI 组件库"/>
+        <label style="font-size:12px; color:var(--ui-color-text-sub); margin-top:3px;" text="轻量高效 · 原生自绘 · 矢量抗锯齿 · 精致现代美学"/>
+      </panel>
+      <panel class="spacer"/>
+      <ui-tag text="v0.8.0" type="primary" round="true"/>
+    </panel>
+
+    <!-- 1. 按钮展台：实色、朴素 Plain、圆角 Round、尺寸 -->
+    <ui-card title="按钮 Button">
+      <!-- 基础类型 -->
+      <ui-space size="8">
+        <ui-button text="默认"/>
+        <ui-button text="主要" type="primary"/>
+        <ui-button text="成功" type="success"/>
+        <ui-button text="警告" type="warning"/>
+        <ui-button text="危险" type="danger"/>
+        <ui-button text="信息" type="info"/>
+      </ui-space>
+
+      <ui-divider/>
+
+      <!-- 朴素按钮 Plain -->
+      <ui-space size="8">
+        <ui-button text="主要朴素" type="primary" plain="true"/>
+        <ui-button text="成功朴素" type="success" plain="true"/>
+        <ui-button text="警告朴素" type="warning" plain="true"/>
+        <ui-button text="危险朴素" type="danger" plain="true"/>
+        <ui-button text="信息朴素" type="info" plain="true"/>
+      </ui-space>
+
+      <ui-divider/>
+
+      <!-- 圆角 Round 与 尺寸变体 -->
+      <ui-space size="8">
+        <ui-button text="小号胶囊" type="primary" size="small" round="true"/>
+        <ui-button text="标准胶囊" type="success" round="true"/>
+        <ui-button text="大号胶囊" type="danger" size="large" round="true"/>
+        <ui-button text="禁用态" type="primary" disabled="true"/>
+      </ui-space>
+    </ui-card>
+
+    <!-- 2. 矢量 SVG 图标展台 -->
+    <ui-card title="矢量 SVG 图标 SvgIcon">
+      <ui-space size="16">
+        <ui-svg-icon name="check" size="20" color="#52c41a"/>
+        <ui-svg-icon name="close" size="20" color="#ff4d4f"/>
+        <ui-svg-icon name="search" size="20" color="#1677ff"/>
+        <ui-svg-icon name="star" size="20" color="#faad14"/>
+        <ui-svg-icon name="heart" size="20" color="#eb2f96"/>
+        <ui-svg-icon name="gear" size="20" color="#722ed1"/>
+        <ui-svg-icon name="user" size="20" color="#13c2c2"/>
+        <ui-svg-icon name="refresh" size="20" color="#2f54eb"/>
+        <ui-svg-icon name="edit" size="20" color="#fa8c16"/>
+        <ui-svg-icon name="trash" size="20" color="#f5222d"/>
+      </ui-space>
+      <label class="hint" text="原生 GDI+ 路径自绘，亚像素抗锯齿平滑渲染，支持任意缩放与 currentColor 继承"/>
+    </ui-card>
+
+    <!-- 3. 数据展示：标签与徽标 Tag & Badge -->
+    <ui-card title="数据展示 Tag &amp; Badge">
+      <ui-space size="8">
+        <ui-tag text="默认标签"/>
+        <ui-tag text="科技蓝" type="primary"/>
+        <ui-tag text="翡翠绿" type="success"/>
+        <ui-tag text="琥珀金" type="warning"/>
+        <ui-tag text="珊瑚红" type="danger"/>
+        <ui-tag text="胶囊圆角" type="primary" round="true"/>
+        <ui-tag text="可关闭" type="success" closable="true"/>
+      </ui-space>
+
+      <ui-divider/>
+
+      <!-- 徽标与头像 -->
+      <ui-space size="20">
+        <ui-badge value="8">
+          <ui-avatar text="U" size="34" shape="circle"/>
+        </ui-badge>
+
+        <ui-badge value="99+" type="primary">
+          <ui-avatar text="UI" size="34" shape="square"/>
+        </ui-badge>
+
+        <ui-badge dot="true">
+          <ui-button text="通知消息" size="small"/>
+        </ui-badge>
+
+        <ui-avatar text="LUI" size="34" shape="circle"/>
+      </ui-space>
+    </ui-card>
+
+    <!-- 4. 进度条 Progress -->
+    <ui-card title="进度条 Progress">
+      <ui-space size="10" direction="vertical">
+        <ui-progress percentage="100" status="success"/>
+        <ui-progress percentage="68"/>
+        <ui-progress percentage="35" status="warning"/>
+      </ui-space>
+    </ui-card>
+
+    <!-- 5. 数据表格 Table -->
+    <ui-card title="数据表格 Table">
+      <ui-table :columns="[{prop: 'id', label: '序号'}, {prop: 'name', label: '组件名称'}, {prop: 'type', label: '所属类别'}, {prop: 'status', label: '就绪状态'}]"
+                :data="[{id: '01', name: 'ui-button', type: '基础交互', status: '已升级（支持 plain/round）'}, {id: '02', name: 'ui-svg-icon', type: '矢量图标', status: '原生 GDI+ 矢量抗锯齿'}, {id: '03', name: 'ui-tag / badge', type: '数据展示', status: '精致马卡龙立体配色'}]"/>
+    </ui-card>
+  </panel>
+</window>

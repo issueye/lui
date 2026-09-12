@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-table：简易数据表格。根据 columns 与 data 自动渲染表头与行数据 -->
+<panel class="ui-table">
+  <panel class="ui-table__head">
+    <panel class="ui-table__row ui-table__row--head" x-for="col in props.columns">
+      <panel class="ui-table__cell ui-table__cell--head"
+        :style="col.width ? ('width:' + col.width + 'px') : 'flex:1'">
+        <label class="ui-table__head-text" :text="col.label"/>
+      </panel>
+    </panel>
+  </panel>
+  <panel class="ui-table__body" x-for="row in props.data">
+    <panel class="ui-table__row" x-for="col in props.columns">
+      <panel class="ui-table__cell"
+        :style="col.width ? ('width:' + col.width + 'px') : 'flex:1'">
+        <label class="ui-table__text" :text="row[col.prop]"/>
+      </panel>
+    </panel>
+  </panel>
+</panel>

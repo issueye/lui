@@ -2,23 +2,26 @@
 
 .nav {
   display: flex;
-  column-gap: 6px;
-  padding: 10px 12px 0 12px;
+  column-gap: 4px;
+  padding: 8px 10px 4px 10px;
 }
 
 .nav-btn {
   flex: 1;
   height: 26px;
-  font-size: 12px;
+  font-size: 11px;
   color: #b8bcc4;
   background-color: #1e1e1e;
   border: 1px solid #3a3a3a;
-  border-radius: 5px;
+  border-radius: 4px;
   transition: all 120ms ease;
+  padding-left: 1px;
+  padding-right: 1px;
 }
 
 .nav-btn:hover {
   background-color: #2a2a2a;
+  color: #4a9eff;
 }
 
 .nav-btn.active {

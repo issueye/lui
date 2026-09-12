@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-popover：气泡卡片。包含标题栏与内容区，借助 x-popup 定位 -->
+<panel class="ui-popover-wrap">
+  <slot/>
+  <panel class="ui-popover" x-if="props.visible" x-popup="" :x-popup-placement="props.placement">
+    <panel class="ui-popover__head" x-if="props.title !== ''">
+      <label class="ui-popover__title" :text="props.title"/>
+    </panel>
+    <panel class="ui-popover__body">
+      <label class="ui-popover__content" :text="props.content"/>
+    </panel>
+  </panel>
+</panel>

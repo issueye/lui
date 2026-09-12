@@ -180,7 +180,6 @@ type
     procedure PruneCloneSubtree(ACloneRoot: TXuiNode);
     procedure PruneNodeBindings(ANode: TXuiNode; AKeep: TXuiBinding);
     procedure ReplaceNodeRefs(AOld: TXuiNode; ARoots: TList);
-    function IsUnder(ANode, ARoot: TXuiNode): Boolean;
     function ClassValueToString(const AValue: TXuiJsValue): string;
     procedure WriteProp(AProps: TXuiJsObject; const AName: string;
       ASpec: TXuiPropSpec; const AValue: TXuiJsValue; AStatic: Boolean;
@@ -209,6 +208,9 @@ type
     // 运行时新增子树（document.add / node.add）：就地登记绑定与组件实例；
     // 作用域从最近的祖先绑定的作用域继承（挂进组件实例内时可见其 props）
     procedure BindRuntimeSubtree(ANode: TXuiNode);
+    // 运行时移除子树（node.remove）：作废该子树及其组件的所有绑定项
+    procedure UnbindSubtree(ANode: TXuiNode);
+    function IsUnder(ANode, ARoot: TXuiNode): Boolean;
     // DOM 桥注入：注册/注销节点监听（AEventName 形如 'click'）
     property OnNodeEvent: TXuiBindNodeEventProc read FOnNodeEvent write FOnNodeEvent;
   end;
@@ -262,13 +264,10 @@ begin
   else if n = 'if' then AKind := bkIf
   else if n = 'model' then AKind := bkModel
   else if n = 'for' then AKind := bkFor
-  else if (n = 'placeholder') or (n = 'password') or (n = 'maxlength') or
-          (n = 'style') then
-    AKind := bkAttr      // M8：运行时属性/样式（style 由引擎处理，其余交行为识别）
   else if n = 'popup' then
     AKind := bkPopup     // M8：声明式浮层（挂到文档根 + 定位；placement/offset 用普通属性给）
   else
-    Result := False;
+    AKind := bkAttr;     // 统一支持全部通用动态属性与样式（如 :style / :d / :width / :fill 等）
 end;
 
 // 拆插值模板："共 {{a}} 条" → 字面量/表达式交替表（Objects=nil 字面量 / =1 表达式）
@@ -1122,6 +1121,7 @@ procedure TXuiBindingEngine.ScanNode(ANode: TXuiNode; AScope: TXuiJsEnv;
   AOwner: TXuiBinding; AOwnerRoot: TXuiNode);
 var
   i, ifIdx: Integer;
+  children: TList;
   attr, expr, itemName, keyExpr, evName: string;
   kind: TXuiBindKind;
   b: TXuiBinding;
@@ -1278,10 +1278,19 @@ begin
         LineEnding, ' ', [rfReplaceAll]));
   end;
 
-  // 递归子树（x-for 容器除外）
-  if not hasFor then
-    for i := 0 to ANode.Count - 1 do
-      ScanNode(ANode[i], AScope, AOwner, AOwnerRoot);
+  // 递归子树（x-for 容器除外；子组件实例化与首渲染可能调整子节点数量，采用快照遍历避免越界或漏扫）
+  if not hasFor and (ANode.Count > 0) then
+  begin
+    children := TList.Create;
+    try
+      for i := 0 to ANode.Count - 1 do
+        children.Add(ANode[i]);
+      for i := 0 to children.Count - 1 do
+        ScanNode(TXuiNode(children[i]), AScope, AOwner, AOwnerRoot);
+    finally
+      children.Free;
+    end;
+  end;
 end;
 
 procedure TXuiBindingEngine.Flush;
@@ -1824,6 +1833,22 @@ begin
     if ANode = ARoot then
       Exit(True);
     ANode := ANode.Parent;
+  end;
+end;
+
+procedure TXuiBindingEngine.UnbindSubtree(ANode: TXuiNode);
+var
+  i: Integer;
+  b: TXuiBinding;
+begin
+  if ANode = nil then
+    Exit;
+  for i := FBindings.Count - 1 downto 0 do
+  begin
+    b := TXuiBinding(FBindings[i]);
+    if ((b.Node <> nil) and IsUnder(b.Node, ANode)) or
+       ((b.OwnerRoot <> nil) and IsUnder(b.OwnerRoot, ANode)) then
+      DeleteBinding(i);
   end;
 end;
 

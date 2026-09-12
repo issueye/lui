@@ -1,19 +1,91 @@
-/* lui 组件库主题（深色）：只覆盖 token（组件样式在 lui-light.css，用 var() 取值） */
+/* lui 组件库主题（深色）：覆盖设计 token 与深色模式适配规则（基础结构来自 lui-light.css） */
 
 window {
-  --ui-color-primary: #4a9eff;
-  --ui-color-primary-hover: #6cb2ff;
-  --ui-color-primary-active: #2b7fd4;
-  --ui-color-success: #3ecf6a;
-  --ui-color-warning: #f0a020;
-  --ui-color-danger: #f4635f;
-  --ui-color-info: #9aa0a6;
-  --ui-color-text: #eaeaea;
-  --ui-color-text-sub: #9aa0a6;
-  --ui-color-text-disabled: #5f646b;
-  --ui-color-bg: #1e1e1e;
-  --ui-color-bg-soft: #191c1f;
-  --ui-color-fill: #262626;
-  --ui-color-border: #3a3a3a;
-  --ui-color-border-light: #333333;
+  --ui-color-primary: #3b82f6;
+  --ui-color-primary-hover: #60a5fa;
+  --ui-color-primary-active: #2563eb;
+  --ui-color-primary-light: #132c4a;
+  --ui-color-primary-border: #1d4875;
+
+  --ui-color-success: #34d399;
+  --ui-color-success-hover: #6ee7b7;
+  --ui-color-success-active: #059669;
+  --ui-color-success-light: #133820;
+  --ui-color-success-border: #1d5c33;
+
+  --ui-color-warning: #fbbf24;
+  --ui-color-warning-hover: #fcd34d;
+  --ui-color-warning-active: #d97706;
+  --ui-color-warning-light: #3b2c12;
+  --ui-color-warning-border: #61491d;
+
+  --ui-color-danger: #f87171;
+  --ui-color-danger-hover: #fca5a5;
+  --ui-color-danger-active: #dc2626;
+  --ui-color-danger-light: #3d1a1b;
+  --ui-color-danger-border: #662b2d;
+
+  --ui-color-info: #9ca3af;
+  --ui-color-info-hover: #d1d5db;
+  --ui-color-info-active: #6b7280;
+  --ui-color-info-light: #27272a;
+  --ui-color-info-border: #3f3f46;
+
+  --ui-color-text: #f3f4f6;
+  --ui-color-text-sub: #9ca3af;
+  --ui-color-text-muted: #6b7280;
+  --ui-color-text-disabled: #4b5563;
+
+  --ui-color-bg: #1e222d;
+  --ui-color-bg-soft: #161922;
+  --ui-color-bg-hover: #272c3a;
+  --ui-color-fill: #262c3b;
+  --ui-color-border: #333a4c;
+  --ui-color-border-light: #262c3a;
 }
+
+.ui-card {
+  background-color: #1e222d;
+  border-color: #2a3040;
+}
+
+.ui-btn:hover {
+  background-color: #272c3a;
+}
+
+.ui-collapse-item__body { background-color: #161922; }
+.ui-table__row--head { background-color: #262c3b; }
+.ui-progress__outer { background-color: #2a3040; }
+
+.ui-tag { background-color: #242834; border-color: #363c4e; color: #d1d5db; }
+.ui-tag--primary { background-color: #132c4a; border-color: #1d4875; color: #60a5fa; }
+.ui-tag--success { background-color: #133820; border-color: #1d5c33; color: #34d399; }
+.ui-tag--warning { background-color: #3b2c12; border-color: #61491d; color: #fbbf24; }
+.ui-tag--danger { background-color: #3d1a1b; border-color: #662b2d; color: #f87171; }
+.ui-tag--info { background-color: #27272a; border-color: #3f3f46; color: #9ca3af; }
+
+.ui-badge__sup { border-color: #1e222d; }
+.ui-menu-item.is-active { background-color: #132c4a; }
+.ui-dropdown { background-color: #242834; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); }
+.ui-dropdown__item.is-danger:hover { background-color: #3d1a1b; }
+.ui-backtop { background-color: #242834; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4); }
+
+/* 通用页面与 Demo 辅助类暗黑适配 */
+.page { background-color: #161922; }
+.nav { background-color: #1e222d; border-color: #2a3040; }
+.nav-btn:hover { background-color: #272c3a; }
+.nav-btn.active { background-color: #132c4a; border-color: #1d4875; }
+.ghost { background-color: #1e222d; border-color: #363c4e; }
+.box { background-color: #262c3b; border-color: #363c4e; color: #9ca3af; }
+
+.ui-checkbox__box { background-color: #242834; border-color: #363c4e; }
+.ui-checkbox:hover .ui-checkbox__box { border-color: var(--ui-color-primary); }
+.ui-checkbox.is-checked .ui-checkbox__box { background-color: var(--ui-color-primary); border-color: var(--ui-color-primary); }
+
+.ui-dialog__panel { background-color: #1e222d; border-color: #333a4c; }
+.ui-dialog__divider, .ui-drawer__divider, .ui-message-box__divider { background-color: #262c3a; }
+.ui-dialog__foot, .ui-message-box__foot { background-color: #161922; }
+.ui-message-box__panel { background-color: #1e222d; border-color: #333a4c; }
+.ui-drawer__panel { background-color: #1e222d; border-color: #333a4c; }
+
+

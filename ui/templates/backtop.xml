@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-backtop：回到顶部悬浮按钮 -->
+<panel class="ui-backtop" :style="'position:absolute; right:' + props.right + 'px; bottom:' + props.bottom + 'px'"
+  x-onclick="props.onClick">
+  <label class="ui-backtop__icon" text="▲"/>
+  <slot/>
+</panel>

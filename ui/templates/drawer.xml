@@ -1,12 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- ui-drawer：侧边抽屉（根覆盖整窗，面板靠右；x-if + x-popup 同对话框） -->
 <panel class="ui-drawer" x-if="props.visible" x-popup="" x-popup-placement="center">
-  <panel class="ui-drawer__mask" x-onclick="UiDialogClose(props)"/>
+  <panel class="ui-drawer__mask" x-onclick="props.onClose"/>
   <panel class="ui-drawer__panel" :style="'width:' + props.width + 'px'">
     <panel class="ui-drawer__head">
       <label class="ui-drawer__title" :text="props.title"/>
-      <label class="ui-drawer__close" text="✕" x-onclick="UiDialogClose(props)"/>
+      <panel class="ui-drawer__close" x-onclick="props.onClose">
+        <ui-svg-icon name="close" size="12"/>
+      </panel>
     </panel>
+    <panel class="ui-drawer__divider"/>
     <panel class="ui-drawer__body">
       <slot/>
     </panel>

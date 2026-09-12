@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-svg-icon：矢量 SVG 图标模板 -->
+<svg class="ui-svg-icon" viewBox="0 0 24 24" :width="UiSvgIconSize(props.size)" :height="UiSvgIconSize(props.size)" :style="UiSvgIconStyle(props.size, props.color)">
+  <path :d="UiSvgIconPath(props.name, props.path)" fill="currentColor"/>
+</svg>

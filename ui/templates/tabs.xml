@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-tabs：标签页组件。支持 items 数据驱动渲染头部标签，以及 slot 渲染卡片内容 -->
+<panel :class="UiTabsClass(props.type)">
+  <panel class="ui-tabs__nav" x-for="item in props.items">
+    <panel :class="UiTabItemClass(item.name, props.active)" x-onclick="UiTabClick(props, item)">
+      <label class="ui-tabs__label" :text="item.label"/>
+    </panel>
+  </panel>
+  <panel class="ui-tabs__content">
+    <slot/>
+  </panel>
+</panel>

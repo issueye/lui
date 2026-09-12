@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- M8-5：导航增强类组件演示（Tabs / Menu / Breadcrumb / Dropdown / Steps / Backtop）
+     逻辑在 uinav.ts；样式由 ui/theme/lui-light.css 与 demo/uinav-light.css 提供 -->
+<window title="导航增强组件" width="440" height="860">
+  <script src="../ui/index.ts"/>
+  <script src="uinav.ts"/>
+  <include src="nav.xml"/>
+  <panel class="page">
+    <panel class="header">
+      <label class="title" text="导航增强类组件"/>
+      <panel class="spacer"/>
+      <button id="theme" class="ghost" text="换肤" onclick="ThemeClick"/>
+      <button id="go-disp" class="ghost" text="数据展示" to="uidisp" onclick="PageClick"/>
+    </panel>
+
+    <!-- 1. 面包屑导航 -->
+    <ui-card title="面包屑导航 Breadcrumb">
+      <ui-breadcrumb id="demo-bc">
+        <ui-breadcrumb-item text="管理系统" :on-click="function () { OnCrumbClick('管理系统'); }"/>
+        <ui-breadcrumb-item text="组件体系" :on-click="function () { OnCrumbClick('组件体系'); }"/>
+        <ui-breadcrumb-item text="导航增强" :last="true"/>
+      </ui-breadcrumb>
+    </ui-card>
+
+    <!-- 2. 步骤条 -->
+    <ui-card title="步骤条 Steps">
+      <ui-steps id="demo-steps" :current="state.currentStep">
+        <ui-step :step="1" title="提交申请" desc="完善基本信息" :status="GetStep1Status(state.currentStep)"/>
+        <ui-step :step="2" title="安全审查" desc="多节点交叉核对" :status="GetStep2Status(state.currentStep)"/>
+        <ui-step :step="3" title="发布上线" desc="集群部署就绪" :status="GetStep3Status(state.currentStep)"/>
+      </ui-steps>
+      <ui-divider/>
+      <panel class="step-footer">
+        <label class="status-tip" x-text="state.statusMsg"/>
+        <panel class="spacer"/>
+        <ui-button text="推进步骤" size="small" type="primary" x-onclick="NextStep"/>
+      </panel>
+    </ui-card>
+
+    <!-- 3. 导航菜单 -->
+    <ui-card title="导航菜单 Menu">
+      <ui-menu mode="horizontal">
+        <ui-menu-item name="m-dash" title="控制台" :active="state.menuKey === 'm-dash'"
+          :on-click="function () { OnMenuSelect('m-dash'); }"/>
+        <ui-menu-item name="m-user" title="成员管理" :active="state.menuKey === 'm-user'"
+          :on-click="function () { OnMenuSelect('m-user'); }"/>
+        <ui-menu-item name="m-report" title="报表统计" :active="state.menuKey === 'm-report'"
+          :on-click="function () { OnMenuSelect('m-report'); }"/>
+        <ui-menu-item name="m-lock" title="权限受限" :disabled="true"/>
+      </ui-menu>
+    </ui-card>
+
+    <!-- 4. 选项卡 -->
+    <ui-card title="选项卡 Tabs">
+      <ui-tabs id="demo-tabs" :items="state.tabItems" :active="state.activeTab" :on-change="OnTabChange">
+        <ui-tab-pane name="tab1" :active="state.activeTab === 'tab1'">
+          <panel class="tab-pane-box">
+            <ui-text text="★ lui 核心特性：零外部重型依赖、极速启动、现代响应式与丰富组件库。"/>
+          </panel>
+        </ui-tab-pane>
+        <ui-tab-pane name="tab2" :active="state.activeTab === 'tab2'">
+          <panel class="tab-pane-box">
+            <ui-text text="❖ 架构设计：底层基于 Free Pascal RTL + LazUtils，高层提供 TS 子集脚本引擎。"/>
+          </panel>
+        </ui-tab-pane>
+        <ui-tab-pane name="tab3" :active="state.activeTab === 'tab3'">
+          <panel class="tab-pane-box">
+            <ui-text text="● 更新日志：M8 组件库已顺利完成基础、表单、反馈、展示及导航全部阶段！"/>
+          </panel>
+        </ui-tab-pane>
+      </ui-tabs>
+    </ui-card>
+
+    <!-- 5. 回到顶部悬浮控件 -->
+    <ui-backtop :right="24" :bottom="24" :on-click="OnBacktopClick"/>
+  </panel>
+</window>

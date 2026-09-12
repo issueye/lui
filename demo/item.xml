@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- M5 include 模板：单条待办结构（运行时 AddElement('<include src="item.xml"/>') 复用） -->
 <panel class="item" onclick="TodoToggleClick">
-  <panel class="check"/>
+  <panel class="check"><label class="check-mark" text="✓"/></panel>
   <label class="text" text="新任务"/>
   <panel class="del" onclick="TodoDeleteClick"><label text="×"/></panel>
 </panel>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-menu：菜单容器。支持横向/纵向模式 -->
+<panel :class="UiMenuClass(props.mode)">
+  <slot/>
+</panel>

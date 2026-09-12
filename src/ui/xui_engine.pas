@@ -135,6 +135,7 @@ type
       AOffsetX, AOffsetY: Integer);
     procedure EnsureStyles;   // 运行时定位前保障样式已计算（Style=nil 时 BoxRect 会崩）
     procedure ApplyNodeData(ANode: TXuiNode);                      // M7-3：对既有子树补装配（组件实例化用）
+    procedure NotifySvgAncestor(ANode: TXuiNode);                  // M8：svg 子树内容更新 → 置脏重解析
     procedure ClearChildren(AParent: TXuiNode);
     procedure SetText(ANode: TXuiNode; const AText: string);
     procedure SetClass(ANode: TXuiNode; const AClassName: string);
@@ -339,6 +340,7 @@ end;
 procedure TXuiEngine.ClearStyleSheets;
 begin
   FStyleSheets.Clear;
+  LoadStyleSheetFromString('.xui-hidden { display: none; }');
   FDocumentDirty := True;
   FNeedsLayout := True;
 end;
@@ -1176,7 +1178,7 @@ procedure TXuiEngine.PlacePopup(APopup, AAnchor: TXuiNode; const APlacement: str
   AOffsetX, AOffsetY: Integer);
 var
   ar, pr, base: TRect;
-  x, y, l, t: Integer;
+  x, y, l, t, pw, ph: Integer;
   place, newStyle: string;
 begin
   if (APopup = nil) or (FDocument = nil) or (FDocument.Root = nil) then
@@ -1190,48 +1192,55 @@ begin
   else
     ar := FDocument.Root.ContentBox;
   pr := APopup.BoxRect;
+  pw := pr.Right - pr.Left;
+  ph := pr.Bottom - pr.Top;
+  if (pw <= 0) and (APopup.Style <> nil) and (not APopup.Style.Width.IsAuto) then
+    pw := Round(APopup.Style.Width.Resolve(ar.Right - ar.Left));
+  if (ph <= 0) and (APopup.Style <> nil) and (not APopup.Style.Height.IsAuto) then
+    ph := Round(APopup.Style.Height.Resolve(ar.Bottom - ar.Top));
+
   l := ar.Left;
   t := ar.Bottom + AOffsetY;
   if place = 'bottom' then
-    l := ar.Left + (ar.Right - ar.Left - (pr.Right - pr.Left)) div 2
+    l := ar.Left + (ar.Right - ar.Left - pw) div 2
   else if place = 'bottom-end' then
-    l := ar.Right - (pr.Right - pr.Left) + AOffsetX
+    l := ar.Right - pw + AOffsetX
   else if place = 'top-start' then
-    t := ar.Top - (pr.Bottom - pr.Top) - AOffsetY
+    t := ar.Top - ph - AOffsetY
   else if place = 'top' then
   begin
-    t := ar.Top - (pr.Bottom - pr.Top) - AOffsetY;
-    l := ar.Left + (ar.Right - ar.Left - (pr.Right - pr.Left)) div 2;
+    t := ar.Top - ph - AOffsetY;
+    l := ar.Left + (ar.Right - ar.Left - pw) div 2;
   end
   else if place = 'top-end' then
   begin
-    t := ar.Top - (pr.Bottom - pr.Top) - AOffsetY;
-    l := ar.Right - (pr.Right - pr.Left) + AOffsetX;
+    t := ar.Top - ph - AOffsetY;
+    l := ar.Right - pw + AOffsetX;
   end
   else if (place = 'right') or (place = 'left') then
   begin
     if place = 'right' then
       l := ar.Right + AOffsetX
     else
-      l := ar.Left - (pr.Right - pr.Left) - AOffsetX;
+      l := ar.Left - pw - AOffsetX;
     t := ar.Top + AOffsetY;
   end
   else if place = 'center' then
   begin
-    l := ar.Left + (ar.Right - ar.Left - (pr.Right - pr.Left)) div 2;
-    t := ar.Top + (ar.Bottom - ar.Top - (pr.Bottom - pr.Top)) div 2;
+    l := ar.Left + (ar.Right - ar.Left - pw) div 2;
+    t := ar.Top + (ar.Bottom - ar.Top - ph) div 2;
   end
   else
     l := ar.Left + AOffsetX;   // bottom-start
 
   // 边界夹取：整块留在文档根内容区内
   base := FDocument.Root.ContentBox;
-  if l + (pr.Right - pr.Left) > base.Right then
-    l := base.Right - (pr.Right - pr.Left);
-  if t + (pr.Bottom - pr.Top) > base.Bottom then
+  if l + pw > base.Right then
+    l := base.Right - pw;
+  if t + ph > base.Bottom then
   begin
     // 下方放不下则翻到锚点上方
-    t := ar.Top - (pr.Bottom - pr.Top) - AOffsetY;
+    t := ar.Top - ph - AOffsetY;
   end;
   if l < base.Left then
     l := base.Left;
@@ -1294,22 +1303,44 @@ begin
   Result := False;
   if ANode = nil then
     Exit;
+  if ANode.Attributes = nil then
+    ANode.Attributes := TStringList.Create;
+  ANode.Attributes.Values[AName] := AValue;
   if SameText(AName, 'style') then
   begin
-    if ANode.Attributes.Values['style'] <> AValue then
-    begin
-      ANode.Attributes.Values['style'] := AValue;
-      InvalidateStyles;
-    end;
+    InvalidateStyles;
+    NotifySvgAncestor(ANode);   // style（含 color→currentColor）变化影响 SVG 内容
     Exit(True);
   end;
-  if ANode.Behavior = nil then
-    Exit;
-  Result := TXuiBehavior(ANode.Behavior).SetRuntimeAttr(AName, AValue);
-  if Result then
+  if ANode.Behavior <> nil then
   begin
-    FNeedsLayout := True;   // 占位符/掩码改变文本宽度
-    DoChange;
+    Result := TXuiBehavior(ANode.Behavior).SetRuntimeAttr(AName, AValue);
+    if Result then
+    begin
+      FNeedsLayout := True;   // 占位符/掩码改变文本宽度
+      DoChange;
+    end;
+  end;
+  // 无行为节点（如 svg 内的 <path>）被绑定更新：通知最近的 svg 祖先重解析
+  NotifySvgAncestor(ANode);
+  Result := True;
+end;
+
+// M8：沿父链找最近的 svg 行为并置脏（图标库动态换图的基础）
+procedure TXuiEngine.NotifySvgAncestor(ANode: TXuiNode);
+var
+  n: TXuiNode;
+begin
+  n := ANode;
+  while n <> nil do
+  begin
+    if (n.Behavior <> nil) and (n.Behavior is TXuiSvgBehavior) then
+    begin
+      TXuiSvgBehavior(n.Behavior).MarkDirty;
+      DoChange;
+      Exit;
+    end;
+    n := n.Parent;
   end;
 end;
 
@@ -1462,7 +1493,8 @@ begin
       RenderText(ANode);
   end;
 
-  if ANode.Count > 0 then
+  if (ANode.Count > 0) and
+     not ((ANode.Behavior is TXuiBehavior) and TXuiBehavior(ANode.Behavior).SuppressChildrenRendering) then
   begin
     if style.Overflow = xovHidden then
       FRenderer.PushClip(ANode.PaddingBox);

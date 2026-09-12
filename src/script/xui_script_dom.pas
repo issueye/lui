@@ -65,6 +65,8 @@ type
       const AArgs: TXuiJsValueArray): TXuiJsValue;
     function DocumentMethod(AFn: TXuiJsFunction; AThis: TXuiJsValue;
       const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function DocumentPropGet(AObj: TXuiJsObject; const AName: string;
+      out AValue: TXuiJsValue): Boolean;
     function NodeOf(const AValue: TXuiJsValue): TXuiNode;
     // 事件对象：节点不在 TXuiEvent 载荷里，由分发目标显式传入
     function MakeEventValue(ANode: TXuiNode; const AEvent: TXuiEvent): TXuiJsValue;
@@ -72,6 +74,7 @@ type
     function HandleEngineEvent(ANode: TXuiNode; const AEvent: TXuiEvent): Boolean;
     // 确保节点对象上存在某方法（惰性创建）
     procedure EnsureNodeMethod(AObj: TXuiJsObject; const AName: string);
+    procedure UnbindSubtree(ANode: TXuiNode);
   public
     constructor Create(AEngine: TXuiEngine; AScript: TXuiScript);
     destructor Destroy; override;
@@ -139,6 +142,23 @@ begin
   FListeners.Clear;
   if FBindingEngine <> nil then
     FBindingEngine.ResetScan;
+end;
+
+procedure TXuiDomBridge.UnbindSubtree(ANode: TXuiNode);
+var
+  i: Integer;
+begin
+  if (ANode = nil) or (FBindingEngine = nil) then
+    Exit;
+  FBindingEngine.UnbindSubtree(ANode);
+  for i := FBridges.Count - 1 downto 0 do
+    if (TXuiNodeBridge(FBridges[i]).Node <> nil) and
+       FBindingEngine.IsUnder(TXuiNodeBridge(FBridges[i]).Node, ANode) then
+      FBridges.Delete(i);
+  for i := FListeners.Count - 1 downto 0 do
+    if (TXuiJsListener(FListeners[i]).Node <> nil) and
+       FBindingEngine.IsUnder(TXuiJsListener(FListeners[i]).Node, ANode) then
+      FListeners.Delete(i);
 end;
 
 // @event="expr"：注册/注销节点监听（复用 node.on 的监听表；同类事件只保留最后一个）
@@ -394,11 +414,14 @@ begin
   end;
   if name = 'remove' then
   begin
+    UnbindSubtree(node);
     FEngine.RemoveElement(node);
     Exit;
   end;
   if name = 'clear' then
   begin
+    for i := 0 to node.Count - 1 do
+      UnbindSubtree(node[i]);
     FEngine.ClearChildren(node);
     Exit;
   end;
@@ -474,6 +497,20 @@ begin
       Exit;
     Exit(NodeValue(FEngine.Document.Root));
   end;
+end;
+
+function TXuiDomBridge.DocumentPropGet(AObj: TXuiJsObject; const AName: string;
+  out AValue: TXuiJsValue): Boolean;
+begin
+  if AName = 'body' then
+  begin
+    if (FEngine = nil) or (FEngine.Document = nil) or (FEngine.Document.Root = nil) then
+      AValue := FScript.Undefined
+    else
+      AValue := NodeValue(FEngine.Document.Root);
+    Exit(True);
+  end;
+  Result := False;
 end;
 
 function TXuiDomBridge.MakeEventValue(ANode: TXuiNode;
@@ -605,9 +642,9 @@ begin
   FScript.OnResetBindings := @HandleResetBindings;   // 换文档：桥/监听/绑定登记一并作废
   // document：find / add / body
   doc := FScript.Interp.CreateHostObject('Document');
+  doc.NativeGet := @DocumentPropGet;
   doc.SetOwn('find', FScript.Interp.CreateHostFunction('find', @DocumentMethod));
   doc.SetOwn('add', FScript.Interp.CreateHostFunction('add', @DocumentMethod));
-  doc.SetOwn('body', FScript.Interp.CreateHostFunction('body', @DocumentMethod));
   FDocumentObj := doc;
   FScript.RegisterValue('document', FScript.Interp.ObjectValue(doc));
 

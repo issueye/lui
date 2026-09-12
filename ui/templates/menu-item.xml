@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-menu-item：菜单项。支持激活高亮与点击回调 -->
+<panel :class="UiMenuItemClass(props.active, props.disabled)" :disabled="props.disabled" x-onclick="props.onClick">
+  <label class="ui-menu-item__text" :text="props.title"/>
+  <slot/>
+</panel>
