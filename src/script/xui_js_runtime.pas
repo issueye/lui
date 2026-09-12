@@ -12,14 +12,17 @@ unit xui_js_runtime;
     new Promise(executor)、thenable 采纳；每个微任务是独立预算切片
   - 定时器宏任务（P2）：ui.setTimeout/setInterval/clearTimeout/clearInterval/delay/now，
     表项 {Id, Callback, DueMs, Interval, Cancelled}；Tick 泵执行；宏任务也是独立预算切片
-  - 标记-清除 GC：根集 = 全局环境 + 宿主注册的根 + 微任务队列 + 未处理拒绝表 + 定时器表
+  - 完整 async/await（P3）：显式控制栈可挂起求值器（快慢双路径，帧栈按"节点种类 × 相位"
+    推进）；async 函数同步执行到首个 await 即返回 promise；异常经帧栈展开进 try/catch/finally
+  - 标记-清除 GC：根集 = 全局环境 + 宿主注册的根 + 微任务队列 + 未处理拒绝表 +
+    定时器表 + 活跃 async 帧栈
 
   刻意语义偏差（见设计方案 §3）：
   - string.length 与索引按 UTF-8 码点计数（非 UTF-16 code unit）
   - 事件处理器内 this 不绑定（顶层函数调用 this 为 undefined）
 
   不支持：正则、Date、BigInt、Map/Set、Proxy/Reflect/Symbol、get/set 访问器、生成器；
-  async/await（P3）、真实 I/O（P4） }
+  真实 I/O（P4） }
 
 interface
 
@@ -108,6 +111,7 @@ type
     Body: TXuiJsNode;
     Closure: TXuiJsEnv;
     IsArrow: Boolean;
+    IsAsync: Boolean;              // async 函数（经机器求值，返回 promise）
     IsExprBody: Boolean;
     HomeObject: TXuiJsObject;      // 方法定义所在对象（super 解析）
     IsCtor: Boolean;               // 构造函数（class）
@@ -143,8 +147,8 @@ type
 
   TXuiJsPromiseState = (psPending, psFulfilled, psRejected);
 
-  // 反应项种类：then（含 catch 透传）/ finally / all・allSettled 聚合 / race
-  TXuiJsReactionKind = (rkThen, rkFinally, rkAll, rkAllSettled, rkRace);
+  // 反应项种类：then（含 catch 透传）/ finally / all・allSettled 聚合 / race / async 恢复
+  TXuiJsReactionKind = (rkThen, rkFinally, rkAll, rkAllSettled, rkRace, rkResume);
 
   // Promise.all / allSettled 的共享收集状态（解释器持有，任务跑完即回收）
   TXuiJsPromise = class(TXuiJsObject)
@@ -198,6 +202,60 @@ type
     Cancelled: Boolean;
   end;
 
+  { ---- async/await 机器（P3，ADR 16：显式控制栈可挂起求值器）---- }
+
+  TXuiJsFrameRole = (frExpr, frStmt);
+
+  // 帧 = "节点 × 相位"的推进状态。离脊（无 await）操作数委托既有递归求值器同步算完。
+  TXuiJsFrame = class
+  public
+    Machine: TObject;            // 所属机器（TXuiJsAsyncMachine）
+    Node: TXuiJsNode;
+    Role: TXuiJsFrameRole;
+    Phase: Integer;
+    Parent: TXuiJsFrame;         // 交付目标（nil = 机器栈底）
+    Slot: Integer;               // 交付到父帧 Values[Slot]
+    DeliverFlow: Boolean;        // 语句帧：同时把 Flow 交付到父帧 ChildFlow
+    Env: TXuiJsEnv;              // 进入帧时的环境
+    EnvNow: TXuiJsEnv;           // 当前执行环境（catch/for 等子作用域）
+    Values: TXuiJsValueArray;    // 操作数槽
+    Waiting: Boolean;            // 子帧挂起中（结果待交付）
+    ChildFlow: Integer;          // 已完成语句子帧的控制流
+    Done: Boolean;
+    Value: TXuiJsValue;          // 本帧结果值
+    Flow: Integer;               // 本帧结果控制流
+    // 游标与辅助状态（各节点种类按需取用）
+    Idx: Integer;
+    Idx2: Integer;
+    Sub: Integer;                // 子相位（成员链 / 展开标记等）
+    Sub2: Integer;
+    Flag: Boolean;               // baseIsSuper 等通用布尔
+    Flag2: Boolean;              // lastWasMember 等通用布尔
+    SavedFlow: Integer;          // try 帧：保护块/捕获块的结果流
+    HasThrown: Boolean;          // try 帧：finally 后待重抛
+    ThrownValue: TXuiJsValue;
+    StrAcc: string;              // 模板串累积 / 字符串迭代游标
+    Ref: TXuiJsNode;             // 当前子节点引用（VarDecl 声明器等）
+    DeclEnv: TXuiJsEnv;          // var 声明的落点环境
+    ArgsAcc: TXuiJsValueArray;   // 调用实参累积
+    Links: TList;                // 成员链 links（AST 节点指针，非拥有）
+    CursorObj: TObject;          // 迭代数组等（非拥有）
+    TryMode: Integer;            // 0=try 块 1=catch 2=finally 3=finally 已抛过
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
+  // 一次 async 调用的可挂起机器；活跃期由解释器持有（GC 根）
+  TXuiJsAsyncMachine = class
+  public
+    Frames: TObjectList;         // TXuiJsFrame（自有；栈顶 = Count-1）
+    Promise: TXuiJsPromise;
+    Suspended: Boolean;
+    Done: Boolean;
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
   TXuiJsInterp = class
   private
     FAllObjects: TObjectList;   // 全部对象（GC 扫描用）
@@ -226,6 +284,8 @@ type
     FClockMs: Int64;             // 脚本时钟（宿主 Tick 注入；测试可人造推进）
     FTimerSeq: Integer;          // 定时器 Id 分配器
     FPumping: Boolean;           // 宏任务泵重入防护
+    // async/await 机器（P3）
+    FAsyncCalls: TObjectList;    // 活跃机器（自有；完成即摘除，GC 根）
     // 执行
     function EvalExpr(ANode: TXuiJsNode; AEnv: TXuiJsEnv): TXuiJsValue;
     function EvalMemberChain(ANode: TXuiJsNode; AEnv: TXuiJsEnv): TXuiJsValue;
@@ -323,6 +383,25 @@ type
     procedure CleanupAggregates;
     procedure ScanUnhandledRejections;
     procedure RunTimerSlice(ATimer: TXuiJsTimer);  // 执行一个到期定时器（宏任务切片）
+    // async/await 机器（P3）
+    procedure PushFrame(M: TObject; ANode: TXuiJsNode; ARole: TXuiJsFrameRole;
+      AEnv: TXuiJsEnv; AParent: TXuiJsFrame; ASlot: Integer);
+    procedure SetSlot(F: TXuiJsFrame; ASlot: Integer; const AValue: TXuiJsValue);
+    procedure NeedChildValue(F: TXuiJsFrame; ASlot: Integer; AChild: TXuiJsNode);
+    procedure NeedChildStmt(F: TXuiJsFrame; ASlot: Integer; AChild: TXuiJsNode);
+    procedure FinishFrame(F: TXuiJsFrame; const AValue: TXuiJsValue; AFlow: Integer);
+    procedure StepFrame(M: TObject; F: TXuiJsFrame);
+    function RunMachine(M: TObject): Boolean;
+    function UnwindMachine(M: TObject; const AThrown: TXuiJsValue): Boolean;
+    procedure ResumeMachine(M: TObject; AOk: Boolean; const AValue: TXuiJsValue);
+    procedure CompleteMachine(M: TObject; ARejected: Boolean; const AValue: TXuiJsValue);
+    procedure MarkAsyncMachine(M: TObject);
+    function CallAsyncFunction(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
+    // 赋值目标读写（StepFrame 用；与 EvalExpr 内嵌逻辑一致）
+    procedure WriteRefTo(ATarget: TXuiJsNode; const AValue: TXuiJsValue;
+      AEnv: TXuiJsEnv);
+    function ReadRefOf(ATarget: TXuiJsNode; AEnv: TXuiJsEnv): TXuiJsValue;
     // GC
     procedure MarkValue(const AValue: TXuiJsValue);
     procedure MarkObject(AObj: TXuiJsObject);
@@ -703,6 +782,36 @@ begin
   inherited Destroy;
 end;
 
+{ TXuiJsFrame / TXuiJsAsyncMachine（P3）}
+
+constructor TXuiJsFrame.Create;
+begin
+  inherited Create;
+  Links := TList.Create;
+  Flow := JsFlowNormal;
+  ChildFlow := JsFlowNormal;
+  SavedFlow := JsFlowNormal;
+  TryMode := 0;
+end;
+
+destructor TXuiJsFrame.Destroy;
+begin
+  Links.Free;
+  inherited Destroy;
+end;
+
+constructor TXuiJsAsyncMachine.Create;
+begin
+  inherited Create;
+  Frames := TObjectList.Create(True);
+end;
+
+destructor TXuiJsAsyncMachine.Destroy;
+begin
+  Frames.Free;
+  inherited Destroy;
+end;
+
 { ---- UTF-8 码点字符串工具（JS 字符串按码点计数） ---- }
 
 function JsStrLength(const S: string): Integer;
@@ -838,6 +947,7 @@ begin
   FAggregates := TObjectList.Create(True);
   FUnhandled := TObjectList.Create(False);
   FTimers := TObjectList.Create(True);
+  FAsyncCalls := TObjectList.Create(True);
   FSteps := 0;
   FMaxSteps := 2000000;
   FCollectThreshold := 50000;
@@ -855,6 +965,7 @@ end;
 
 destructor TXuiJsInterp.Destroy;
 begin
+  FAsyncCalls.Free;
   FTimers.Free;
   FUnhandled.Free;
   FAggregates.Free;
@@ -1381,9 +1492,11 @@ procedure TXuiJsInterp.PromiseSettle(AP: TXuiJsPromise; ARejected: Boolean;
   const AValue: TXuiJsValue);
 var
   i: Integer;
+  hadHandlers: Boolean;
 begin
   if AP.State <> psPending then
     Exit;
+  hadHandlers := AP.Reactions.Count > 0;   // 先记录（循环后即清空）
   if ARejected then
     AP.State := psRejected
   else
@@ -1392,7 +1505,8 @@ begin
   for i := 0 to AP.Reactions.Count - 1 do
     EnqueueReactionJob(TXuiJsReaction(AP.Reactions[i]), not ARejected, AValue);
   AP.Reactions.Clear;
-  if ARejected and (FUnhandled.IndexOf(AP) < 0) then
+  // 拒绝且 settle 时无人挂接处理 → 进入未处理表（排水结束时统一上报一次）
+  if ARejected and (not hadHandlers) and (FUnhandled.IndexOf(AP) < 0) then
     FUnhandled.Add(AP);
 end;
 
@@ -1579,6 +1693,10 @@ begin
         else
           SettleDown(True, ATask.SrcValue);
       end;
+    rkResume:
+      // async 机器恢复：await 的 promise 已 settle（值/原因冻结在任务里）
+      ResumeMachine(TXuiJsAsyncMachine(ATask.Aggregate),
+        ATask.SrcFulfilled, ATask.SrcValue);
   end;
 end;
 
@@ -1943,7 +2061,12 @@ begin
       MarkValue(r.OnRejected);
       MarkObject(r.Downstream);
       if r.Aggregate <> nil then
-        MarkObject(TXuiJsAggregate(r.Aggregate).Results);
+      begin
+        if r.Kind = rkResume then
+          MarkAsyncMachine(r.Aggregate)   // await 挂起中的机器
+        else
+          MarkObject(TXuiJsAggregate(r.Aggregate).Results);
+      end;
     end;
   end;
   if AObj.Tag <> nil then
@@ -1975,7 +2098,12 @@ var
     MarkValue(ATask.SrcValue);
     MarkObject(ATask.Downstream);
     if ATask.Aggregate <> nil then
-      MarkObject(TXuiJsAggregate(ATask.Aggregate).Results);
+    begin
+      if ATask.Kind = rkResume then
+        MarkAsyncMachine(ATask.Aggregate)
+      else
+        MarkObject(TXuiJsAggregate(ATask.Aggregate).Results);
+    end;
   end;
 
   procedure MarkTimer(ATimer: TXuiJsTimer);
@@ -2014,6 +2142,9 @@ begin
   // P2 根扩展：定时器表（回调与参数）
   for i := 0 to FTimers.Count - 1 do
     MarkTimer(TXuiJsTimer(FTimers[i]));
+  // P3 根扩展：活跃 async 机器（挂起中的帧栈不被回收）
+  for i := 0 to FAsyncCalls.Count - 1 do
+    MarkAsyncMachine(FAsyncCalls[i]);
   // 清扫
   for i := FAllEnvs.Count - 1 downto 0 do
     if not TXuiJsEnv(FAllEnvs[i]).Marked then
@@ -2021,6 +2152,35 @@ begin
   for i := FAllObjects.Count - 1 downto 0 do
     if not TXuiJsObject(FAllObjects[i]).Marked then
       FAllObjects.Delete(i);
+end;
+
+// 活跃 async 机器的帧栈标记（环境、操作数、结果、被采纳的迭代数组等）
+procedure TXuiJsInterp.MarkAsyncMachine(M: TObject);
+var
+  mach: TXuiJsAsyncMachine;
+  i, j: Integer;
+  f: TXuiJsFrame;
+begin
+  if M = nil then
+    Exit;
+  mach := TXuiJsAsyncMachine(M);
+  MarkObject(mach.Promise);
+  for i := 0 to mach.Frames.Count - 1 do
+  begin
+    f := TXuiJsFrame(mach.Frames[i]);
+    MarkEnv(f.Env);
+    MarkEnv(f.EnvNow);
+    if f.DeclEnv <> nil then
+      MarkEnv(f.DeclEnv);
+    for j := 0 to System.Length(f.Values) - 1 do
+      MarkValue(f.Values[j]);
+    MarkValue(f.Value);
+    MarkValue(f.ThrownValue);
+    for j := 0 to System.Length(f.ArgsAcc) - 1 do
+      MarkValue(f.ArgsAcc[j]);
+    if (f.CursorObj <> nil) and (f.CursorObj is TXuiJsArray) then
+      MarkObject(TXuiJsArray(f.CursorObj));
+  end;
 end;
 
 procedure TXuiJsInterp.MaybeCollect;
@@ -2095,6 +2255,7 @@ begin
   fn := NewFunction;
   fn.Name := ANode.Name;
   fn.IsArrow := nfArrow in ANode.Flags;
+  fn.IsAsync := nfAsync in ANode.Flags;
   fn.Body := ANode.B;
   if Assigned(ANode.A) and (ANode.A.Kind = nkSeq) then
   begin
@@ -2377,6 +2538,8 @@ begin
   fn := TXuiJsFunction(AFn.Obj);
   if fn.Native <> nil then
     Exit(fn.Native(fn, AThis, AArgs));
+  if fn.IsAsync then
+    Exit(CallAsyncFunction(fn, AThis, AArgs));
 
   env := NewEnv(fn.Closure);
   env.IsFunctionScope := True;
@@ -2999,6 +3162,9 @@ begin
           Result := EvalExpr(ANode.Items[i], AEnv);
       end;
     nkMember, nkCall: Result := EvalMemberChain(ANode, AEnv);
+    nkAwait:
+      // 解析期已做位置校验；此兜底覆盖"类字段初始化器含 await"等边缘
+      raise EXuiJsRuntime.Create('await 只能在 async 函数内使用');
     nkNew:
       begin
         a := EvalExpr(ANode.A, AEnv);
@@ -4302,6 +4468,1276 @@ begin
     CleanupAggregates;
   end;
   Result := ObjectValue(down);
+end;
+
+{ ---- async/await 机器（P3，ADR 16）----
+  帧栈按"节点种类 × 相位"推进；每相一停。子操作数：
+  - 不含 await（nfHasAwait 未置位）→ 委托既有递归求值器同步算完（快路径）
+  - 含 await → 压入子帧（慢路径），完成时交付回父帧槽位
+  遇 nkAwait：把被等待值注册为"恢复本机器"的微任务 → 机器挂起，切片退出。
+  脚本异常由 RunMachine 捕获并展开帧栈：找最近仍在本保护范围内的 try 帧（catch/finally），
+  无 handler 时 reject async promise。async 函数同步执行到首个 await，返回其 promise。 }
+
+procedure TXuiJsInterp.PushFrame(M: TObject; ANode: TXuiJsNode;
+  ARole: TXuiJsFrameRole; AEnv: TXuiJsEnv; AParent: TXuiJsFrame; ASlot: Integer);
+var
+  f: TXuiJsFrame;
+begin
+  f := TXuiJsFrame.Create;
+  f.Machine := M;
+  f.Node := ANode;
+  f.Role := ARole;
+  f.Env := AEnv;
+  f.EnvNow := AEnv;
+  f.Parent := AParent;
+  f.Slot := ASlot;
+  f.DeliverFlow := (ARole = frStmt);
+  TXuiJsAsyncMachine(M).Frames.Add(f);
+end;
+
+procedure TXuiJsInterp.SetSlot(F: TXuiJsFrame; ASlot: Integer;
+  const AValue: TXuiJsValue);
+begin
+  if ASlot >= System.Length(F.Values) then
+    SetLength(F.Values, ASlot + 1);
+  F.Values[ASlot] := AValue;
+end;
+
+// 求值子表达式：无 await 走快路径，有 await 压子帧
+procedure TXuiJsInterp.NeedChildValue(F: TXuiJsFrame; ASlot: Integer;
+  AChild: TXuiJsNode);
+begin
+  F.Waiting := False;
+  if (AChild <> nil) and (nfHasAwait in AChild.Flags) then
+  begin
+    PushFrame(F.Machine, AChild, frExpr, F.EnvNow, F, ASlot);
+    F.Waiting := True;
+  end
+  else
+    SetSlot(F, ASlot, EvalExpr(AChild, F.EnvNow));
+end;
+
+// 执行子语句：无 await 走 ExecStmt 快路径（flow 写入 ChildFlow），有 await 压子帧
+procedure TXuiJsInterp.NeedChildStmt(F: TXuiJsFrame; ASlot: Integer;
+  AChild: TXuiJsNode);
+var
+  v: TXuiJsValue;
+  flow: Integer;
+begin
+  F.Waiting := False;
+  if (AChild <> nil) and (nfHasAwait in AChild.Flags) then
+  begin
+    PushFrame(F.Machine, AChild, frStmt, F.EnvNow, F, ASlot);
+    F.Waiting := True;
+  end
+  else
+  begin
+    v := ExecStmt(AChild, F.EnvNow, flow);
+    SetSlot(F, ASlot, v);
+    F.ChildFlow := flow;
+  end;
+end;
+
+procedure TXuiJsInterp.FinishFrame(F: TXuiJsFrame; const AValue: TXuiJsValue;
+  AFlow: Integer);
+begin
+  F.Done := True;
+  F.Value := AValue;
+  F.Flow := AFlow;
+end;
+
+// async 函数调用：建机器同步跑到首个 await（或完成），立即返回 promise
+function TXuiJsInterp.CallAsyncFunction(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+var
+  env: TXuiJsEnv;
+  p: TXuiJsPromise;
+  M: TXuiJsAsyncMachine;
+begin
+  p := NewPromise;
+  M := TXuiJsAsyncMachine.Create;
+  M.Promise := p;
+  if AFn.Body = nil then
+  begin
+    PromiseResolve(p, MakeUndefined);
+    M.Free;
+    Exit(ObjectValue(p));
+  end;
+  env := NewEnv(AFn.Closure);
+  env.IsFunctionScope := True;
+  env.Func := AFn;
+  if not AFn.IsArrow then
+  begin
+    env.HasThis := True;
+    env.ThisValue := AThis;
+  end;
+  env.HomeObject := AFn.HomeObject;
+  BindParams(AFn, env, AArgs);
+  if AFn.Body.Kind = nkBlock then
+    PushFrame(M, AFn.Body, frStmt, env, nil, 0)
+  else
+    PushFrame(M, AFn.Body, frExpr, env, nil, 0);   // async 箭头单表达式体
+  FAsyncCalls.Add(M);
+  RunMachine(M);   // 挂起或完成；脚本异常在机器内转成 promise 拒绝
+  Result := ObjectValue(p);
+end;
+
+// 机器完成：settle promise 并摘除（M 在此释放，调用方不得再触碰）
+procedure TXuiJsInterp.CompleteMachine(M: TObject; ARejected: Boolean;
+  const AValue: TXuiJsValue);
+var
+  mach: TXuiJsAsyncMachine;
+begin
+  mach := TXuiJsAsyncMachine(M);
+  mach.Done := True;
+  if ARejected then
+    PromiseReject(mach.Promise, AValue)
+  else
+    PromiseResolve(mach.Promise, AValue);
+  FAsyncCalls.Extract(mach);
+  mach.Free;
+end;
+
+// 主循环：推进栈顶帧直至 挂起 / 完成。返回 True = 机器已结束。
+function TXuiJsInterp.RunMachine(M: TObject): Boolean;
+var
+  mach: TXuiJsAsyncMachine;
+  top, parent: TXuiJsFrame;
+  doneValue: TXuiJsValue;
+begin
+  Result := False;
+  mach := TXuiJsAsyncMachine(M);
+  mach.Suspended := False;
+  while mach.Frames.Count > 0 do
+  begin
+    top := TXuiJsFrame(mach.Frames[mach.Frames.Count - 1]);
+    try
+      StepFrame(M, top);
+    except
+      on E: EXuiJsThrow do
+      begin
+        if UnwindMachine(M, E.Value) then
+          Exit(True);
+        Continue;
+      end;
+      on E: EXuiJsRuntime do
+      begin
+        if UnwindMachine(M, MakeString(E.Message)) then
+          Exit(True);
+        Continue;
+      end;
+    end;
+    if mach.Suspended then
+      Exit(False);
+    if top.Done then
+    begin
+      parent := top.Parent;
+      if parent = nil then
+      begin
+        // 栈底帧完成：async 调用结束（取值须在释放帧之前）
+        doneValue := top.Value;
+        mach.Frames.Extract(top);
+        top.Free;
+        CompleteMachine(M, False, doneValue);
+        Result := True;
+        Exit;
+      end;
+      parent.Waiting := False;
+      SetSlot(parent, top.Slot, top.Value);
+      if top.DeliverFlow then
+        parent.ChildFlow := top.Flow;
+      mach.Frames.Extract(top);
+      top.Free;
+    end;
+    // 未完成且未挂起：StepFrame 只推进一步，继续循环
+  end;
+  Result := True;
+end;
+
+// 异常展开：自栈顶向下找仍在本保护范围内的 try 帧。返回 True = 机器已结束（拒绝）。
+function TXuiJsInterp.UnwindMachine(M: TObject; const AThrown: TXuiJsValue): Boolean;
+var
+  mach: TXuiJsAsyncMachine;
+  f: TXuiJsFrame;
+  env: TXuiJsEnv;
+begin
+  Result := False;
+  mach := TXuiJsAsyncMachine(M);
+  while mach.Frames.Count > 0 do
+  begin
+    f := TXuiJsFrame(mach.Frames[mach.Frames.Count - 1]);
+    if f.Node.Kind = nkTry then
+    begin
+      case f.TryMode of
+        0:  // try 块内抛出：有 catch 进 catch；否则若有 finally 先跑 finally 再重抛
+            if f.Node.C <> nil then
+            begin
+              f.TryMode := 1;
+              env := NewEnv(f.EnvNow);
+              f.EnvNow := env;
+              BindPattern(f.Node.A, AThrown, env, True);
+              f.Phase := 4;   // 进入 catch 块
+              Exit;
+            end
+            else if f.Node.ItemCount > 0 then
+            begin
+              f.TryMode := 2;
+              f.HasThrown := True;
+              f.ThrownValue := AThrown;
+              f.Phase := 2;   // 进入 finally 块
+              Exit;
+            end;
+        1:  // catch 块内抛出：有 finally 先跑 finally 再重抛
+            if f.Node.ItemCount > 0 then
+            begin
+              f.TryMode := 2;
+              f.HasThrown := True;
+              f.ThrownValue := AThrown;
+              f.Phase := 2;
+              Exit;
+            end;
+        2:  // finally 块自身抛出：向外传播（原待重抛被覆盖）
+            f.TryMode := 3;
+      end;
+    end;
+    mach.Frames.Extract(f);
+    f.Free;
+  end;
+  // 无人处理：reject async promise
+  CompleteMachine(M, True, AThrown);
+  Result := True;
+end;
+
+// await 恢复（微任务内调用）：把 settle 结果交回机器继续跑
+procedure TXuiJsInterp.ResumeMachine(M: TObject; AOk: Boolean;
+  const AValue: TXuiJsValue);
+var
+  mach: TXuiJsAsyncMachine;
+  top: TXuiJsFrame;
+begin
+  mach := TXuiJsAsyncMachine(M);
+  if mach.Done or (mach.Frames.Count = 0) then
+    Exit;
+  mach.Suspended := False;
+  top := TXuiJsFrame(mach.Frames[mach.Frames.Count - 1]);
+  if AOk then
+  begin
+    SetSlot(top, 0, AValue);
+    top.Phase := 2;   // nkAwait 帧恢复相位
+    top.Waiting := False;
+  end
+  else if UnwindMachine(M, AValue) then
+    Exit;
+  RunMachine(M);
+end;
+
+// 抛出脚本值（throw 语句帧 / finally 重抛用）
+procedure ThrowScriptValue(const AValue: TXuiJsValue);
+var
+  e: EXuiJsThrow;
+begin
+  e := EXuiJsThrow.Create('未处理的脚本异常');
+  e.Value := AValue;
+  raise e;
+end;
+
+// 赋值目标写（与 EvalExpr 内嵌 WriteRef 逻辑一致）
+procedure TXuiJsInterp.WriteRefTo(ATarget: TXuiJsNode; const AValue: TXuiJsValue;
+  AEnv: TXuiJsEnv);
+begin
+  if ATarget = nil then
+    raise EXuiJsRuntime.Create('赋值目标无效');
+  if ATarget.Kind = nkIdent then
+    AEnv.Assign(ATarget.Name, AValue)
+  else if ATarget.Kind = nkMember then
+  begin
+    if nfComputed in ATarget.Flags then
+      SetProp(EvalExpr(ATarget.A, AEnv), PropNameOf(EvalExpr(ATarget.B, AEnv)), AValue)
+    else
+      SetProp(EvalExpr(ATarget.A, AEnv), ATarget.Name, AValue);
+  end
+  else if (ATarget.Kind = nkArrayPat) or (ATarget.Kind = nkObjectPat) then
+    BindPattern(ATarget, AValue, AEnv, False)
+  else
+    raise EXuiJsRuntime.Create('赋值目标无效');
+end;
+
+// 赋值目标读（与 EvalExpr 内嵌 ReadRef 逻辑一致）
+function TXuiJsInterp.ReadRefOf(ATarget: TXuiJsNode; AEnv: TXuiJsEnv): TXuiJsValue;
+begin
+  if ATarget = nil then
+    Exit(MakeUndefined);
+  if ATarget.Kind = nkIdent then
+  begin
+    if not AEnv.Lookup(ATarget.Name, Result) then
+      Result := FGlobal.GetOwn(ATarget.Name);
+  end
+  else if ATarget.Kind = nkMember then
+  begin
+    if nfComputed in ATarget.Flags then
+      Result := GetProp(EvalExpr(ATarget.A, AEnv), PropNameOf(EvalExpr(ATarget.B, AEnv)))
+    else
+      Result := GetProp(EvalExpr(ATarget.A, AEnv), ATarget.Name);
+  end
+  else
+    Result := MakeUndefined;
+end;
+
+{ TXuiJsInterp.StepFrame —— 按节点种类 × 相位推进一相 }
+
+procedure TXuiJsInterp.StepFrame(M: TObject; F: TXuiJsFrame);
+
+  procedure AddArg(const AVal: TXuiJsValue);
+  var
+    n: Integer;
+  begin
+    n := System.Length(F.ArgsAcc);
+    SetLength(F.ArgsAcc, n + 1);
+    F.ArgsAcc[n] := AVal;
+  end;
+
+var
+  node, lnk, part, decl: TXuiJsNode;
+  v: TXuiJsValue;
+  arr: TXuiJsArray;
+  task: TXuiJsMicroTask;
+  i: Integer;
+begin
+  case F.Node.Kind of
+    // ---- await：挂起 / 恢复 ----
+    nkAwait:
+      case F.Phase of
+        0:
+          begin
+            F.Phase := 1;
+            NeedChildValue(F, 0, F.Node.A);
+          end;
+        1:
+          begin
+            v := F.Values[0];
+            if IsPromise(v) then
+              // 反应项在 settle 时拷贝为恢复任务（回调保证异步）
+              PromiseAddReaction(TXuiJsPromise(v.Obj), rkResume,
+                MakeUndefined, MakeUndefined, nil, M, 0)
+            else
+            begin
+              // 非 promise 值：直接排入微任务（等价 await Promise.resolve(v) 的延迟语义）
+              task := TXuiJsMicroTask.Create;
+              task.Kind := rkResume;
+              task.SrcFulfilled := True;
+              task.SrcValue := v;
+              task.Aggregate := M;
+              FMicroTasks.Add(task);
+            end;
+            TXuiJsAsyncMachine(M).Suspended := True;
+            F.Phase := 2;
+          end;
+        2:
+          FinishFrame(F, F.Values[0], JsFlowNormal);
+      end;
+    // ---- 表达式 ----
+    nkBinary:
+      case F.Phase of
+        0: begin F.Phase := 1; NeedChildValue(F, 0, F.Node.A); end;
+        1: begin F.Phase := 2; NeedChildValue(F, 1, F.Node.B); end;
+        2: FinishFrame(F, EvalBinaryOp(F.Node.Op, F.Values[0], F.Values[1]), JsFlowNormal);
+      end;
+    nkLogical:
+      case F.Phase of
+        0: begin F.Phase := 1; NeedChildValue(F, 0, F.Node.A); end;
+        1:
+          begin
+            v := F.Values[0];
+            if ((F.Node.Op = '&&') and (not IsTruthy(v))) or
+               ((F.Node.Op = '||') and IsTruthy(v)) or
+               ((F.Node.Op = '??') and (not IsNullish(v))) then
+              FinishFrame(F, v, JsFlowNormal)
+            else
+            begin
+              F.Phase := 2;
+              NeedChildValue(F, 1, F.Node.B);
+            end;
+          end;
+        2: FinishFrame(F, F.Values[1], JsFlowNormal);
+      end;
+    nkCond:
+      case F.Phase of
+        0: begin F.Phase := 1; NeedChildValue(F, 0, F.Node.A); end;
+        1:
+          if IsTruthy(F.Values[0]) and (F.Node.B <> nil) then
+          begin
+            F.Phase := 2;
+            NeedChildValue(F, 1, F.Node.B);
+          end
+          else if (not IsTruthy(F.Values[0])) and (F.Node.C <> nil) then
+          begin
+            F.Phase := 2;
+            NeedChildValue(F, 1, F.Node.C);
+          end
+          else
+            FinishFrame(F, MakeUndefined, JsFlowNormal);
+        2: FinishFrame(F, F.Values[1], JsFlowNormal);
+      end;
+    nkAssign:
+      case F.Phase of
+        0:
+          if F.Node.Op = '=' then
+          begin
+            // 目标成员链含 await：先求目标基/键，再求值
+            if (nfHasAwait in F.Node.A.Flags) and (F.Node.A.Kind = nkMember) then
+            begin
+              if nfComputed in F.Node.A.Flags then
+                F.Sub := 1
+              else
+                F.Sub := 2;
+              F.Phase := 1;
+              NeedChildValue(F, 1, F.Node.A.A);
+            end
+            else
+            begin
+              F.Sub := 0;
+              F.Phase := 3;
+              NeedChildValue(F, 0, F.Node.B);
+            end;
+          end
+          else if (F.Node.Op = '&&=') or (F.Node.Op = '||=') or (F.Node.Op = '??=') then
+          begin
+            if nfHasAwait in F.Node.A.Flags then
+              raise EXuiJsRuntime.Create('暂不支持：await 出现在复合赋值目标中');
+            F.Sub := 3;
+            SetSlot(F, 0, ReadRefOf(F.Node.A, F.EnvNow));
+            F.Phase := 1;
+          end
+          else
+          begin
+            if nfHasAwait in F.Node.A.Flags then
+              raise EXuiJsRuntime.Create('暂不支持：await 出现在复合赋值目标中');
+            SetSlot(F, 0, ReadRefOf(F.Node.A, F.EnvNow));
+            F.Phase := 2;
+            NeedChildValue(F, 1, F.Node.B);
+          end;
+        1:
+          if F.Sub = 1 then   // = ：目标基就绪，接着求计算键
+          begin
+            F.Phase := 2;
+            NeedChildValue(F, 2, F.Node.A.B);
+          end
+          else if F.Sub = 2 then   // = ：命名成员目标基就绪，直接求值
+          begin
+            F.Phase := 3;
+            NeedChildValue(F, 0, F.Node.B);
+          end
+          else                // 逻辑复合赋值：短路判定
+          begin
+            v := F.Values[0];
+            if ((F.Node.Op = '&&=') and (not IsTruthy(v))) or
+               ((F.Node.Op = '||=') and IsTruthy(v)) or
+               ((F.Node.Op = '??=') and (not IsNullish(v))) then
+            begin
+              SetSlot(F, 1, v);
+              F.Phase := 3;
+            end
+            else
+            begin
+              F.Phase := 2;
+              NeedChildValue(F, 1, F.Node.B);
+            end;
+          end;
+        2:
+          if F.Sub = 1 then   // = ：键就绪，求值
+          begin
+            F.Phase := 3;
+            NeedChildValue(F, 0, F.Node.B);
+          end
+          else                // 算术复合赋值：合并写回
+          begin
+            v := EvalBinaryOp(Copy(F.Node.Op, 1, System.Length(F.Node.Op) - 1),
+              F.Values[0], F.Values[1]);
+            WriteRefTo(F.Node.A, v, F.EnvNow);
+            FinishFrame(F, v, JsFlowNormal);
+          end;
+        3:
+          begin
+            // Sub=1/2：'=' 计算成员 / 命名成员目标；Sub=3：逻辑复合赋值；Sub=0：简单 '='
+            if F.Sub = 1 then
+            begin
+              v := F.Values[0];
+              SetProp(F.Values[1], PropNameOf(F.Values[2]), v);
+              FinishFrame(F, v, JsFlowNormal);
+            end
+            else if F.Sub = 2 then
+            begin
+              v := F.Values[0];
+              SetProp(F.Values[1], F.Node.A.Name, v);
+              FinishFrame(F, v, JsFlowNormal);
+            end
+            else if F.Sub = 3 then
+            begin
+              v := F.Values[1];   // 短路时为原值，否则为新值（与快路径语义一致）
+              WriteRefTo(F.Node.A, v, F.EnvNow);
+              FinishFrame(F, v, JsFlowNormal);
+            end
+            else
+            begin
+              v := F.Values[0];
+              WriteRefTo(F.Node.A, v, F.EnvNow);
+              FinishFrame(F, v, JsFlowNormal);
+            end;
+          end;
+      end;
+    nkUnary:
+      case F.Phase of
+        0:
+          if F.Node.Op = 'delete' then
+          begin
+            if (nfHasAwait in F.Node.A.Flags) or (F.Node.A.Kind <> nkMember) or
+               (nfComputed in F.Node.A.Flags) then
+              raise EXuiJsRuntime.Create('暂不支持：await 出现在 delete 目标中');
+            v := EvalExpr(F.Node.A.A, F.EnvNow);
+            if (v.Kind = jvObject) and (v.Obj <> nil) then
+              v.Obj.DeleteOwn(F.Node.A.Name);
+            FinishFrame(F, MakeBool(True), JsFlowNormal);
+          end
+          else
+          begin
+            F.Phase := 1;
+            NeedChildValue(F, 0, F.Node.A);
+          end;
+        1:
+          begin
+            v := F.Values[0];
+            if F.Node.Op = 'typeof' then
+            begin
+              case v.Kind of
+                jvUndefined: v := MakeString('undefined');
+                jvNull: v := MakeString('object');
+                jvBool: v := MakeString('boolean');
+                jvNumber: v := MakeString('number');
+                jvString: v := MakeString('string');
+              else
+                if (v.Obj <> nil) and (v.Obj is TXuiJsFunction) then
+                  v := MakeString('function')
+                else
+                  v := MakeString('object');
+              end;
+              FinishFrame(F, v, JsFlowNormal);
+            end
+            else if F.Node.Op = 'void' then
+              FinishFrame(F, MakeUndefined, JsFlowNormal)
+            else if F.Node.Op = '!' then
+              FinishFrame(F, MakeBool(not ToBoolValue(v)), JsFlowNormal)
+            else if F.Node.Op = '-' then
+              FinishFrame(F, MakeNumber(-ToNumberValue(v)), JsFlowNormal)
+            else if F.Node.Op = '+' then
+              FinishFrame(F, MakeNumber(ToNumberValue(v)), JsFlowNormal)
+            else if F.Node.Op = '~' then
+              FinishFrame(F, MakeNumber(not ToInt32Value(v)), JsFlowNormal)
+            else
+              FinishFrame(F, MakeUndefined, JsFlowNormal);
+          end;
+      end;
+    nkUpdate:
+      raise EXuiJsRuntime.Create('暂不支持：await 出现在自增/自减目标中');
+    nkTemplate:
+      case F.Phase of
+        0:
+          begin
+            F.StrAcc := '';
+            F.Idx := 0;
+            F.Phase := 1;
+          end;
+        1:
+          if F.Idx >= F.Node.ItemCount then
+            FinishFrame(F, MakeString(F.StrAcc), JsFlowNormal)
+          else
+          begin
+            part := F.Node.Items[F.Idx];
+            Inc(F.Idx);
+            if part = nil then
+              Exit;
+            if part.Kind = nkString then
+              F.StrAcc := F.StrAcc + part.Str
+            else
+            begin
+              F.Phase := 2;
+              NeedChildValue(F, 0, part);
+            end;
+          end;
+        2:
+          begin
+            F.StrAcc := F.StrAcc + ToStringValue(F.Values[0]);
+            F.Phase := 1;
+          end;
+      end;
+    nkArrayLit:
+      case F.Phase of
+        0:
+          begin
+            F.CursorObj := NewArray;
+            F.Idx := 0;
+            F.Phase := 1;
+          end;
+        1:
+          if F.Idx >= F.Node.ItemCount then
+            FinishFrame(F, ObjectValue(TXuiJsObject(F.CursorObj)), JsFlowNormal)
+          else
+          begin
+            part := F.Node.Items[F.Idx];
+            Inc(F.Idx);
+            if part = nil then
+              Exit;
+            if part.Kind = nkEmpty then
+            begin
+              arr := TXuiJsArray(F.CursorObj);
+              SetLength(arr.Items, arr.Length + 1);
+              arr.Items[arr.Length - 1] := MakeUndefined;
+              Exit;
+            end;
+            if part.Kind = nkSpread then
+            begin
+              F.Sub := 1;
+              F.Phase := 2;
+              NeedChildValue(F, 0, part.A);
+            end
+            else
+            begin
+              F.Sub := 0;
+              F.Phase := 2;
+              NeedChildValue(F, 0, part);
+            end;
+          end;
+        2:
+          begin
+            arr := TXuiJsArray(F.CursorObj);
+            v := F.Values[0];
+            if F.Sub = 1 then
+            begin
+              if (v.Kind = jvObject) and (v.Obj is TXuiJsArray) then
+                for i := 0 to TXuiJsArray(v.Obj).Length - 1 do
+                begin
+                  SetLength(arr.Items, arr.Length + 1);
+                  arr.Items[arr.Length - 1] := TXuiJsArray(v.Obj).Items[i];
+                end
+              else if v.Kind = jvString then
+                for i := 0 to JsStrLength(v.Str) - 1 do
+                begin
+                  SetLength(arr.Items, arr.Length + 1);
+                  arr.Items[arr.Length - 1] := MakeString(JsStrCharAt(v.Str, i));
+                end;
+            end
+            else
+            begin
+              SetLength(arr.Items, arr.Length + 1);
+              arr.Items[arr.Length - 1] := v;
+            end;
+            F.Phase := 1;
+          end;
+      end;
+    nkObjectLit:
+      case F.Phase of
+        0:
+          begin
+            F.CursorObj := NewObject('Object');
+            F.Idx := 0;
+            F.Phase := 1;
+          end;
+        1:
+          if F.Idx >= F.Node.ItemCount then
+            FinishFrame(F, ObjectValue(TXuiJsObject(F.CursorObj)), JsFlowNormal)
+          else
+          begin
+            part := F.Node.Items[F.Idx];
+            Inc(F.Idx);
+            if part = nil then
+              Exit;
+            if part.Kind = nkSpread then
+            begin
+              // 对象展开（await 于展开源 v1 不支持：走同步求值，含 await 会兜底报错）
+              v := EvalExpr(part.A, F.EnvNow);
+              if (v.Kind = jvObject) and (v.Obj <> nil) then
+                for i := 0 to v.Obj.Props.Count - 1 do
+                  TXuiJsObject(F.CursorObj).SetOwn(
+                    TXuiJsProp(v.Obj.Props[i]).Name, TXuiJsProp(v.Obj.Props[i]).Value);
+              Exit;
+            end;
+            if part.Kind <> nkProperty then
+              Exit;
+            if nfComputed in part.Flags then
+              F.StrAcc := PropNameOf(EvalExpr(part.A, F.EnvNow))
+            else
+              F.StrAcc := part.Name;
+            F.Ref := part;
+            if part.B = nil then
+              Exit;
+            F.Phase := 2;
+            NeedChildValue(F, 0, part.B);
+          end;
+        2:
+          begin
+            TXuiJsObject(F.CursorObj).SetOwn(F.StrAcc, F.Values[0]);
+            F.Phase := 1;
+          end;
+      end;
+    nkSeq:
+      case F.Phase of
+        0:
+          begin
+            F.Idx := 0;
+            F.Phase := 1;
+          end;
+        1:
+          if F.Idx >= F.Node.ItemCount then
+            FinishFrame(F, MakeUndefined, JsFlowNormal)
+          else
+          begin
+            part := F.Node.Items[F.Idx];
+            Inc(F.Idx);
+            if part = nil then
+              Exit;
+            F.Phase := 2;
+            NeedChildValue(F, 0, part);
+          end;
+        2:
+          if F.Idx >= F.Node.ItemCount then
+            FinishFrame(F, F.Values[0], JsFlowNormal)
+          else
+            F.Phase := 1;
+      end;
+    // ---- 成员链 / 调用 / new ----
+    nkMember, nkCall:
+      case F.Phase of
+        0:
+          begin
+            node := F.Node;
+            F.Links.Clear;
+            while (node <> nil) and ((node.Kind = nkMember) or (node.Kind = nkCall)) do
+            begin
+              F.Links.Add(node);
+              node := node.A;
+            end;
+            F.Flag := (node <> nil) and (node.Kind = nkSuper);
+            F.Idx := F.Links.Count - 1;
+            F.Sub := 0;
+            F.Sub2 := -1;
+            F.Flag2 := False;
+            if F.Flag then
+            begin
+              SetSlot(F, 0, SuperBaseValue(F.EnvNow));
+              SetSlot(F, 2, ThisOf(F.EnvNow));
+              if (F.Links.Count = 1) and (TXuiJsNode(F.Links[0]).Kind = nkCall) then
+                FinishFrame(F, SuperConstructCall(F.EnvNow,
+                  EvalArgs(TXuiJsNode(F.Links[0]), F.EnvNow)), JsFlowNormal)
+              else
+                F.Phase := 3;
+            end
+            else
+            begin
+              F.Phase := 2;
+              NeedChildValue(F, 0, node);
+            end;
+          end;
+        2: F.Phase := 3;
+        3:
+            if F.Sub = 0 then
+            begin
+              if F.Idx < 0 then
+                FinishFrame(F, F.Values[0], JsFlowNormal)
+              else
+              begin
+                lnk := TXuiJsNode(F.Links[F.Idx]);
+                if lnk.Kind = nkMember then
+                begin
+                  if IsNullish(F.Values[0]) and (nfOptional in lnk.Flags) then
+                    Dec(F.Idx)
+                  else if nfComputed in lnk.Flags then
+                  begin
+                    if nfHasAwait in lnk.Flags then
+                    begin
+                      F.Sub := 1;
+                      F.Phase := 4;
+                      NeedChildValue(F, 0, lnk.B);
+                    end
+                    else
+                    begin
+                      SetSlot(F, 0, GetProp(F.Values[0],
+                        PropNameOf(EvalExpr(lnk.B, F.EnvNow))));
+                      if F.Flag and (F.Sub2 < 0) then
+                        F.Sub2 := F.Idx;
+                      F.Flag2 := True;
+                      Dec(F.Idx);
+                    end;
+                  end
+                  else
+                  begin
+                    SetSlot(F, 0, GetProp(F.Values[0], lnk.Name));
+                    if F.Flag and (F.Sub2 < 0) then
+                      F.Sub2 := F.Idx;
+                    F.Flag2 := True;
+                    Dec(F.Idx);
+                  end;
+                end
+                else
+                begin
+                  if IsNullish(F.Values[0]) and (nfOptional in lnk.Flags) then
+                    Dec(F.Idx)
+                  else
+                  begin
+                    SetLength(F.ArgsAcc, 0);
+                    F.Idx2 := 0;
+                    F.Sub := 2;
+                  end;
+                end;
+              end;
+            end
+            else if F.Sub = 2 then
+            begin
+              lnk := TXuiJsNode(F.Links[F.Idx]);
+              if F.Idx2 >= lnk.ItemCount then
+              begin
+                if F.Flag2 then
+                begin
+                  if F.Flag and (F.Sub2 = F.Idx + 1) then
+                    v := CallFunction(F.Values[0], F.Values[2], F.ArgsAcc)
+                  else
+                    v := CallFunction(F.Values[0], F.Values[1], F.ArgsAcc);
+                end
+                else
+                  v := CallFunction(F.Values[0], MakeUndefined, F.ArgsAcc);
+                SetSlot(F, 0, v);
+                F.Flag2 := False;
+                Dec(F.Idx);
+                F.Sub := 0;
+              end
+              else
+              begin
+                part := lnk.Items[F.Idx2];
+                if part = nil then
+                  Inc(F.Idx2)
+                else if part.Kind = nkSpread then
+                begin
+                  F.Sub := 3;
+                  F.Phase := 5;
+                  NeedChildValue(F, 3, part.A);   // 槽 3：不覆盖槽 0 的被调者
+                end
+                else
+                begin
+                  F.Sub := 4;
+                  F.Phase := 5;
+                  NeedChildValue(F, 3, part);
+                end;
+              end;
+            end;
+        4:
+          begin
+            // 计算键就绪
+            SetSlot(F, 0, GetProp(F.Values[1], PropNameOf(F.Values[0])));
+            if F.Flag and (F.Sub2 < 0) then
+              F.Sub2 := F.Idx;
+            F.Flag2 := True;
+            Dec(F.Idx);
+            F.Sub := 0;
+            F.Phase := 3;
+          end;
+        5:
+          begin
+            // 实参就绪（Sub=3 展开 / Sub=4 直接）；值在槽 3
+            if F.Sub = 3 then
+            begin
+              v := F.Values[3];
+              if (v.Kind = jvObject) and (v.Obj is TXuiJsArray) then
+              begin
+                for i := 0 to TXuiJsArray(v.Obj).Length - 1 do
+                  AddArg(TXuiJsArray(v.Obj).Items[i]);
+              end
+              else if v.Kind = jvString then
+              begin
+                for i := 0 to JsStrLength(v.Str) - 1 do
+                  AddArg(MakeString(JsStrCharAt(v.Str, i)));
+              end;
+            end
+            else
+              AddArg(F.Values[3]);
+            Inc(F.Idx2);
+            F.Sub := 2;
+            F.Phase := 3;
+          end;
+      end;
+    nkNew:
+      case F.Phase of
+        0:
+          begin
+            F.Phase := 1;
+            NeedChildValue(F, 0, F.Node.A);
+          end;
+        1:
+          begin
+            SetLength(F.ArgsAcc, 0);
+            F.Idx2 := 0;
+            F.Phase := 2;
+          end;
+        2:
+          if F.Idx2 >= F.Node.ItemCount then
+            F.Phase := 4
+          else
+          begin
+            part := F.Node.Items[F.Idx2];
+            if part = nil then
+              Inc(F.Idx2)
+            else if part.Kind = nkSpread then
+            begin
+              F.Sub := 3;
+              F.Phase := 3;
+              NeedChildValue(F, 3, part.A);
+            end
+            else
+            begin
+              F.Sub := 4;
+              F.Phase := 3;
+              NeedChildValue(F, 3, part);
+            end;
+          end;
+        3:
+          begin
+            if F.Sub = 3 then
+            begin
+              v := F.Values[3];
+              if (v.Kind = jvObject) and (v.Obj is TXuiJsArray) then
+              begin
+                for i := 0 to TXuiJsArray(v.Obj).Length - 1 do
+                  AddArg(TXuiJsArray(v.Obj).Items[i]);
+              end
+              else if v.Kind = jvString then
+              begin
+                for i := 0 to JsStrLength(v.Str) - 1 do
+                  AddArg(MakeString(JsStrCharAt(v.Str, i)));
+              end;
+            end
+            else
+              AddArg(F.Values[3]);
+            Inc(F.Idx2);
+            F.Phase := 2;
+          end;
+        4: FinishFrame(F, Construct(F.Values[0], F.ArgsAcc), JsFlowNormal);
+      end;
+    nkSpread:
+      case F.Phase of
+        0: begin F.Phase := 1; NeedChildValue(F, 0, F.Node.A); end;
+        1: FinishFrame(F, F.Values[0], JsFlowNormal);
+      end;
+    // ---- 语句 ----
+    nkBlock:
+      case F.Phase of
+        0:
+          begin
+            F.Idx := 0;
+            F.Phase := 1;
+          end;
+        1:
+          if F.Idx >= F.Node.ItemCount then
+            FinishFrame(F, MakeUndefined, JsFlowNormal)
+          else
+          begin
+            part := F.Node.Items[F.Idx];
+            Inc(F.Idx);
+            F.Phase := 2;
+            NeedChildStmt(F, 0, part);
+          end;
+        2:
+          if F.ChildFlow <> JsFlowNormal then
+            FinishFrame(F, F.Values[0], F.ChildFlow)
+          else
+            F.Phase := 1;
+      end;
+    nkExprStmt:
+      case F.Phase of
+        0: begin F.Phase := 1; NeedChildValue(F, 0, F.Node.A); end;
+        1: FinishFrame(F, F.Values[0], JsFlowNormal);
+      end;
+    nkVarDecl:
+      case F.Phase of
+        0:
+          begin
+            F.Idx := 0;
+            F.Phase := 1;
+          end;
+        1:
+          if F.Idx >= F.Node.ItemCount then
+            FinishFrame(F, MakeUndefined, JsFlowNormal)
+          else
+          begin
+            decl := F.Node.Items[F.Idx];
+            Inc(F.Idx);
+            if decl = nil then
+              Exit;
+            F.Ref := decl;
+            if F.Node.Name = 'var' then
+              F.DeclEnv := F.EnvNow.FindFunctionEnv
+            else
+              F.DeclEnv := F.EnvNow;
+            if decl.B <> nil then
+            begin
+              F.Phase := 2;
+              NeedChildValue(F, 0, decl.B);
+            end
+            else
+            begin
+              BindPattern(decl.A, MakeUndefined, F.DeclEnv, True);
+              Exit;
+            end;
+          end;
+        2:
+          begin
+            BindPattern(F.Ref.A, F.Values[0], F.DeclEnv, True);
+            F.Phase := 1;
+          end;
+      end;
+    nkIf:
+      case F.Phase of
+        0: begin F.Phase := 1; NeedChildValue(F, 0, F.Node.A); end;
+        1:
+          if IsTruthy(F.Values[0]) and (F.Node.B <> nil) then
+          begin
+            F.Phase := 2;
+            NeedChildStmt(F, 0, F.Node.B);
+          end
+          else if (not IsTruthy(F.Values[0])) and (F.Node.C <> nil) then
+          begin
+            F.Phase := 2;
+            NeedChildStmt(F, 0, F.Node.C);
+          end
+          else
+            FinishFrame(F, MakeUndefined, JsFlowNormal);
+        2: FinishFrame(F, F.Values[0], F.ChildFlow);
+      end;
+    nkWhile:
+      case F.Phase of
+        0: begin F.Phase := 1; NeedChildValue(F, 0, F.Node.A); end;
+        1:
+          if not IsTruthy(F.Values[0]) then
+            FinishFrame(F, MakeUndefined, JsFlowNormal)
+          else
+          begin
+            F.Phase := 2;
+            NeedChildStmt(F, 0, F.Node.B);
+          end;
+        2:
+          if F.ChildFlow = JsFlowBreak then
+            FinishFrame(F, MakeUndefined, JsFlowNormal)
+          else if F.ChildFlow = JsFlowReturn then
+            FinishFrame(F, F.Values[0], JsFlowReturn)
+          else
+            F.Phase := 0;   // continue / 正常：重估条件
+      end;
+    nkDoWhile:
+      case F.Phase of
+        0:
+          begin
+            F.Phase := 1;
+            NeedChildStmt(F, 0, F.Node.B);
+          end;
+        1:
+          if F.ChildFlow = JsFlowBreak then
+            FinishFrame(F, MakeUndefined, JsFlowNormal)
+          else if F.ChildFlow = JsFlowReturn then
+            FinishFrame(F, F.Values[0], JsFlowReturn)
+          else
+          begin
+            F.Phase := 2;
+            NeedChildValue(F, 0, F.Node.A);
+          end;
+        2: F.Phase := 3;
+        3:
+          if IsTruthy(F.Values[0]) then
+            F.Phase := 0
+          else
+            FinishFrame(F, MakeUndefined, JsFlowNormal);
+      end;
+    nkFor:
+      case F.Phase of
+        0:
+          begin
+            F.EnvNow := NewEnv(F.Env);
+            if F.Node.A = nil then
+              F.Phase := 2
+            else
+            begin
+              if F.Node.A.Kind = nkVarDecl then
+                NeedChildStmt(F, 0, F.Node.A)
+              else
+                NeedChildValue(F, 0, F.Node.A);
+              F.Phase := 1;
+            end;
+          end;
+        1: F.Phase := 2;
+        2:
+          if F.Node.B = nil then
+            F.Phase := 4
+          else
+          begin
+            F.Phase := 3;
+            NeedChildValue(F, 0, F.Node.B);
+          end;
+        3:
+          if not IsTruthy(F.Values[0]) then
+            FinishFrame(F, MakeUndefined, JsFlowNormal)
+          else
+            F.Phase := 4;
+        4:
+          if F.Node.ItemCount = 0 then
+            F.Phase := 6
+          else
+          begin
+            F.Phase := 5;
+            NeedChildStmt(F, 0, F.Node.Items[0]);
+          end;
+        5:
+          if F.ChildFlow = JsFlowBreak then
+            FinishFrame(F, MakeUndefined, JsFlowNormal)
+          else if F.ChildFlow = JsFlowReturn then
+            FinishFrame(F, F.Values[0], JsFlowReturn)
+          else
+            F.Phase := 6;   // continue 也先走步进
+        6:
+          if F.Node.C = nil then
+            F.Phase := 2
+          else
+          begin
+            F.Phase := 7;
+            NeedChildValue(F, 0, F.Node.C);
+          end;
+        7: F.Phase := 2;
+      end;
+    nkForOf:
+      case F.Phase of
+        0: begin F.Phase := 1; NeedChildValue(F, 0, F.Node.B); end;
+        1:
+          begin
+            v := F.Values[0];
+            F.Sub := 0;
+            if (v.Kind = jvObject) and (v.Obj is TXuiJsArray) then
+            begin
+              F.CursorObj := v.Obj;
+              F.Idx2 := TXuiJsArray(v.Obj).Length;
+            end
+            else if v.Kind = jvString then
+            begin
+              F.CursorObj := nil;
+              F.StrAcc := v.Str;
+              F.Sub := 1;
+              F.Idx2 := JsStrLength(v.Str);
+            end
+            else
+              raise EXuiJsRuntime.Create('for..of 仅支持数组与字符串');
+            F.EnvNow := NewEnv(F.Env);
+            F.Idx := 0;
+            F.Phase := 2;
+          end;
+        2:
+          if F.Idx >= F.Idx2 then
+            FinishFrame(F, MakeUndefined, JsFlowNormal)
+          else
+          begin
+            if F.Sub = 0 then
+              v := TXuiJsArray(F.CursorObj).Items[F.Idx]
+            else
+              v := MakeString(JsStrCharAt(F.StrAcc, F.Idx));
+            BindPattern(F.Node.A, v, F.EnvNow, True);
+            F.Phase := 3;
+            NeedChildStmt(F, 0, F.Node.C);
+          end;
+        3:
+          if F.ChildFlow = JsFlowBreak then
+            FinishFrame(F, MakeUndefined, JsFlowNormal)
+          else if F.ChildFlow = JsFlowReturn then
+            FinishFrame(F, F.Values[0], JsFlowReturn)
+          else
+          begin
+            Inc(F.Idx);
+            F.Phase := 2;
+          end;
+      end;
+    nkReturn:
+      case F.Phase of
+        0:
+          if F.Node.A = nil then
+            FinishFrame(F, MakeUndefined, JsFlowReturn)
+          else
+          begin
+            F.Phase := 1;
+            NeedChildValue(F, 0, F.Node.A);
+          end;
+        1: FinishFrame(F, F.Values[0], JsFlowReturn);
+      end;
+    nkThrow:
+      case F.Phase of
+        0: begin F.Phase := 1; NeedChildValue(F, 0, F.Node.A); end;
+        1: ThrowScriptValue(F.Values[0]);
+      end;
+    nkBreak: FinishFrame(F, MakeUndefined, JsFlowBreak);
+    nkContinue: FinishFrame(F, MakeUndefined, JsFlowContinue);
+    nkEmpty: FinishFrame(F, MakeUndefined, JsFlowNormal);
+    nkClassDecl:
+      begin
+        F.Env.Define(F.Node.Name, EvalClass(F.Node.A, F.EnvNow));
+        FinishFrame(F, MakeUndefined, JsFlowNormal);
+      end;
+    nkTry:
+      case F.Phase of
+        0:
+          begin
+            F.DeclEnv := F.EnvNow;   // 记住外层环境（catch 用子环境，finally 回到外层）
+            F.Phase := 1;
+            NeedChildStmt(F, 0, F.Node.B);
+          end;
+        1:
+          if F.Node.ItemCount = 0 then
+            FinishFrame(F, F.Values[0], F.ChildFlow)
+          else
+          begin
+            SetSlot(F, 2, F.Values[0]);
+            F.SavedFlow := F.ChildFlow;
+            F.TryMode := 2;
+            F.HasThrown := False;
+            F.EnvNow := F.DeclEnv;
+            F.Phase := 2;
+          end;
+        2:
+          begin
+            F.Phase := 3;
+            NeedChildStmt(F, 1, F.Node.Items[0]);
+          end;
+        3:
+          if F.ChildFlow <> JsFlowNormal then
+            FinishFrame(F, F.Values[1], F.ChildFlow)   // finally 的流程覆盖原结果
+          else if F.HasThrown then
+          begin
+            F.TryMode := 3;   // 标记后再抛：展开时不再进入本帧
+            ThrowScriptValue(F.ThrownValue);
+          end
+          else
+            FinishFrame(F, F.Values[2], F.SavedFlow);
+        4:
+          begin
+            F.Phase := 5;
+            NeedChildStmt(F, 0, F.Node.C);
+          end;
+        5:
+          if F.Node.ItemCount = 0 then
+            FinishFrame(F, F.Values[0], F.ChildFlow)
+          else
+          begin
+            SetSlot(F, 2, F.Values[0]);
+            F.SavedFlow := F.ChildFlow;
+            F.TryMode := 2;
+            F.HasThrown := False;
+            F.EnvNow := F.DeclEnv;
+            F.Phase := 2;
+          end;
+      end;
+  else
+    raise EXuiJsRuntime.CreateFmt('async 机器不支持该节点（kind=%d，%d 行 %d 列）',
+      [Ord(F.Node.Kind), F.Node.Line, F.Node.Col]);
+  end;
 end;
 
 end.

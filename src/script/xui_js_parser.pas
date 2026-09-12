@@ -9,8 +9,10 @@ unit xui_js_parser;
     enum 降级为对象字面量（数字成员附带反向映射）
   - ES6：箭头函数（词法 this）、模板串、解构（默认值/重命名/剩余）、展开、
     可选链、「??」、for..of、类（constructor/方法/实例字段/单继承/super）
+  - 异步（P3）：async 函数/箭头/方法（nfAsync）、await 表达式（nkAwait）、
+    HasAwait 自底向上传播（nfHasAwait，函数体子树不传播）、await 位置校验
   - 简化 ASI：缺分号时遇右花括号、EOF 或换行自动结束
-  - 明确不支持项给出中文报错（import/export、async/await、正则、装饰器、get/set 等）
+  - 明确不支持项给出中文报错（import/export、生成器、正则、装饰器、get/set 等）
 
   AST 槽位约定（详见各 Kind 注释）：
   - nkProgram/nkBlock/nkSeq: Items
@@ -28,6 +30,7 @@ unit xui_js_parser;
   - nkForOf:     Name = 声明方式；A 绑定 / B 可迭代对象 / C 体
   - nkTry:       B try 块 / A catch 参数（可空）/ C catch 块 / Items[0] = finally 块（可空）
   - nkUnary/nkUpdate: Op / A；nkUpdate 的 nfPrefix
+  - nkAwait:      A 被等待的表达式；nfHasAwait 由后处理传播
   - nkBinary/nkLogical: Op / A / B
   - nkAssign:    Op / A 目标 / B 值
   - nkCond:      A 条件 / B 真 / C 假
@@ -54,7 +57,7 @@ type
     nkNumber, nkString, nkBool, nkNull, nkUndefined, nkIdent, nkThis, nkSuper,
     nkArrayLit, nkObjectLit, nkProperty, nkFunc, nkClass, nkMethod, nkClassField,
     nkUnary, nkUpdate, nkBinary, nkLogical, nkAssign, nkCond, nkCall, nkNew,
-    nkMember, nkSeq, nkTemplate, nkSpread, nkDeclarator,
+    nkMember, nkSeq, nkTemplate, nkSpread, nkAwait, nkDeclarator,
     // 语句
     nkProgram, nkBlock, nkVarDecl, nkFuncDecl, nkClassDecl, nkExprStmt, nkIf,
     nkWhile, nkDoWhile, nkFor, nkForOf, nkReturn, nkBreak, nkContinue, nkThrow,
@@ -73,7 +76,9 @@ type
     nfStatic,     // 类静态成员
     nfShorthand,  // 对象字面量简写
     nfRest,       // 剩余元素
-    nfSpread      // 展开元素
+    nfSpread,     // 展开元素
+    nfAsync,      // async 函数 / 箭头 / 方法
+    nfHasAwait    // 子树含 await（nfFunc 子树不参与传播；后处理写入）
   );
   TXuiJsNodeFlags = set of TXuiJsNodeFlag;
 
@@ -112,6 +117,7 @@ type
     FToks: TXuiJsTokens;
     FIndex: Integer;
     FDepth: Integer;
+    FAsyncCtx: array of Boolean;   // await 上下文栈：栈顶 = 当前函数是否 async
     // token 游标
     function Cur: TXuiJsToken;
     function CurKind: TXuiJsTokenKind;
@@ -128,6 +134,10 @@ type
     function MkNode(AKind: TXuiJsNodeKind): TXuiJsNode;
     function IsIdentLike: Boolean;
     function TakeIdentLike: string;
+    // await 上下文（P3）
+    procedure PushAsyncCtx(AAllowed: Boolean);
+    procedure PopAsyncCtx;
+    function AwaitAllowed: Boolean;
     // 类型擦除
     procedure SkipBalancedAngle;
     procedure SkipTypeParamsIfAny;
@@ -145,7 +155,7 @@ type
     function ParseBlock: TXuiJsNode;
     function ParseStatement: TXuiJsNode;
     function ParseVarDecl(AConsumeSemi: Boolean): TXuiJsNode;
-    function ParseFunctionDecl: TXuiJsNode;
+    function ParseFunctionDecl(AAsync: Boolean): TXuiJsNode;
     function ParseClassDecl: TXuiJsNode;
     // 声明片段
     function ParseParams: TXuiJsNode;
@@ -161,8 +171,8 @@ type
     function ParseCallMember: TXuiJsNode;
     function ParseArguments: TXuiJsNode;
     function ParsePrimary: TXuiJsNode;
-    function ParseArrowFromIdent: TXuiJsNode;
-    function ParseArrowFromParams: TXuiJsNode;
+    function ParseArrowFromIdent(AAsync: Boolean): TXuiJsNode;
+    function ParseArrowFromParams(AAsync: Boolean): TXuiJsNode;
     function ParseArrowOrGeneric: TXuiJsNode;
     function ParseParenExpr: TXuiJsNode;
     function ParseArrowBody: TXuiJsNode;
@@ -170,7 +180,7 @@ type
     function ParseObjectLiteral: TXuiJsNode;
     function ParsePropertyName(out AComputed: Boolean): string;
     function ParseTemplate: TXuiJsNode;
-    function ParseFuncExpr: TXuiJsNode;
+    function ParseFuncExpr(AAsync: Boolean): TXuiJsNode;
     function ParseClassExpr: TXuiJsNode;
     // 辅助
     function IsAssignable(ANode: TXuiJsNode): Boolean;
@@ -179,6 +189,9 @@ type
     constructor Create(AProgram: TXuiJsProgram; const ASource: string);
     function ParseProgram: TXuiJsNode;
   end;
+
+// HasAwait 后处理：子树含 await（nkFunc 子树不参与——函数体的 await 属于该函数）
+procedure PropagateHasAwait(ARoot: TXuiJsNode);
 
 // 解析入口：失败抛 EXuiJsSyntaxError
 function XuiJsParse(const ASource: string; const AFileName: string = ''): TXuiJsProgram;
@@ -349,6 +362,69 @@ begin
     ParseError('期望标识符，实际是 "' + Cur.Text + '"');
   Result := Cur.Text;
   Advance;
+end;
+
+{ ---- await 上下文（P3）---- }
+
+procedure TXuiJsParser.PushAsyncCtx(AAllowed: Boolean);
+var
+  n: Integer;
+begin
+  n := System.Length(FAsyncCtx);
+  SetLength(FAsyncCtx, n + 1);
+  FAsyncCtx[n] := AAllowed;
+end;
+
+procedure TXuiJsParser.PopAsyncCtx;
+begin
+  SetLength(FAsyncCtx, System.Length(FAsyncCtx) - 1);
+end;
+
+function TXuiJsParser.AwaitAllowed: Boolean;
+begin
+  Result := (System.Length(FAsyncCtx) > 0) and FAsyncCtx[System.Length(FAsyncCtx) - 1];
+end;
+
+// HasAwait 后处理：自底向上传播；nkFunc 子树跳过（函数体的 await 属于该函数）
+procedure PropagateHasAwait(ARoot: TXuiJsNode);
+
+  function Visit(ANode: TXuiJsNode): Boolean;
+  var
+    i: Integer;
+  begin
+    Result := False;
+    if ANode = nil then
+      Exit;
+    if ANode.Kind = nkFunc then
+    begin
+      // 函数体内部照常标记（供 async 机器使用），但函数节点本身不因体被污染
+      //（求值 nkFunc 只是创建闭包，不会执行函数体）
+      Visit(ANode.A);
+      Visit(ANode.B);
+      Visit(ANode.C);
+      for i := 0 to ANode.ItemCount - 1 do
+        Visit(ANode.Items[i]);
+      Exclude(ANode.Flags, nfHasAwait);
+      Exit(False);
+    end;
+    if ANode.Kind = nkAwait then
+      Result := True;
+    // 注意：不能用 or 短路表达式——右操作数会漏标记
+    if Visit(ANode.A) then
+      Result := True;
+    if Visit(ANode.B) then
+      Result := True;
+    if Visit(ANode.C) then
+      Result := True;
+    for i := 0 to ANode.ItemCount - 1 do
+      if Visit(ANode.Items[i]) then
+        Result := True;
+    if Result then
+      Include(ANode.Flags, nfHasAwait);
+  end;
+
+begin
+  Visit(ARoot);
 end;
 
 { ---- TS 类型擦除 ---- }
@@ -837,7 +913,7 @@ begin
     Accept(';');
 end;
 
-function TXuiJsParser.ParseFunctionDecl: TXuiJsNode;
+function TXuiJsParser.ParseFunctionDecl(AAsync: Boolean): TXuiJsNode;
 var
   fn: TXuiJsNode;
 begin
@@ -849,10 +925,17 @@ begin
   SkipTypeParamsIfAny;
   fn := MkNode(nkFunc);
   fn.Name := Result.Name;
+  if AAsync then
+    Include(fn.Flags, nfAsync);
   fn.A := ParseParams;
   if Accept(':') then
     SkipType(['{']);
-  fn.B := ParseBlock;
+  PushAsyncCtx(AAsync);
+  try
+    fn.B := ParseBlock;
+  finally
+    PopAsyncCtx;
+  end;
   Result.A := fn;
 end;
 
@@ -1059,7 +1142,7 @@ end;
 function TXuiJsParser.ParseClassMembers(ACls: TXuiJsNode): TXuiJsNode;
 var
   members, m, fn: TXuiJsNode;
-  isStatic, computed: Boolean;
+  isStatic, isAsync, computed: Boolean;
   name: string;
 begin
   members := MkNode(nkSeq);
@@ -1093,6 +1176,15 @@ begin
     if (IsKw('get') or IsKw('set')) and (not PunctAt(FIndex + 1, '(')) and
        (not PunctAt(FIndex + 1, ':')) then
       ParseError('不支持 get/set 访问器');
+    // P3：async 方法（async() / async: / async = 等仍是名为 async 的成员）
+    isAsync := False;
+    if IsKw('async') and (not PunctAt(FIndex + 1, '(')) and
+       (not PunctAt(FIndex + 1, ':')) and (not PunctAt(FIndex + 1, '=')) and
+       (not PunctAt(FIndex + 1, ';')) and (not PunctAt(FIndex + 1, '}')) then
+    begin
+      Advance;
+      isAsync := True;
+    end;
     name := ParsePropertyName(computed);
     if IsPunct('(') or IsPunct('<') then
     begin
@@ -1100,10 +1192,17 @@ begin
       fn := MkNode(nkFunc);
       fn.Name := name;
       Include(fn.Flags, nfMethod);
+      if isAsync then
+        Include(fn.Flags, nfAsync);
       fn.A := ParseParams;
       if Accept(':') then
         SkipType(['{']);
-      fn.B := ParseBlock;
+      PushAsyncCtx(isAsync);
+      try
+        fn.B := ParseBlock;
+      finally
+        PopAsyncCtx;
+      end;
       m := MkNode(nkMethod);
       m.Name := name;
       if computed then
@@ -1155,7 +1254,7 @@ begin
   if IsKw('var') or IsKw('let') or IsKw('const') then
     Exit(ParseVarDecl(True));
   if IsKw('function') then
-    Exit(ParseFunctionDecl);
+    Exit(ParseFunctionDecl(False));
   if IsKw('class') then
     Exit(ParseClassDecl);
 
@@ -1175,10 +1274,12 @@ begin
     ParseError('不支持 ' + Cur.Text + ' 声明');
   if IsKw('import') or IsKw('export') then
     ParseError('不支持模块系统（import/export）');
-  if IsKw('async') then
-    ParseError('不支持 async（异步）');
-  if IsKw('await') then
-    ParseError('不支持 await（异步）');
+  // P3：async function 声明（await 由表达式层校验位置）
+  if IsKw('async') and KwAt(FIndex + 1, 'function') then
+  begin
+    Advance; // async
+    Exit(ParseFunctionDecl(True));
+  end;
   if IsKw('switch') then
     ParseError('不支持 switch 语句');
   if IsKw('with') then
@@ -1233,6 +1334,8 @@ begin
   if IsKw('for') then
   begin
     Advance;
+    if IsKw('await') then
+      ParseError('暂不支持 for await..of');
     Expect('(');
 
     // for (const x of expr) / for (x of expr)
@@ -1420,10 +1523,10 @@ begin
   if IsArrowAhead then
   begin
     if Cur.Kind = tkIdent then
-      Exit(ParseArrowFromIdent);
+      Exit(ParseArrowFromIdent(False));
     if IsPunct('<') then
       Exit(ParseArrowOrGeneric);
-    Exit(ParseArrowFromParams);
+    Exit(ParseArrowFromParams(False));
   end;
 
   lhs := ParseConditional;
@@ -1560,8 +1663,39 @@ begin
     node.A := operand;
     Exit(node);
   end;
-  if IsKw('await') or IsKw('yield') then
-    ParseError('不支持 ' + Cur.Text + '（异步/生成器）');
+  if IsKw('await') then
+  begin
+    // P3：await 一元前缀（位置校验：仅 async 函数体内合法）
+    if not AwaitAllowed then
+      ParseError('await 只能用于 async 函数内');
+    Advance;
+    operand := ParseUnary();
+    node := FProg.NewNode(nkAwait, operand.Line, operand.Col);
+    node.A := operand;
+    Exit(node);
+  end;
+  if IsKw('yield') then
+    ParseError('不支持 yield（生成器）');
+  // P3：async 前缀 —— async function 表达式 / async 箭头
+  if IsKw('async') then
+  begin
+    if KwAt(FIndex + 1, 'function') then
+    begin
+      Advance; // async
+      Exit(ParseFuncExpr(True));
+    end;
+    if TokAt(FIndex + 1).Kind = tkIdent then
+    begin
+      Advance; // async
+      Exit(ParseArrowFromIdent(True));
+    end;
+    if PunctAt(FIndex + 1, '(') and CheckArrowAfter(ScanMatching(FIndex + 1)) then
+    begin
+      Advance; // async
+      Exit(ParseArrowFromParams(True));
+    end;
+    ParseError('"async" 只能用于 async 函数或 async 箭头函数');
+  end;
   Result := ParsePostfix;
 end;
 
@@ -1744,7 +1878,7 @@ begin
     if Cur.Text = '(' then
     begin
       if IsArrowAhead then
-        Exit(ParseArrowFromParams);
+        Exit(ParseArrowFromParams(False));
       Exit(ParseParenExpr);
     end;
     if Cur.Text = '[' then
@@ -1758,7 +1892,7 @@ begin
   if Cur.Kind = tkIdent then
   begin
     if IsArrowAhead then
-      Exit(ParseArrowFromIdent);
+      Exit(ParseArrowFromIdent(False));
     node := MkNode(nkIdent);
     node.Name := Cur.Text;
     Advance;
@@ -1768,7 +1902,7 @@ begin
   if Cur.Kind = tkKeyword then
   begin
     if Cur.Text = 'function' then
-      Exit(ParseFuncExpr);
+      Exit(ParseFuncExpr(False));
     if Cur.Text = 'class' then
       Exit(ParseClassExpr);
     if Cur.Text = 'this' then
@@ -1906,7 +2040,7 @@ end;
 function TXuiJsParser.ParseObjectLiteral: TXuiJsNode;
 var
   prop, keyNode, value: TXuiJsNode;
-  computed: Boolean;
+  computed, isAsync: Boolean;
   name: string;
   line, col: Integer;
 begin
@@ -1929,6 +2063,15 @@ begin
     if (IsKw('get') or IsKw('set')) and (not PunctAt(FIndex + 1, '(')) and
        (not PunctAt(FIndex + 1, ':')) then
       ParseError('不支持 get/set 访问器');
+    // P3：async 方法（async() / async: 等仍是名为 async 的属性）
+    isAsync := False;
+    if IsKw('async') and (not PunctAt(FIndex + 1, '(')) and
+       (not PunctAt(FIndex + 1, ':')) and (not PunctAt(FIndex + 1, '=')) and
+       (not PunctAt(FIndex + 1, ',')) and (not PunctAt(FIndex + 1, '}')) then
+    begin
+      Advance;
+      isAsync := True;
+    end;
     line := Cur.Line;
     col := Cur.Col;
     name := ParsePropertyName(computed);
@@ -1942,10 +2085,17 @@ begin
       value := FProg.NewNode(nkFunc, line, col);
       value.Name := name;
       Include(value.Flags, nfMethod);
+      if isAsync then
+        Include(value.Flags, nfAsync);
       value.A := ParseParams;
       if Accept(':') then
         SkipType(['{']);
-      value.B := ParseBlock;
+      PushAsyncCtx(isAsync);
+      try
+        value.B := ParseBlock;
+      finally
+        PopAsyncCtx;
+      end;
       prop.B := value;
       Include(prop.Flags, nfMethod);
     end
@@ -2014,7 +2164,7 @@ begin
   Result := node;
 end;
 
-function TXuiJsParser.ParseFuncExpr: TXuiJsNode;
+function TXuiJsParser.ParseFuncExpr(AAsync: Boolean): TXuiJsNode;
 var
   fn: TXuiJsNode;
 begin
@@ -2022,6 +2172,8 @@ begin
   if IsPunct('*') then
     ParseError('不支持生成器函数');
   fn := MkNode(nkFunc);
+  if AAsync then
+    Include(fn.Flags, nfAsync);
   if IsIdentLike then
   begin
     fn.Name := Cur.Text;
@@ -2031,7 +2183,12 @@ begin
   fn.A := ParseParams;
   if Accept(':') then
     SkipType(['{']);
-  fn.B := ParseBlock;
+  PushAsyncCtx(AAsync);
+  try
+    fn.B := ParseBlock;
+  finally
+    PopAsyncCtx;
+  end;
   Result := fn;
 end;
 
@@ -2051,12 +2208,14 @@ begin
   Result := cls;
 end;
 
-function TXuiJsParser.ParseArrowFromIdent: TXuiJsNode;
+function TXuiJsParser.ParseArrowFromIdent(AAsync: Boolean): TXuiJsNode;
 var
   fn, param: TXuiJsNode;
 begin
   fn := MkNode(nkFunc);
   Include(fn.Flags, nfArrow);
+  if AAsync then
+    Include(fn.Flags, nfAsync);
   param := MkNode(nkIdent);
   param.Name := Cur.Text;
   Advance;
@@ -2066,28 +2225,40 @@ begin
   fn.A := MkNode(nkSeq);
   fn.A.AddItem(param);
   Expect('=>');
-  fn.B := ParseArrowBody;
+  PushAsyncCtx(AAsync);
+  try
+    fn.B := ParseArrowBody;
+  finally
+    PopAsyncCtx;
+  end;
   Result := fn;
 end;
 
-function TXuiJsParser.ParseArrowFromParams: TXuiJsNode;
+function TXuiJsParser.ParseArrowFromParams(AAsync: Boolean): TXuiJsNode;
 var
   fn: TXuiJsNode;
 begin
   fn := MkNode(nkFunc);
   Include(fn.Flags, nfArrow);
+  if AAsync then
+    Include(fn.Flags, nfAsync);
   fn.A := ParseParams;
   if Accept(':') then
     SkipType(['=>']);
   Expect('=>');
-  fn.B := ParseArrowBody;
+  PushAsyncCtx(AAsync);
+  try
+    fn.B := ParseArrowBody;
+  finally
+    PopAsyncCtx;
+  end;
   Result := fn;
 end;
 
 function TXuiJsParser.ParseArrowOrGeneric: TXuiJsNode;
 begin
   SkipTypeParamsIfAny;
-  Result := ParseArrowFromParams;
+  Result := ParseArrowFromParams(False);
 end;
 
 function TXuiJsParser.ParseArrowBody: TXuiJsNode;
@@ -2165,6 +2336,7 @@ begin
     parser := TXuiJsParser.Create(Result, ASource);
     try
       Result.Root := parser.ParseProgram;
+      PropagateHasAwait(Result.Root);   // P3：nfHasAwait 自底向上传播
     finally
       parser.Free;
     end;
