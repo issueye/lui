@@ -190,6 +190,9 @@ type
     function NativeComponent(AFn: TXuiJsFunction; AThis: TXuiJsValue;
       const AArgs: TXuiJsValueArray): TXuiJsValue;
     function FindComponentDef(const AName: string): TXuiComponentDef;
+    function ScriptBaseDir: string;
+    function LoadComponentTemplate(defn: TXuiJsObject;
+      const ACompName: string): string;
   public
     constructor Create(AEngine: TXuiEngine; AScript: TXuiScript);
     destructor Destroy; override;
@@ -471,8 +474,73 @@ begin
     (ATypeName = 'object') or (ATypeName = 'array');
 end;
 
+// 脚本内相对路径的基准目录（组件模板等：优先按当前脚本文件所在目录）
+function TXuiBindingEngine.ScriptBaseDir: string;
+begin
+  Result := '';
+  if FScript.CurrentFile <> '' then
+    Result := ExtractFileDir(FScript.CurrentFile);
+  if Result = '' then
+    Result := GetCurrentDir;
+end;
+
+// 属性值是否已是绝对路径（Windows 盘符 / 以分隔符开头）
+function PathIsAbsolute(const APath: string): Boolean;
+var
+  c: Char;
+begin
+  Result := False;
+  if APath = '' then
+    Exit;
+  c := UpCase(APath[1]);
+  if (Length(APath) >= 2) and (APath[2] = ':') and (c >= 'A') and (c <= 'Z') then
+    Exit(True);
+  Result := (APath[1] = PathDelim) or (APath[1] = '/');
+end;
+
+// 读取组件模板：templateFile（相对脚本文件/工作目录）优先于内联 template
+function TXuiBindingEngine.LoadComponentTemplate(defn: TXuiJsObject;
+  const ACompName: string): string;
+var
+  path: string;
+  tplV: TXuiJsValue;
+  list: TStringList;
+begin
+  Result := '';
+  tplV := defn.GetOwn('templateFile');
+  // 未提供（undefined）或非字符串 → 退回内联 template
+  if (tplV.Kind <> jvString) or (Trim(tplV.Str) = '') then
+  begin
+    Result := FScript.ToStringValue(defn.GetOwn('template'));
+    Exit;
+  end;
+  path := Trim(tplV.Str);
+  if not PathIsAbsolute(path) then
+    path := ScriptBaseDir + PathDelim + path;
+  path := ExpandFileName(path);
+  if not FileExists(path) then
+  begin
+    FScript.ReportError(path, '组件 ' + ACompName + ' 的模板文件不存在', ssCompile);
+    Exit;
+  end;
+  list := TStringList.Create;
+  try
+    try
+      list.LoadFromFile(path);
+      Result := list.Text;
+    except
+      on E: Exception do
+        FScript.ReportError(path, '组件 ' + ACompName + ' 的模板文件读取失败：' + E.Message,
+          ssCompile);
+    end;
+  finally
+    list.Free;
+  end;
+end;
+
 // component(name, {props, template}) 注册组件
 // props 形式：['a', 'b']（仅声明）或 { a: 'number', b: { type: 'string', required: true } }
+// template 可用内联字符串，或 templateFile 指向外部 XML（相对当前脚本文件所在目录）
 function TXuiBindingEngine.NativeComponent(AFn: TXuiJsFunction; AThis: TXuiJsValue;
   const AArgs: TXuiJsValueArray): TXuiJsValue;
 var
@@ -494,7 +562,7 @@ begin
     def := TXuiComponentDef.Create(name);
     FComponents.Add(def);
   end;
-  def.TemplateStr := FScript.ToStringValue(defn.GetOwn('template'));
+  def.TemplateStr := LoadComponentTemplate(defn, name);
   pv := defn.GetOwn('props');
   def.Specs.Clear;
   if (pv.Kind = jvObject) and (pv.Obj is TXuiJsArray) then

@@ -48,6 +48,7 @@ type
     FOnError: TXuiScriptErrorEvent;
     FErrorCount: Integer;
     FLastErrorFile: string;
+    FCurrentFile: string;   // 正在求值的脚本文件（组件模板相对路径以它为基准）
     FLastErrorMessage: string;
     FLastErrorLine: Integer;
     FLastErrorCol: Integer;
@@ -139,6 +140,8 @@ type
     property LastErrorLine: Integer read FLastErrorLine;
     property LastErrorCol: Integer read FLastErrorCol;
     property LastErrorStage: TXuiScriptStage read FLastErrorStage;
+    // 正在求值的脚本文件（脚本内注册组件时按它的目录解析模板等相对路径）
+    property CurrentFile: string read FCurrentFile;
   end;
 
 implementation
@@ -277,11 +280,15 @@ end;
 
 // 求值整个编译单元：进入切片（预算重置 + 错误路由）
 function TXuiScript.RunUnit(AUnit: TXuiScriptUnit): Boolean;
+var
+  prevFile: string;
 begin
   Result := False;
   if AUnit = nil then
     Exit;
   Inc(FSliceDepth);
+  prevFile := FCurrentFile;
+  FCurrentFile := AUnit.FileName;   // 供 component(templateFile) 等按脚本目录解析相对路径
   try
     // 求值也是切片：预算从零计数（多文件顺序求值不互相累计）
     FInterp.ResetSteps;
@@ -293,6 +300,7 @@ begin
     on E: Exception do
       ReportException(AUnit.FileName, E);
   end;
+  FCurrentFile := prevFile;
   Dec(FSliceDepth);
 end;
 

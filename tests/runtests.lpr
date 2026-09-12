@@ -8464,6 +8464,7 @@ var
   node: TXuiNode;
   keptA, keptC: TXuiNode;
   errs: Integer;
+  tplDir: string;
   src: string;
   ioSeq: Integer;
 
@@ -9027,6 +9028,26 @@ begin
       node := engine.Document.FindElementById('ut1');
       Check((node <> nil) and (node[0].Text = 'reset'),
         'x-model 组件：宿主状态变化回灌组件内部');
+
+      // ---- M8-0 ADR 27：templateFile（模板外置，相对脚本文件目录解析）----
+      tplDir := GetTempDir + 'lui_m8_tpl';
+      ForceDirectories(tplDir);
+      WriteTestFile(tplDir + PathDelim + 'card.xml',
+        '<panel class="tplcard"><label x-text="props.t"/></panel>');
+      WriteTestFile(tplDir + PathDelim + 'ui.ts',
+        'component("tpl-card", { props: { t: "string" }, templateFile: "card.xml" });');
+      script.RunFile(tplDir + PathDelim + 'ui.ts');
+      engine.LoadFromString('<window><tpl-card id="tc1" t="hi"/></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('tc1');
+      Check((node <> nil) and (node.Count = 1) and (node[0].Text = 'hi'),
+        'templateFile：外部模板文件按脚本目录解析并实例化');
+
+      errs := script.ErrorCount;
+      WriteTestFile(tplDir + PathDelim + 'bad.ts',
+        'component("tpl-bad", { props: [], templateFile: "no-such-file.xml" });');
+      script.RunFile(tplDir + PathDelim + 'bad.ts');
+      Check(script.ErrorCount > errs, 'templateFile：模板文件缺失上报为脚本错误');
     finally
       bridge.Free;
     end;
