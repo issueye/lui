@@ -4494,6 +4494,7 @@ begin
     end;
     for i := 0 to n - 1 do
       arr.Items[lo + i] := AArgs[2 + i];
+    NotifyArrayWrite(arr);
     Exit(ArrayValue(outArr));
   end;
   if AFn.Name = 'indexOf' then
@@ -4531,6 +4532,7 @@ begin
       arr.Items[i] := arr.Items[arr.Length - 1 - i];
       arr.Items[arr.Length - 1 - i] := acc;
     end;
+    NotifyArrayWrite(arr);
     Exit(AThis);
   end;
   if AFn.Name = 'concat' then

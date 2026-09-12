@@ -234,6 +234,7 @@ var
   doc: TXuiDocument;
 begin
   doc := LoadDocumentFromFile(AFileName); // 解析失败时抛异常，保留旧文档
+  SafePoint;                              // 旧文档的最后排水（此后旧文档被替换）
   FTransitions.Reset;
   FDocument.Free;
   FDocument := doc;
@@ -249,6 +250,7 @@ begin
   RecordDocSources;
   DoChange;
   RunDocumentScripts; // DOM 就绪后按序执行 <script src>（未装配脚本时无开销）
+  SafePoint;          // 脚本就绪后才做首轮绑定扫描（脚本可能注册组件，见 RunDocumentScripts 注）
 end;
 
 procedure TXuiEngine.LoadFromString(const AXMLContent: string);
@@ -256,6 +258,7 @@ var
   doc: TXuiDocument;
 begin
   doc := LoadDocumentFromXML(AXMLContent); // 解析失败时抛异常，保留旧文档
+  SafePoint;                               // 旧文档的最后排水（此后旧文档被替换）
   FTransitions.Reset;
   FDocument.Free;
   FDocument := doc;
@@ -270,6 +273,7 @@ begin
   FNeedsLayout := True;
   DoChange;
   RunDocumentScripts; // DOM 就绪后按序执行脚本
+  SafePoint;          // 脚本就绪后才做首轮绑定扫描（脚本可能注册组件，见 RunDocumentScripts 注）
 end;
 
 procedure TXuiEngine.SetViewport(AWidth, AHeight: Integer);
@@ -529,8 +533,9 @@ var
   i: Integer;
   baseDir, path: string;
 begin
+  // 注意：此处不做 SafePoint——首轮绑定扫描必须等脚本运行完（脚本可能注册组件，
+  // component(...) 之后绑定集才完整）；文档替换前的排水在 LoadFromFile/LoadFromString 里做
   FScriptInitialized := True;
-  SafePoint;
   if (FScript = nil) or (FDocument = nil) or (FDocument.Scripts.Count = 0) then
     Exit;
   baseDir := '';
@@ -550,8 +555,7 @@ begin
     end;
     FScript.RunFile(path);
   end;
-  FScript.MarkReactiveDirty;   // M7：脚本就绪后请求绑定首渲染
-  SafePoint;
+  FScript.MarkReactiveDirty;   // M7：脚本就绪后请求绑定首渲染（首轮扫描在此后的安全点）
 end;
 
 // P1：安全点排空微任务（Promise 回调在此执行；时机白名单见 M6-异步设计 §3）

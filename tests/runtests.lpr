@@ -8442,6 +8442,17 @@ end;
 
 { ---------- M7：响应式绑定（参照 Vue 3）---------- }
 
+// 演示页文件定位（测试既可从仓库根、也可从 tests 目录运行）
+function DemoFilePath(const AName: string): string;
+begin
+  Result := 'demo' + PathDelim + AName;
+  if FileExists(Result) then
+    Exit;
+  Result := '..' + PathDelim + 'demo' + PathDelim + AName;
+  if not FileExists(Result) then
+    Result := '';
+end;
+
 // 引擎级：reactive/computed/watch/onMount + 声明式绑定（x-text/x-class/x-disabled/x-show/x-if/x-for/x-model）
 procedure TestScriptReactive;
 var
@@ -8885,6 +8896,100 @@ begin
       Check((node.Count = 4) and (node[0].Text = 'M2b') and (node[1].Text = 'tail') and
         (node[2].Text = 'M1b') and (node[3].Text = 'tail'),
         '多根组件作为 keyed 列表项：重排后两棵根保持成组有序');
+
+      // 函数 prop：kebab 属性名（:on-labels）转 camel（onLabels）后按 props 调用
+      RunAndFlush(
+        'function LabelOf(n: number): string { return "L" + n; }' + #10 +
+        'component("uc2", { props: { count: { type: "number", default: 0 }, onLabels: { type: "function" } }, template: "<panel><label x-text=\"props.onLabels(props.count)\"/></panel>" });');
+      engine.LoadFromString('<window><uc2 id="uc2" :count="7" :on-labels="LabelOf"/></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('uc2');
+      Check((node <> nil) and (node.Count = 1) and (node[0].Text = 'L7'),
+        '函数 prop：kebab 属性名转 camel 后可在模板内调用');
+
+      // reverse / splice 的响应式变更通知（与 push/pop/shift/unshift 对齐）
+      RunAndFlush('const rv = reactive({ rows: [{ n: "r1" }, { n: "r2" }] });');
+      engine.LoadFromString(
+        '<window><panel id="rv1" x-for="r in rv.rows"><label x-text="r.n"/></panel></window>');
+      DrawEngine(engine);
+      RunAndFlush('rv.rows.reverse();');
+      node := engine.Document.FindElementById('rv1');
+      Check((node.Count = 2) and (node[0].Text = 'r2') and (node[1].Text = 'r1'),
+        '数组 reverse 触发 x-for 刷新');
+      RunAndFlush('rv.rows.splice(1, 0, { n: "r3" });');
+      node := engine.Document.FindElementById('rv1');
+      Check((node.Count = 3) and (node[1].Text = 'r3'),
+        '数组 splice 触发 x-for 刷新');
+    finally
+      bridge.Free;
+    end;
+  finally
+    sink.Free;
+    script.Free;
+    engine.Free;
+  end;
+end;
+
+// 演示页整页加载（demo/m7.xml + 同名 m7.ts）：走引擎真实的文档加载路径。
+// 关键点：脚本在首轮扫描之后才运行，component(...) 的注册必须让绑定集重建，
+// 否则组件标签会被当普通标签处理（真实应用里组件永不实例化）。
+procedure TestDemoPage;
+var
+  engine: TXuiEngine;
+  fake: TFakeRenderer;
+  script: TXuiScript;
+  bridge: TXuiDomBridge;
+  sink: TScriptSink;
+  node, ucRoot: TXuiNode;
+  xmlPath, cssPath: string;
+begin
+  WriteLn('--- M7 演示页（demo/m7）---');
+  xmlPath := DemoFilePath('m7.xml');
+  if xmlPath = '' then
+  begin
+    WriteLn('SKIP  未找到 demo/m7.xml');
+    Exit;
+  end;
+  engine := NewTestEngine(fake);
+  script := TXuiScript.Create;
+  sink := TScriptSink.Create;
+  try
+    bridge := TXuiDomBridge.Create(engine, script);
+    try
+      bridge.Install;
+      engine.AttachScript(script);
+      script.OnError := @sink.HandleError;
+      script.Interp.OnLog := @sink.HandleLog;
+      cssPath := DemoFilePath('m7-light.css');
+      if cssPath <> '' then
+        engine.LoadStyleSheetFromFile(cssPath);
+      engine.LoadFromFile(xmlPath);   // 页面内声明 <script src="m7.ts"/>
+      DrawEngine(engine);
+
+      Check(script.ErrorCount = 0, '演示页 m7：整页加载无脚本错误');
+      node := engine.Document.FindElementById('uc-head');
+      Check((node <> nil) and (node.Parent <> nil) and node.Parent.HasClass('ucard'),
+        '演示页 m7：脚本注册的组件被实例化（具名 slot 内容进入 .ucard 实例根）');
+      node := engine.Document.FindElementById('cnt');
+      Check((node <> nil) and (Pos('点击 0 次（平方 0）', node.Text) > 0),
+        '演示页 m7：插值 + computed 首渲染');
+      node := engine.Document.FindElementById('rows');
+      Check((node <> nil) and (node.Count = 2), '演示页 m7：keyed x-for 渲染初始 2 条');
+
+      // 调用脚本函数（事件回退路径）→ 状态 → 绑定与组件 props 刷新
+      script.CallGlobal('OnInc', []);
+      script.FlushReactive;
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('cnt');
+      Check((node <> nil) and (Pos('点击 1 次（平方 1）', node.Text) > 0),
+        '演示页 m7：改状态后插值/computed 自动刷新');
+      node := engine.Document.FindElementById('uc-head');
+      ucRoot := nil;
+      if node <> nil then
+        ucRoot := node.Parent;
+      Check((ucRoot <> nil) and (ucRoot.Count = 3) and
+        (Pos('1 次点击', ucRoot[1].Text) > 0),
+        '演示页 m7：函数 prop 在组件模板内随 props 重新求值');
     finally
       bridge.Free;
     end;
@@ -10019,6 +10124,7 @@ begin
 
     TestScriptIO;
     TestScriptReactive;
+    TestDemoPage;
 
 
 

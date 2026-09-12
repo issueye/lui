@@ -10,6 +10,8 @@ program demo1;
   demo1 list dark        列表页（深色）
   demo1 todo             Todo 小应用（浅色；输入框 + Enter 添加，条目来自 include 模板）
   demo1 todo dark        Todo 小应用（深色）
+  demo1 m7               M7 响应式演示（插值 / x-model / :class / x-if / keyed v-for / 组件）
+  demo1 m7 dark          M7 响应式演示（深色）
   demo1 watch            开启热重载：运行中修改 *.css / *.xml 自动生效
   demo1 shot [WxH]       渲染到 shot.png 后退出（布局/观感自动核对）
   demo1 todo demo shot   同上，但先模拟交互（输入 + Enter 添加 / 悬停 / 完成 / 删除 / 滚动）
@@ -341,6 +343,23 @@ begin
     Exit;
   end;
 
+  // m7 页：+1 三次（插值/computed/:class/x-if）→ 输入名字（x-model 回写）→
+  // 添加条目 → 反转（keyed 复用）→ 切明细（x-show），再把指针移出按钮
+  if FBaseName = 'm7' then
+  begin
+    item := engine.Document.FindElementById('btn-inc');
+    ClickAt(item);
+    ClickAt(item);
+    ClickAt(item);
+    ClickAt(engine.Document.FindElementById('name'));
+    engine.HandleTextInput('X');
+    ClickAt(engine.Document.FindElementById('btn-add'));
+    ClickAt(engine.Document.FindElementById('btn-rev'));
+    ClickAt(engine.Document.FindElementById('btn-show'));
+    engine.HandleMouseMove(300, 520);
+    Exit;
+  end;
+
   // todo
   inputNode := engine.Document.FindElementById('new-todo');
   if inputNode <> nil then
@@ -391,6 +410,8 @@ begin
       page := 'list'
     else if arg = 'script' then
       page := 'script'
+    else if arg = 'm7' then
+      page := 'm7'
     else if arg = 'login' then
       page := 'login'
     else if arg = 'shot' then

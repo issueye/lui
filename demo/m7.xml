@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- M7：响应式绑定演示。逻辑全在 m7.ts；XML 只声明结构与绑定（x-text / 插值 / :class / x-if /
+     x-for + x-key / x-model / x-show / 组件 + props + 具名 slot + 函数 prop） -->
+<window title="响应式演示" width="380" height="576">
+  <script src="m7.ts"/>
+  <panel class="app">
+    <panel class="header">
+      <label class="title" text="M7 响应式演示"/>
+      <panel class="spacer"/>
+      <button id="theme" class="ghost" text="换肤" onclick="ThemeClick"/>
+    </panel>
+
+    <panel class="card">
+      <label class="label" text="插值 / x-model 双向 / :class / x-if / computed"/>
+      <label id="cnt" class="counter" text="点击 {{state.n}} 次（平方 {{double.value}}）"/>
+      <panel class="row">
+        <button id="btn-inc" class="primary" text="+1" onclick="OnInc"/>
+        <button class="ghost" text="-1" onclick="OnDec"/>
+        <button class="ghost" text="清零" onclick="OnReset"/>
+      </panel>
+      <panel class="row">
+        <input id="name" class="field" x-model="state.name"/>
+        <label class="counter" x-text="'你好，' + state.name"/>
+      </panel>
+      <label class="pill" x-class="{ hot: state.n > 0, cold: !(state.n > 0) }"
+        text=":class 对象语法（n &gt; 0 高亮）"/>
+      <label x-if="state.n > 3" class="counter" text="x-if：n &gt; 3 时才存在这条"/>
+    </panel>
+
+    <panel class="card">
+      <label class="label" text="keyed v-for（x-key 复用条目）/ watch 副作用"/>
+      <panel class="row">
+        <button id="btn-add" class="primary" text="添加" onclick="OnAdd"/>
+        <button class="ghost" text="删首条" onclick="OnDrop"/>
+        <button id="btn-rev" class="ghost" text="反转" onclick="OnReverse"/>
+      </panel>
+      <panel id="rows" x-for="r in state.rows">
+        <panel class="item" x-key="r.id">
+          <label class="text" x-text="r.title"/>
+        </panel>
+      </panel>
+      <label id="watch-log" class="counter" text="watch：—"/>
+    </panel>
+
+    <panel class="card">
+      <label class="label" text="组件：props 类型/缺省 · 具名 slot · 函数 prop（子用父函数）"/>
+      <user-card :count="state.n" :on-labels="LabelOf">
+        <label id="uc-head" slot="head" class="counter" text="具名 slot：头部内容"/>
+        <label class="text" x-text="'默认 slot：父作用域 name = ' + state.name"/>
+      </user-card>
+      <panel class="row">
+        <button id="btn-show" class="primary" text="x-show 切换明细" onclick="OnToggle"/>
+      </panel>
+      <label class="text" x-show="state.detail"
+        text="x-show：切内置 .xui-hidden（display:none，节点保活）"/>
+    </panel>
+  </panel>
+</window>

@@ -237,6 +237,32 @@ begin
   Result := Trim(AttrValueOf(ANode, 'slot'));
 end;
 
+// 属性名 → prop 名：剥离冒号前缀，kebab-case 转 camelCase（:on-tap → onTap）
+function PropNameOfAttr(const AAttrName: string): string;
+var
+  i: Integer;
+  upper: Boolean;
+begin
+  Result := AAttrName;
+  if (Result <> '') and (Result[1] = ':') then
+    Delete(Result, 1, 1);
+  upper := False;
+  i := 1;
+  while i <= Length(Result) do
+    if Result[i] = '-' then
+    begin
+      Delete(Result, i, 1);
+      upper := True;
+    end
+    else
+    begin
+      if upper and (Result[i] >= 'a') and (Result[i] <= 'z') then
+        Result[i] := Chr(Ord(Result[i]) - 32);
+      upper := False;
+      Inc(i);
+    end;
+end;
+
 procedure StripSlotAttr(ANode: TXuiNode);
 var
   i: Integer;
@@ -941,9 +967,7 @@ begin
   begin
     attrName := compNode.Attributes.Names[i];
     attrValue := compNode.Attributes.ValueFromIndex[i];
-    propName := attrName;
-    if (propName <> '') and (propName[1] = ':') then
-      Delete(propName, 1, 1);
+    propName := PropNameOfAttr(attrName);   // :on-tap → onTap（kebab 转 camel）
     if (propName = '') or SameText(attrName, 'id') or SameText(attrName, 'class') or
        SameText(attrName, 'x-key') or SameText(attrName, 'slot') then
       Continue;   // id/class 由宿主转移到实例根；x-key/slot 与 props 无关
