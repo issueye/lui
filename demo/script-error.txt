@@ -1,0 +1,1 @@
+[runtime] E:\codes\fpc_projects\lui\demo\script.ts:0:0 EXuiJsRuntime: undefined 不是函数

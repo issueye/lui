@@ -24,7 +24,7 @@ interface
 uses
   Classes, SysUtils, Contnrs, Types,
   xui_types, xui_dom, xui_events, xui_engine, xui_script,
-  xui_js_token, xui_js_parser, xui_js_runtime;
+  xui_js_token, xui_js_parser, xui_js_runtime, xui_script_bind;
 
 type
   // 节点桥：一个 TXuiNode 对应一个脚本对象（按需创建、缓存于桥）
@@ -49,6 +49,7 @@ type
     FBridges: TObjectList;   // TXuiNodeBridge（自有）
     FListeners: TObjectList; // TXuiJsListener（自有）
     FDocumentObj: TXuiJsObject;
+    FBindingEngine: TXuiBindingEngine;   // M7：声明式绑定（响应式刷新）
     function FindBridge(ANode: TXuiNode): TXuiNodeBridge;
     function EnsureBridge(ANode: TXuiNode): TXuiJsObject;
     function FindListener(ANode: TXuiNode; AKind: TXuiEventKind;
@@ -73,7 +74,7 @@ type
   public
     constructor Create(AEngine: TXuiEngine; AScript: TXuiScript);
     destructor Destroy; override;
-    // 装配：注册 document / ui.version，并挂上引擎事件钩子
+    // 装配：注册 document / ui.version，挂引擎事件钩子，并装配绑定引擎
     procedure Install;
     // DOM 变更前调用：作废全部桥与监听（节点可能被释放）
     procedure ResetBridges;
@@ -112,6 +113,7 @@ end;
 
 destructor TXuiDomBridge.Destroy;
 begin
+  FBindingEngine.Free;
   FListeners.Free;
   FBridges.Free;
   inherited Destroy;
@@ -121,6 +123,8 @@ procedure TXuiDomBridge.ResetBridges;
 begin
   FBridges.Clear;
   FListeners.Clear;
+  if FBindingEngine <> nil then
+    FBindingEngine.ResetScan;
 end;
 
 function TXuiDomBridge.FindBridge(ANode: TXuiNode): TXuiNodeBridge;
@@ -434,6 +438,9 @@ var
   args: TXuiJsValueArray;
 begin
   Result := False;
+  // M7：x-model 输入回写（先于监听器，处理器看到的是新状态；不消费事件）
+  if AEvent.Kind = xevInput then
+    FBindingEngine.HandleModelInput(ANode);
   if not FindListener(ANode, AEvent.Kind, idx) then
     Exit;
   SetLength(args, 1);
@@ -447,6 +454,10 @@ procedure TXuiDomBridge.Install;
 var
   doc: TXuiJsObject;
 begin
+  // M7：绑定引擎（扫描 x-* 绑定并在安全点刷新）
+  FBindingEngine := TXuiBindingEngine.Create(FEngine, FScript);
+  FScript.OnFlushReactive := @FBindingEngine.FlushIfDirty;
+  FScript.OnResetBindings := @FBindingEngine.ResetScan;
   // document：find / add / body
   doc := FScript.Interp.CreateHostObject('Document');
   doc.SetOwn('find', FScript.Interp.CreateHostFunction('find', @DocumentMethod));

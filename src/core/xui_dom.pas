@@ -35,6 +35,7 @@ type
     constructor Create(const ATag: string);
     destructor Destroy; override;
     procedure AddChild(AChild: TXuiNode);
+    procedure InsertChild(AIndex: Integer; AChild: TXuiNode); // 原位插入（x-if 恢复用）
     procedure RemoveChild(AChild: TXuiNode); // 仅解除父子关系，不释放
     function IndexOfChild(AChild: TXuiNode): Integer;
     property Count: Integer read GetCount;
@@ -100,6 +101,12 @@ procedure TXuiNode.AddChild(AChild: TXuiNode);
 begin
   AChild.Parent := Self;
   FChildren.Add(AChild);
+end;
+
+procedure TXuiNode.InsertChild(AIndex: Integer; AChild: TXuiNode);
+begin
+  AChild.Parent := Self;
+  FChildren.Insert(AIndex, AChild);
 end;
 
 procedure TXuiNode.RemoveChild(AChild: TXuiNode);

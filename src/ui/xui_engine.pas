@@ -58,7 +58,6 @@ type
     procedure EnsureRenderer(ACanvas: TCanvas);
     procedure DoChange;
     // 样式/布局失效并通知宿主（伪类、类名、文本变化等）
-    procedure InvalidateStyles;
     procedure ApplyNodeDataRecursive(ANode: TXuiNode);
     procedure ResolveBindings(ANode: TXuiNode);
     function DispatchEvent(ANode: TXuiNode; const AEvent: TXuiEvent): Boolean;
@@ -90,6 +89,7 @@ type
     // 尺寸变化后布局失效，下次 Draw 时重新布局
     procedure SetViewport(AWidth, AHeight: Integer);
     procedure InvalidateLayout;
+    procedure InvalidateStyles;
 
     // 在指定画布上完成（必要时）布局与绘制
     procedure Draw(ACanvas: TCanvas; const ABounds: TRect);
@@ -128,6 +128,7 @@ type
     // ---- 运行时 DOM ----
     function AddElement(AParent: TXuiNode; const AXMLFragment: string): TXuiNode;
     procedure RemoveElement(ANode: TXuiNode);
+    procedure AttachElement(AParent: TXuiNode; ANode: TXuiNode);   // M7：运行时挂载节点（行为/样式装配）
     procedure ClearChildren(AParent: TXuiNode);
     procedure SetText(ANode: TXuiNode; const AText: string);
     procedure SetClass(ANode: TXuiNode; const AClassName: string);
@@ -213,6 +214,7 @@ begin
   FScriptClockBase := 0;
   FScriptInitialized := False;
   FBackend := xbAuto;
+  LoadStyleSheetFromString('.xui-hidden { display: none; }');   // M7：x-show/v-if 显隐用的内置类
 end;
 
 destructor TXuiEngine.Destroy;
@@ -234,6 +236,8 @@ begin
   FTransitions.Reset;
   FDocument.Free;
   FDocument := doc;
+  if FScript <> nil then
+    FScript.ResetBindings;   // M7：旧文档节点上的绑定登记作废
   if FDocument.Root <> nil then
     ApplyNodeDataRecursive(FDocument.Root);
   FPointer.SetRoot(FDocument.Root);
@@ -254,6 +258,8 @@ begin
   FTransitions.Reset;
   FDocument.Free;
   FDocument := doc;
+  if FScript <> nil then
+    FScript.ResetBindings;   // M7：旧文档节点上的绑定登记作废
   if FDocument.Root <> nil then
     ApplyNodeDataRecursive(FDocument.Root);
   FPointer.SetRoot(FDocument.Root);
@@ -543,6 +549,7 @@ begin
     end;
     FScript.RunFile(path);
   end;
+  FScript.MarkReactiveDirty;   // M7：脚本就绪后请求绑定首渲染
   SafePoint;
 end;
 
@@ -551,7 +558,10 @@ procedure TXuiEngine.SafePoint;
 begin
   FScriptInitialized := FScriptInitialized; // 保留状态位
   if FScript <> nil then
+  begin
     FScript.DrainMicrotasks;
+    FScript.FlushReactive;   // M7：响应式绑定批量刷新（脏时才实际工作）
+  end;
 end;
 
 procedure TXuiEngine.SetScriptClock(ANowMs: Int64);
@@ -1062,6 +1072,16 @@ begin
     Exit;
   AParent.AddChild(Result);
   ApplyNodeDataRecursive(Result);
+  InvalidateStyles;
+end;
+
+// M7：把运行时构建的节点挂入文档（重建行为、解析静态绑定、样式失效）
+procedure TXuiEngine.AttachElement(AParent: TXuiNode; ANode: TXuiNode);
+begin
+  if (AParent = nil) or (ANode = nil) then
+    Exit;
+  AParent.AddChild(ANode);
+  ApplyNodeDataRecursive(ANode);
   InvalidateStyles;
 end;
 

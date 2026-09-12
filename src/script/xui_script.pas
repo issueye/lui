@@ -53,6 +53,8 @@ type
     FLastErrorCol: Integer;
     FLastErrorStage: TXuiScriptStage;
     FIO: TXuiScriptIO;       // 真实 I/O（懒创建；ui.http/ui.fs 首次调用即装）
+    FOnFlushReactive: TXuiGcRootsProc;   // M7：安全点响应式刷新（绑定引擎装配）
+    FOnResetBindings: TXuiGcRootsProc;   // M7：文档重建作废绑定登记
     FSliceDepth: Integer;    // 切片嵌套深度（最外层才重置预算）
     function FindUnit(const AFileName: string): TXuiScriptUnit;
     procedure Report(const AFile, AMessage: string; ALine, ACol: Integer;
@@ -87,6 +89,13 @@ type
     // 排空微任务队列（安全点调用：切片退出 / Tick / 文档加载后；
     // 末尾对未处理拒绝上报一次，见 M6-异步设计 §4）
     procedure DrainMicrotasks;
+
+    // M7 响应式：安全点回调（绑定引擎在安全点批量刷新声明式绑定）
+    procedure FlushReactive;
+    procedure MarkReactiveDirty;   // 脚本求值完成后请求一次首渲染
+    procedure ResetBindings;       // 文档重建：作废旧节点上的绑定登记
+    property OnFlushReactive: TXuiGcRootsProc read FOnFlushReactive write FOnFlushReactive;
+    property OnResetBindings: TXuiGcRootsProc read FOnResetBindings write FOnResetBindings;
 
     // P4 真实 I/O（引擎 Tick 驱动完成泵；首次访问自动创建并注册 ui.http/ui.fs/ui.storage）
     function IO: TXuiScriptIO;
@@ -277,7 +286,8 @@ begin
     // 求值也是切片：预算从零计数（多文件顺序求值不互相累计）
     FInterp.ResetSteps;
     FInterp.Run(AUnit.Program_.Root);
-    FInterp.DrainMicrotasks;   // 求值结束即安全点：排空微任务
+    FInterp.MarkReactiveDirty;   // M7：脚本定义状态后请求绑定首渲染
+    FInterp.DrainMicrotasks;     // 求值结束即安全点：排空微任务
     Result := True;
   except
     on E: Exception do
@@ -374,6 +384,24 @@ end;
 procedure TXuiScript.HandleIoError(const AMessage: string);
 begin
   Report('', AMessage, 0, 0, ssIO);
+end;
+
+// M7：安全点响应式刷新（绑定引擎挂的回调；无人装配则零开销）
+procedure TXuiScript.FlushReactive;
+begin
+  if Assigned(FOnFlushReactive) then
+    FOnFlushReactive;
+end;
+
+procedure TXuiScript.MarkReactiveDirty;
+begin
+  FInterp.MarkReactiveDirty;
+end;
+
+procedure TXuiScript.ResetBindings;
+begin
+  if Assigned(FOnResetBindings) then
+    FOnResetBindings;
 end;
 
 { ---- P2 定时器宿主接口 ---- }

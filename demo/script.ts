@@ -71,3 +71,11 @@ function OnFetch(e): void {
     st.text = "异步：网络失败（已捕获）";
   });
 }
+
+/* ---- M7 响应式绑定：逻辑只改状态，绑定自动更新 UI ---- */
+
+const state = reactive({ n: 0 });
+
+function OnBind(e): void {
+  state.n = state.n + 1;   // 无需碰 DOM：x-text 绑定自动刷新
+}

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- M6 P0：脚本页。逻辑全部在 script.ts，XML 只声明结构与绑定名；P5 增加异步示例卡片 -->
-<window title="脚本演示" width="380" height="360">
+<window title="脚本演示" width="380" height="420">
   <script src="script.ts"/>
   <panel id="app" class="app">
     <panel class="header">
@@ -15,6 +15,13 @@
         <button id="btn-clear" class="ghost" text="清空" onclick="OnClear"/>
       </panel>
       <label id="counter" class="counter" text="共 0 条"/>
+    </panel>
+    <panel class="card">
+      <label class="label" text="声明式绑定：逻辑只改状态，UI 自动更新"/>
+      <panel class="row">
+        <button id="btn-bind" class="primary" text="+1（响应式）" onclick="OnBind"/>
+        <label x-text="'计数：' + state.n"/>
+      </panel>
     </panel>
     <panel class="card">
       <label id="async-status" class="counter" text="异步：空闲"/>
