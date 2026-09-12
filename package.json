@@ -1,0 +1,29 @@
+{
+  "name": "lui",
+  "version": "0.8.0",
+  "description": "lui — 轻量级声明式现代化 Free Pascal UI 渲染引擎与组件库",
+  "main": "ui/index.ts",
+  "scripts": {
+    "build": "node scripts/build.js all",
+    "build:renderer": "node scripts/build.js renderer",
+    "build:test": "node scripts/build.js test",
+    "build:demo": "node scripts/build.js demo",
+    "test": "node scripts/build.js test && tests\\runtests.exe",
+    "render": "bin\\lui-render.exe",
+    "render:svg": "bin\\lui-render.exe demo/svg_demo.xml -o bin/svg_demo_preview.png -w 800 -h 500 -t light -v",
+    "render:gallery": "bin\\lui-render.exe demo/ui_gallery.xml -o bin/gallery_light.png -w 560 -h 980 -t light && bin\\lui-render.exe demo/ui_gallery.xml -o bin/gallery_dark.png -w 560 -h 980 -t dark",
+    "dev": "bin\\lui-render.exe demo/svg_demo.xml -w 800 -h 600 -t light --watch",
+    "clean": "node -e \"const fs = require('fs'); ['bin', 'tools/renderer/lib', 'tests/lib', 'demo/lib'].forEach(d => { if (fs.existsSync(d)) fs.rmSync(d, { recursive: true, force: true }); }); console.log('清理完毕');\""
+  },
+  "keywords": [
+    "pascal",
+    "free-pascal",
+    "lazarus",
+    "ui-framework",
+    "declarative-ui",
+    "svg",
+    "renderer"
+  ],
+  "author": "issueye",
+  "license": "MIT"
+}
