@@ -7,7 +7,7 @@ unit xui_style;
 interface
 
 uses
-  SysUtils,
+  SysUtils, Classes,
   xui_types;
 
 type
@@ -68,8 +68,12 @@ type
     TransitionDuration: Single; // 秒
     TransitionDelay: Single;    // 秒
     TransitionTiming: TXuiTimingFunction;
+    // M8：CSS 自定义属性（--x）表；随继承向下传递，供 var() 取值
+    Vars: TStringList;
+    constructor Create;
+    destructor Destroy; override;
     procedure Assign(ASource: TXuiStyle);
-    // 继承属性（颜色/字体 + visibility）取自父样式，其余保持自身值
+    // 继承属性（颜色/字体 + visibility 与变量表）取自父样式，其余保持自身值
     procedure InheritFrom(ASource: TXuiStyle);
   end;
 
@@ -265,6 +269,18 @@ end;
 
 { TXuiStyle }
 
+constructor TXuiStyle.Create;
+begin
+  inherited Create;
+  Vars := TStringList.Create;
+end;
+
+destructor TXuiStyle.Destroy;
+begin
+  Vars.Free;
+  inherited Destroy;
+end;
+
 procedure TXuiStyle.Assign(ASource: TXuiStyle);
 begin
   if ASource = nil then Exit;
@@ -302,6 +318,7 @@ begin
   TransitionDuration := ASource.TransitionDuration;
   TransitionDelay := ASource.TransitionDelay;
   TransitionTiming := ASource.TransitionTiming;
+  Vars.Assign(ASource.Vars);
 end;
 
 procedure TXuiStyle.InheritFrom(ASource: TXuiStyle);
@@ -314,6 +331,7 @@ begin
   LineHeight := ASource.LineHeight;
   TextAlign := ASource.TextAlign;
   Visibility := ASource.Visibility;
+  Vars.Assign(ASource.Vars);   // 自定义属性随继承向下可见
 end;
 
 end.

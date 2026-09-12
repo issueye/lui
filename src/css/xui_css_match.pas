@@ -378,6 +378,107 @@ begin
   end;
 end;
 
+// CSS 自定义属性（--x）：只登记为变量，不参与普通属性应用
+function IsCustomProperty(const AProp: string): Boolean;
+begin
+  Result := Pos('--', Trim(AProp)) = 1;
+end;
+
+// 值 token 重建会插入空格（'var ( --x )'）：把括号相邻空格规整掉再替换
+function NormalizeParenSpacing(const S: string): string;
+begin
+  Result := StringReplace(S, ' (', '(', [rfReplaceAll]);
+  Result := StringReplace(Result, '( ', '(', [rfReplaceAll]);
+  Result := StringReplace(Result, ' )', ')', [rfReplaceAll]);
+end;
+
+// 大小写无关地查找 'var(' 的位置（0 = 未找到）
+function FindVarStart(const S: string): Integer;
+var
+  k: Integer;
+begin
+  Result := 0;
+  for k := 1 to Length(S) - 3 do
+    if (UpCase(S[k]) = 'V') and (UpCase(S[k + 1]) = 'A') and
+       (UpCase(S[k + 2]) = 'R') and (S[k + 3] = '(') then
+      Exit(k);
+end;
+
+// 大小写无关地判断值里是否出现 var（token 重建后可能是 'var ('）
+function ContainsVar(const S: string): Boolean;
+var
+  k: Integer;
+begin
+  Result := False;
+  for k := 1 to Length(S) - 2 do
+    if (UpCase(S[k]) = 'V') and (UpCase(S[k + 1]) = 'A') and
+       (UpCase(S[k + 2]) = 'R') then
+      Exit(True);
+end;
+
+// var(--x[, fallback]) 文本替换：以节点的变量表求值（值内可再含 var，最多解 4 层；
+// 未定义且无回退时替换为空串 → 该声明随后被忽略）
+function ResolveCssVars(const AValue: string; AVars: TStringList): string;
+var
+  pass, p, q, depth, k, commaPos: Integer;
+  inner, name, fb, sub: string;
+begin
+  Result := AValue;
+  if (AVars = nil) or (not ContainsVar(Result)) then
+    Exit;
+  Result := NormalizeParenSpacing(Result);
+  for pass := 1 to 4 do
+  begin
+    p := FindVarStart(Result);
+    if p = 0 then
+      Break;
+    depth := 0;
+    q := 0;
+    for k := p + 3 to Length(Result) do
+    begin
+      if Result[k] = '(' then
+        Inc(depth)
+      else if Result[k] = ')' then
+      begin
+        Dec(depth);
+        if depth = 0 then
+        begin
+          q := k;
+          Break;
+        end;
+      end;
+    end;
+    if q = 0 then
+      Break;   // 括号不配对：原样保留（交由属性解析忽略）
+    inner := Copy(Result, p + 4, q - p - 4);
+    commaPos := Pos(',', inner);
+    if commaPos > 0 then
+    begin
+      name := Trim(Copy(inner, 1, commaPos - 1));
+      fb := Trim(Copy(inner, commaPos + 1, MaxInt));
+    end
+    else
+    begin
+      name := Trim(inner);
+      fb := '';
+    end;
+    sub := AVars.Values[name];
+    if sub = '' then
+      sub := fb;
+    Result := Copy(Result, 1, p - 1) + sub + Copy(Result, q + 1, MaxInt);
+    if sub = '' then
+      Break;
+  end;
+end;
+
+// 变量表写入（同名后者胜；供级联按 普通 → 内联 → !important 顺序调用）
+procedure SetCssVar(AVars: TStringList; const AProp, AValue: string);
+begin
+  if (AVars = nil) or (Trim(AProp) = '') then
+    Exit;
+  AVars.Values[Trim(AProp)] := Trim(AValue);
+end;
+
 procedure ApplyDeclaration(AStyle: TXuiStyle; const AProp, AValue: string;
   AEmBase: Single);
 var
@@ -747,32 +848,49 @@ begin
     end;
   until not swapped;
 
-  // 默认样式 + 继承
+  // 默认样式 + 继承（变量表亦随继承而来）
   style := DefaultStyleForTag(ANode.Tag, AParentStyle);
 
-  // 1) 普通规则（em 基准取当前字号：font-size 先应用则后续 em 相对它，符合 CSS 直觉）
-  for i := 0 to refCount - 1 do
-    if not refs[i].Decl.Important then
-      ApplyDeclaration(style, refs[i].Decl.Prop, refs[i].Decl.Value, style.FontSize);
-
-  // 2) 内联 style=""（介于普通规则与 !important 之间）
+  // 内联 style="" 只解析一次：变量收集与应用共用
+  inlineSheet := nil;
+  inlineDecls := nil;
   if ANode.HasAttribute('style') then
   begin
     inlineSheet := TCssStyleSheet.Create;
-    try
-      inlineDecls := inlineSheet.ParseDeclarations(ANode.AttributeValue('style'));
-      for i := 0 to High(inlineDecls) do
-        ApplyDeclaration(style, inlineDecls[i].Prop, inlineDecls[i].Value,
-          style.FontSize);
-    finally
-      inlineSheet.Free;
-    end;
+    inlineDecls := inlineSheet.ParseDeclarations(ANode.AttributeValue('style'));
   end;
+  try
+    // 0) 变量收集（--x）：按级联优先级 普通 → 内联 → !important，同名后者胜
+    for i := 0 to refCount - 1 do
+      if (not refs[i].Decl.Important) and IsCustomProperty(refs[i].Decl.Prop) then
+        SetCssVar(style.Vars, refs[i].Decl.Prop, refs[i].Decl.Value);
+    for i := 0 to High(inlineDecls) do
+      if IsCustomProperty(inlineDecls[i].Prop) then
+        SetCssVar(style.Vars, inlineDecls[i].Prop, inlineDecls[i].Value);
+    for i := 0 to refCount - 1 do
+      if refs[i].Decl.Important and IsCustomProperty(refs[i].Decl.Prop) then
+        SetCssVar(style.Vars, refs[i].Decl.Prop, refs[i].Decl.Value);
 
-  // 3) !important 规则（优先级最高）
-  for i := 0 to refCount - 1 do
-    if refs[i].Decl.Important then
-      ApplyDeclaration(style, refs[i].Decl.Prop, refs[i].Decl.Value, style.FontSize);
+    // 1) 普通规则（em 基准取当前字号：font-size 先应用则后续 em 相对它，符合 CSS 直觉）
+    for i := 0 to refCount - 1 do
+      if (not refs[i].Decl.Important) and (not IsCustomProperty(refs[i].Decl.Prop)) then
+        ApplyDeclaration(style, refs[i].Decl.Prop,
+          ResolveCssVars(refs[i].Decl.Value, style.Vars), style.FontSize);
+
+    // 2) 内联 style=""（介于普通规则与 !important 之间）
+    for i := 0 to High(inlineDecls) do
+      if not IsCustomProperty(inlineDecls[i].Prop) then
+        ApplyDeclaration(style, inlineDecls[i].Prop,
+          ResolveCssVars(inlineDecls[i].Value, style.Vars), style.FontSize);
+
+    // 3) !important 规则（优先级最高）
+    for i := 0 to refCount - 1 do
+      if refs[i].Decl.Important and (not IsCustomProperty(refs[i].Decl.Prop)) then
+        ApplyDeclaration(style, refs[i].Decl.Prop,
+          ResolveCssVars(refs[i].Decl.Value, style.Vars), style.FontSize);
+  finally
+    inlineSheet.Free;
+  end;
 
   ANode.Style.Free;
   ANode.Style := style;
