@@ -39,6 +39,7 @@ type
     ExtraCss: string;
     Watch: Boolean;
     Verbose: Boolean;
+    Bench: Integer;          // --bench N：渲染后重复 N 次完整重排（性能基准）
     JsonOut: Boolean;        // --json：结果以 JSON 输出到 stdout
     IsCliMode: Boolean;
   end;
@@ -66,6 +67,7 @@ begin
   WriteLn('  -t, --theme <light|dark|both>  主题（both = 双主题各出一张）');
   WriteLn('  -c, --css <样式文件>      附加加载的自定义 CSS 样式文件');
   WriteLn('  --watch                   监听输入文件变更并自动重跑');
+  WriteLn('  --bench <次数>            渲染后重复 N 次完整重排并输出耗时（性能基准）');
   WriteLn('  --json                    结果以 JSON 输出到 stdout（日志走 stderr）');
   WriteLn('  -v, --verbose             输出详细过程日志');
   WriteLn('  -V, --version             输出版本号');
@@ -119,6 +121,7 @@ begin
   Opt.ExtraCss := '';
   Opt.Watch := False;
   Opt.Verbose := False;
+  Opt.Bench := 0;
   Opt.JsonOut := False;
   Opt.IsCliMode := False;
 
@@ -165,6 +168,13 @@ begin
       NeedValue('-c/--css', Opt.ExtraCss)
     else if arg = '--watch' then
       Opt.Watch := True
+    else if arg = '--bench' then
+    begin
+      NeedValue('--bench', arg);
+      Opt.Bench := StrToIntDef(arg, -1);
+      if Opt.Bench <= 0 then
+        ParamError('基准次数必须是正整数: ' + arg);
+    end
     else if arg = '--json' then
       Opt.JsonOut := True
     else if (arg = '-v') or (arg = '--verbose') then
@@ -236,7 +246,7 @@ begin
 end;
 
 { 单页渲染：xui_app 装配（复位样式表 → 组件库主题 → ui/index.ts → 关联 CSS →
-  加载文档）→ 排版 → 绘制 → PNG }
+  加载文档）→ 排版 → 绘制 → PNG；Opt.Bench > 0 时追加 N 次完整重排并计时 }
 function RenderOne(const AInputFile, AOutputFile: string; AWidth, AHeight: Integer;
   const ATheme, AExtraCss: string; AVerbose: Boolean): Boolean;
 var
@@ -244,6 +254,9 @@ var
   bmp: TBitmap;
   png: TPortableNetworkGraphic;
   renderer: TXuiCustomRenderer;
+  i: Integer;
+  t0, t1, total: QWord;
+  viewRect: TRect;
 begin
   Result := False;
   if not EnsureOutputDir(AOutputFile) then
@@ -272,7 +285,25 @@ begin
       WriteLn(Format('[信息] 正在排版与渲染: %s (%dx%d, 主题: %s)...', [AInputFile, AWidth, AHeight, ATheme]));
 
     app.Configure(AInputFile, ATheme, AExtraCss);
-    app.Engine.Draw(bmp.Canvas, Types.Rect(0, 0, AWidth, AHeight));
+    viewRect := Types.Rect(0, 0, AWidth, AHeight);
+    app.Engine.Draw(bmp.Canvas, viewRect);
+
+    // 性能基准：InvalidateStyles + Draw = 完整的样式级联 + 布局 + 绘制回路，
+    // 与 GUI 稳态失效重算同路径；首个工程文件（组件库脚本）已就位，可复用
+    if Opt.Bench > 0 then
+    begin
+      total := 0;
+      for i := 1 to Opt.Bench do
+      begin
+        t0 := GetTickCount64;
+        app.Engine.InvalidateStyles;
+        app.Engine.Draw(bmp.Canvas, viewRect);
+        t1 := GetTickCount64;
+        total := total + (t1 - t0);
+      end;
+      WriteLn(Format('[基准] %d 次完整重排: %d ms（平均 %.2f ms/次）',
+        [Opt.Bench, total, total / Opt.Bench]));
+    end;
 
     png.Assign(bmp);
     png.SaveToFile(AOutputFile);

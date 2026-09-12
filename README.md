@@ -51,6 +51,7 @@ lui-render <输入.xml|svg> [更多输入...] [选项]
   -w/--width, -H/--height              视口尺寸（默认 800×600）
   -t/--theme light|dark|both           主题（both 出双份）
   --json       结果 JSON 汇总（stdout）；日志走 stderr
+  --bench <N>  渲染后重复 N 次完整重排并输出耗时（性能基准）
   --watch      依赖变更自动重跑         --version / --help
 ```
 

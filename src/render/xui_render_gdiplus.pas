@@ -13,7 +13,7 @@ unit xui_render_gdiplus;
 interface
 
 uses
-  Windows, Classes, SysUtils, Types, Graphics, LCLType, Math,
+  Windows, Classes, SysUtils, Types, Graphics, LCLType, Math, IniFiles,
   xui_types, xui_style, xui_render;
 
 type
@@ -152,6 +152,7 @@ type
     FFontFamily: PGpFontFamily;
     FFont: PGpFont;
     FFontKey: string;
+    FMeasureCache: THashedStringList; // 文本测量 memo：'family|size|bold|text' → 打包 cx,cy
     FFormat: PGpStringFormat;
     FFormatAlign: TXuiTextAlign;
     function EnsureGraphics: PGpGraphics;
@@ -304,6 +305,7 @@ begin
     GdipDeleteFont(FFont);
   if FFontFamily <> nil then
     GdipDeleteFontFamily(FFontFamily);
+  FMeasureCache.Free;
   if FMeasureGraphics <> nil then
     GdipDeleteGraphics(FMeasureGraphics);
   if FMeasureDC <> 0 then
@@ -627,6 +629,9 @@ var
   family: UnicodeString;
   resolvedName: string;
   weight: Integer;
+  key: string;
+  idx: Integer;
+  packed2: Int64;
 begin
   // GDI+ 的 GdipMeasureString 会额外计入两侧内边距（比实际字宽大 5-7px），
   // 直接用于断行会导致文字被过度换行。这里改用 GDI 度量：
@@ -641,12 +646,26 @@ begin
   if FMeasureDC = 0 then
     Exit;
 
+  // 测量结果 memo：断行布局对同一段文本反复度量（前缀/逐词），
+  // 同字体签名下结果恒定，命中即免去 GDI 调用
   if AStyle.FontBold then
     weight := 700
   else
     weight := 400;
-  // 统一度量与绘制字体：使用经过候选栈解析后的同一系统字体
   resolvedName := ResolveFontFamilyName(AStyle.FontFamily);
+  key := resolvedName + '|' + IntToStr(Round(AStyle.FontSize)) + '|' +
+    IntToStr(weight) + '|' + AText;
+  if FMeasureCache = nil then
+    FMeasureCache := THashedStringList.Create;
+  idx := FMeasureCache.IndexOf(key);
+  if idx >= 0 then
+  begin
+    packed2 := Int64(PtrUInt(FMeasureCache.Objects[idx]));
+    Result.cx := Integer(packed2 shr 32);
+    Result.cy := Integer(LongWord(packed2));
+    Exit;
+  end;
+
   family := UnicodeString(resolvedName);
   font := CreateFontW(-Round(Max(1, AStyle.FontSize)), 0, 0, 0, weight, 0, 0, 0,
     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
@@ -662,6 +681,12 @@ begin
   end;
   SelectObject(FMeasureDC, oldFont);
   DeleteObject(font);
+
+  // 上限截断：极端多样文本时整体清空（测量是纯函数，重新积累即可）
+  if FMeasureCache.Count >= 16384 then
+    FMeasureCache.Clear;
+  FMeasureCache.AddObject(key, TObject(PtrUInt(
+    (Int64(Result.cx) shl 32) or LongWord(Result.cy))));
 end;
 
 procedure TGdiPlusRenderer.ApplyClip(const ARect: TRect);

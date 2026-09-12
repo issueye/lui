@@ -38,6 +38,13 @@ type
     Order: Integer;
   end;
 
+  // 内联 style 解析结果（挂在 TXuiNode.InlineStyleCache，按原文失效）
+  TInlineStyleCache = class
+  public
+    Src: string;
+    Decls: TCssDeclArray;
+  end;
+
 function PseudoToSet(const AName: string; out AMember: TXuiPseudo): Boolean;
 begin
   Result := True;
@@ -790,16 +797,17 @@ end;
 procedure ComputeNodeStyles(ANode: TXuiNode; ASheets: TObjectList;
   var AOrder: Integer; AParentStyle: TXuiStyle);
 var
-  sheetIdx, ruleIdx, declIdx, i: Integer;
+  sheetIdx, ruleIdx, declIdx, i, j: Integer;
   sheet: TCssStyleSheet;
   rule: TCssRule;
   refs: array of TCssAppliedDecl;
   refCount: Integer;
   style: TXuiStyle;
-  swapped: Boolean;
   tmp: TCssAppliedDecl;
   inlineSheet: TCssStyleSheet;
   inlineDecls: TCssDeclArray;
+  cache: TInlineStyleCache;
+  styleAttr: string;
 begin
   // 收集命中的声明
   refCount := 0;
@@ -827,67 +835,77 @@ begin
     end;
   end;
 
-  // 排序：(SpecA, SpecB, SpecC, Order) 升序
-  repeat
-    swapped := False;
-    for i := 0 to refCount - 2 do
+  // 排序：(SpecA, SpecB, SpecC, Order) 升序（插入排序：数组小且近乎有序）
+  for i := 1 to refCount - 1 do
+  begin
+    tmp := refs[i];
+    j := i - 1;
+    while (j >= 0) and
+      ((refs[j].SpecA > tmp.SpecA) or
+       ((refs[j].SpecA = tmp.SpecA) and (refs[j].SpecB > tmp.SpecB)) or
+       ((refs[j].SpecA = tmp.SpecA) and (refs[j].SpecB = tmp.SpecB) and
+        (refs[j].SpecC > tmp.SpecC)) or
+       ((refs[j].SpecA = tmp.SpecA) and (refs[j].SpecB = tmp.SpecB) and
+        (refs[j].SpecC = tmp.SpecC) and (refs[j].Order > tmp.Order))) do
     begin
-      if (refs[i].SpecA > refs[i+1].SpecA) or
-         ((refs[i].SpecA = refs[i+1].SpecA) and (refs[i].SpecB > refs[i+1].SpecB)) or
-         ((refs[i].SpecA = refs[i+1].SpecA) and (refs[i].SpecB = refs[i+1].SpecB) and
-          (refs[i].SpecC > refs[i+1].SpecC)) or
-         ((refs[i].SpecA = refs[i+1].SpecA) and (refs[i].SpecB = refs[i+1].SpecB) and
-          (refs[i].SpecC = refs[i+1].SpecC) and (refs[i].Order > refs[i+1].Order)) then
-      begin
-        tmp := refs[i]; refs[i] := refs[i+1]; refs[i+1] := tmp;
-        swapped := True;
-      end;
+      refs[j + 1] := refs[j];
+      Dec(j);
     end;
-  until not swapped;
+    refs[j + 1] := tmp;
+  end;
 
   // 默认样式 + 继承（变量表亦随继承而来）
   style := DefaultStyleForTag(ANode.Tag, AParentStyle);
 
-  // 内联 style="" 只解析一次：变量收集与应用共用
-  inlineSheet := nil;
+  // 内联 style="" 解析结果缓存于节点：属性原文不变则直接复用，
+  // 全树重算（样式失效）时免去逐节点重复解析
   inlineDecls := nil;
-  if ANode.HasAttribute('style') then
+  inlineSheet := nil;
+  styleAttr := ANode.AttributeValue('style');
+  if styleAttr <> '' then
   begin
-    inlineSheet := TCssStyleSheet.Create;
-    inlineDecls := inlineSheet.ParseDeclarations(ANode.AttributeValue('style'));
+    cache := TInlineStyleCache(ANode.InlineStyleCache);
+    if (cache = nil) or (cache.Src <> styleAttr) then
+    begin
+      inlineSheet := TCssStyleSheet.Create;
+      cache := TInlineStyleCache.Create;
+      cache.Src := styleAttr;
+      cache.Decls := inlineSheet.ParseDeclarations(styleAttr);
+      ANode.InlineStyleCache.Free;
+      ANode.InlineStyleCache := cache;
+    end;
+    inlineDecls := cache.Decls;
   end;
-  try
-    // 0) 变量收集（--x）：按级联优先级 普通 → 内联 → !important，同名后者胜
-    for i := 0 to refCount - 1 do
-      if (not refs[i].Decl.Important) and IsCustomProperty(refs[i].Decl.Prop) then
-        SetCssVar(style.Vars, refs[i].Decl.Prop, refs[i].Decl.Value);
-    for i := 0 to High(inlineDecls) do
-      if IsCustomProperty(inlineDecls[i].Prop) then
-        SetCssVar(style.Vars, inlineDecls[i].Prop, inlineDecls[i].Value);
-    for i := 0 to refCount - 1 do
-      if refs[i].Decl.Important and IsCustomProperty(refs[i].Decl.Prop) then
-        SetCssVar(style.Vars, refs[i].Decl.Prop, refs[i].Decl.Value);
+  inlineSheet.Free;
 
-    // 1) 普通规则（em 基准取当前字号：font-size 先应用则后续 em 相对它，符合 CSS 直觉）
-    for i := 0 to refCount - 1 do
-      if (not refs[i].Decl.Important) and (not IsCustomProperty(refs[i].Decl.Prop)) then
-        ApplyDeclaration(style, refs[i].Decl.Prop,
-          ResolveCssVars(refs[i].Decl.Value, style.Vars), style.FontSize);
+  // 0) 变量收集（--x）：按级联优先级 普通 → 内联 → !important，同名后者胜
+  for i := 0 to refCount - 1 do
+    if (not refs[i].Decl.Important) and IsCustomProperty(refs[i].Decl.Prop) then
+      SetCssVar(style.Vars, refs[i].Decl.Prop, refs[i].Decl.Value);
+  for i := 0 to High(inlineDecls) do
+    if IsCustomProperty(inlineDecls[i].Prop) then
+      SetCssVar(style.Vars, inlineDecls[i].Prop, inlineDecls[i].Value);
+  for i := 0 to refCount - 1 do
+    if refs[i].Decl.Important and IsCustomProperty(refs[i].Decl.Prop) then
+      SetCssVar(style.Vars, refs[i].Decl.Prop, refs[i].Decl.Value);
 
-    // 2) 内联 style=""（介于普通规则与 !important 之间）
-    for i := 0 to High(inlineDecls) do
-      if not IsCustomProperty(inlineDecls[i].Prop) then
-        ApplyDeclaration(style, inlineDecls[i].Prop,
-          ResolveCssVars(inlineDecls[i].Value, style.Vars), style.FontSize);
+  // 1) 普通规则（em 基准取当前字号：font-size 先应用则后续 em 相对它，符合 CSS 直觉）
+  for i := 0 to refCount - 1 do
+    if (not refs[i].Decl.Important) and (not IsCustomProperty(refs[i].Decl.Prop)) then
+      ApplyDeclaration(style, refs[i].Decl.Prop,
+        ResolveCssVars(refs[i].Decl.Value, style.Vars), style.FontSize);
 
-    // 3) !important 规则（优先级最高）
-    for i := 0 to refCount - 1 do
-      if refs[i].Decl.Important and (not IsCustomProperty(refs[i].Decl.Prop)) then
-        ApplyDeclaration(style, refs[i].Decl.Prop,
-          ResolveCssVars(refs[i].Decl.Value, style.Vars), style.FontSize);
-  finally
-    inlineSheet.Free;
-  end;
+  // 2) 内联 style=""（介于普通规则与 !important 之间）
+  for i := 0 to High(inlineDecls) do
+    if not IsCustomProperty(inlineDecls[i].Prop) then
+      ApplyDeclaration(style, inlineDecls[i].Prop,
+        ResolveCssVars(inlineDecls[i].Value, style.Vars), style.FontSize);
+
+  // 3) !important 规则（优先级最高）
+  for i := 0 to refCount - 1 do
+    if refs[i].Decl.Important and (not IsCustomProperty(refs[i].Decl.Prop)) then
+      ApplyDeclaration(style, refs[i].Decl.Prop,
+        ResolveCssVars(refs[i].Decl.Value, style.Vars), style.FontSize);
 
   ANode.Style.Free;
   ANode.Style := style;

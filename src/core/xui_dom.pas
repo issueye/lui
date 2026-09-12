@@ -32,6 +32,7 @@ type
     ScrollTop: Single;        // 纵向滚动偏移（overflow 容器）
     Bindings: TObjectList;    // TXuiEventBinding 列表（xui_events，节点拥有）
     Behavior: TObject;        // 元素行为（xui_widget，节点拥有；行为内 FNode 为弱引用）
+    InlineStyleCache: TObject; // 内联 style 解析缓存（xui_css_match 维护，按原文失效）
     constructor Create(const ATag: string);
     destructor Destroy; override;
     procedure AddChild(AChild: TXuiNode);
@@ -89,6 +90,7 @@ end;
 destructor TXuiNode.Destroy;
 begin
   Behavior.Free; // 节点拥有行为对象，行为持有节点为弱引用
+  InlineStyleCache.Free;
   Bindings.Free;
   Style.Free;
   ClassList.Free;
