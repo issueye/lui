@@ -1,0 +1,28 @@
+/* lui demo 公共导航条（深色）：各页与 <page>-dark.css 一起加载 */
+
+.nav {
+  display: flex;
+  column-gap: 6px;
+  padding: 10px 12px 0 12px;
+}
+
+.nav-btn {
+  flex: 1;
+  height: 26px;
+  font-size: 12px;
+  color: #b8bcc4;
+  background-color: #1e1e1e;
+  border: 1px solid #3a3a3a;
+  border-radius: 5px;
+  transition: all 120ms ease;
+}
+
+.nav-btn:hover {
+  background-color: #2a2a2a;
+}
+
+.nav-btn.active {
+  color: #ffffff;
+  background-color: #1668dc;
+  border: 1px solid #1668dc;
+}

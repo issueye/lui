@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- M6 P0：脚本页。逻辑全部在 script.ts，XML 只声明结构与绑定名；P5 增加异步示例卡片 -->
-<window title="脚本演示" width="380" height="420">
+<window title="脚本演示" width="380" height="460">
   <script src="script.ts"/>
+  <include src="nav.xml"/>
   <panel id="app" class="app">
     <panel class="header">
       <label class="title" text="脚本引擎演示"/>

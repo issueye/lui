@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<window title="登录" width="360" height="300">
+<window title="登录" width="360" height="340">
+  <include src="nav.xml"/>
   <panel id="login-card" class="card" onenter="LoginSubmit">
     <label class="title" text="登录 Aluka"/>
     <panel class="row">

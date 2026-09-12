@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- M7：响应式绑定演示。逻辑全在 m7.ts；XML 只声明结构与绑定（x-text / 插值 / :class / x-if /
      x-for + x-key / x-model / x-show / 组件 + props + 具名 slot + 函数 prop） -->
-<window title="响应式演示" width="380" height="576">
+<window title="响应式演示" width="380" height="820">
   <script src="m7.ts"/>
+  <include src="nav.xml"/>
   <panel class="app">
     <panel class="header">
       <label class="title" text="M7 响应式演示"/>
@@ -52,7 +53,7 @@
         <button id="btn-show" class="primary" text="x-show 切换明细" onclick="OnToggle"/>
       </panel>
       <label class="text" x-show="state.detail"
-        text="x-show：切内置 .xui-hidden（display:none，节点保活）"/>
+        text="x-show：切内置 .xui-hidden（display:none）"/>
     </panel>
   </panel>
 </window>

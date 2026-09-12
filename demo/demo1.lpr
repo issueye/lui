@@ -17,11 +17,14 @@ program demo1;
   demo1 todo demo shot   同上，但先模拟交互（输入 + Enter 添加 / 悬停 / 完成 / 删除 / 滚动）
 
   交互要点：
+  - 应用内导航：nav.xml 以 include 进各页，点按走宿主 published 方法 PageClick（按按钮 to 属性切页）
   - XML 的 onclick/onenter/oninput="MethodName" 通过 MethodAddress 绑定到 published 方法
   - 输入框：点击聚焦、中英文输入（IME 上屏走 LCL UTF8KeyPress）、Ctrl+A/C/X/V、拖选
   - 按钮/条目 hover 有属性过渡（transition），光标闪烁与过渡由宿主 Timer 驱动
   - include：todo.xml 的条目来自 todo-items.xml；新增条目用 item.xml 模板（AddElement）
   - 渲染后端默认 xbAuto：Windows 上走 GDI+（圆角抗锯齿、alpha），失败自动回退 GDI
+
+  注：窗体经 Application.CreateForm 创建，成为 MainForm——否则关闭窗口只隐藏、进程不退出。
 
   代码直接创建窗体，不使用 .lfm。 }
 
@@ -40,6 +43,7 @@ type
     FDark: Boolean;
     FTodoSeq: Integer;
     procedure ApplyTheme;
+    procedure UpdateNav;   // 当前页导航按钮高亮（active 类）
     function FindItemTextNode(AItem: TXuiNode): TXuiNode;
   public
     constructor Create(AOwner: TComponent); override;
@@ -54,6 +58,7 @@ type
     property Host: TXuiHost read FHost;
   published
     // XML on*="..." 绑定到这些 published 方法（需要方法 RTTI，故放 published）
+    procedure PageClick(Sender: TObject);
     procedure BtnOkClick(Sender: TObject);
     procedure LoginSubmit(Sender: TObject);
     procedure LoginInput(Sender: TObject);
@@ -101,7 +106,9 @@ procedure TDemoForm.LoadUI(const ABaseName: string);
 begin
   FBaseName := ABaseName;
   FHost.LoadFromFile(FindFile(FBaseName + '.xml'));
+  Caption := 'lui demo1 - ' + FBaseName + '（点上方导航切页）';
   ApplyTheme;
+  UpdateNav;
   FHost.FitToDocumentDefaultSize;
 end;
 
@@ -109,10 +116,53 @@ procedure TDemoForm.ApplyTheme;
 begin
   FHost.Engine.ClearStyleSheets;
   if FDark then
-    FHost.Engine.LoadStyleSheetFromFile(FindFile(FBaseName + '-dark.css'))
+  begin
+    FHost.Engine.LoadStyleSheetFromFile(FindFile(FBaseName + '-dark.css'));
+    FHost.Engine.LoadStyleSheetFromFile(FindFile('nav-dark.css'));   // 公共导航条
+  end
   else
+  begin
     FHost.Engine.LoadStyleSheetFromFile(FindFile(FBaseName + '-light.css'));
+    FHost.Engine.LoadStyleSheetFromFile(FindFile('nav-light.css'));  // 公共导航条
+  end;
   FHost.Invalidate;
+end;
+
+// 导航条：当前页按钮加 active（其余保持基础类，避免高亮残留）
+procedure TDemoForm.UpdateNav;
+const
+  Pages: array[0..4] of string = ('login', 'list', 'todo', 'script', 'm7');
+var
+  i: Integer;
+  node: TXuiNode;
+begin
+  if FHost.Engine.Document = nil then
+    Exit;
+  for i := Low(Pages) to High(Pages) do
+  begin
+    node := FHost.Engine.Document.FindElementById('nav-' + Pages[i]);
+    if node = nil then
+      Continue;
+    if Pages[i] = FBaseName then
+      FHost.Engine.SetClass(node, 'nav-btn active')
+    else
+      FHost.Engine.SetClass(node, 'nav-btn');
+  end;
+end;
+
+// 导航点击：按钮的 to 属性即目标页
+procedure TDemoForm.PageClick(Sender: TObject);
+var
+  target: string;
+begin
+  if not (Sender is TXuiNode) then
+    Exit;
+  target := LowerCase(Trim(TXuiNode(Sender).AttributeValue('to')));
+  if target = '' then
+    Exit;
+  LoadUI(target);
+  if target = 'todo' then
+    UpdateCount;
 end;
 
 procedure TDemoForm.SetDark(AValue: Boolean);
@@ -322,6 +372,8 @@ begin
     ClickAt(inputNode);
     engine.HandleTextInput('123456');
     engine.HandleKeyDown(VK_RETURN, []); // Enter → 卡片 onenter → 提交
+    // 应用内导航：点「响应式」切到 m7 页（PageClick → LoadUI，截图即 m7 页）
+    ClickAt(engine.Document.FindElementById('nav-m7'));
     Exit;
   end;
 
@@ -432,7 +484,9 @@ begin
   end;
 
   Application.Initialize;
-  Form := TDemoForm.Create(Application);
+  // 经 Application 创建 → Form 成为 MainForm：关闭主窗体即 Application.Terminate。
+  // 手工 Create(Application) 时 MainForm 恒为 nil，关闭只会 caHide（隐藏），消息循环不退出。
+  Application.CreateForm(TDemoForm, Form);
   try
     try
       Form.LoadUI(page);

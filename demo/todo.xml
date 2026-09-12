@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<window title="待办清单" width="380" height="340">
+<window title="待办清单" width="380" height="380">
+  <include src="nav.xml"/>
   <panel id="app" class="app">
     <panel class="header">
       <label class="title" text="待办清单"/>
