@@ -239,7 +239,10 @@ begin
   FDocument.Free;
   FDocument := doc;
   if FScript <> nil then
-    FScript.ResetBindings;   // M7：旧文档节点上的绑定登记作废
+  begin
+    FScript.ResetBindings;             // M7：旧文档节点上的绑定登记作废
+    FScript.Interp.ClearPageReactive;  // M7：旧页面注册的 watch / onMount 一并作废
+  end;
   if FDocument.Root <> nil then
     ApplyNodeDataRecursive(FDocument.Root);
   FPointer.SetRoot(FDocument.Root);
@@ -263,7 +266,10 @@ begin
   FDocument.Free;
   FDocument := doc;
   if FScript <> nil then
-    FScript.ResetBindings;   // M7：旧文档节点上的绑定登记作废
+  begin
+    FScript.ResetBindings;             // M7：旧文档节点上的绑定登记作废
+    FScript.Interp.ClearPageReactive;  // M7：旧页面注册的 watch / onMount 一并作废
+  end;
   if FDocument.Root <> nil then
     ApplyNodeDataRecursive(FDocument.Root);
   FPointer.SetRoot(FDocument.Root);

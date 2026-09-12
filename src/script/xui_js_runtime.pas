@@ -449,6 +449,7 @@ type
     function ReactiveVersion: Integer;
     procedure RunWatchers;        // 刷新后比对 watcher（新旧值不等才回调）
     procedure RunMountHooks;      // 文档就绪后调用一次（调用即清空）
+    procedure ClearPageReactive;  // 文档替换：作废上一页注册的 watch / onMount
     procedure AddOnCollectRoots(AProc: TXuiGcRootsProc);
     function MountHookCount: Integer;
     procedure MarkReactiveDirty;   // 请求一次响应式刷新（脚本加载完成等）
@@ -1585,24 +1586,41 @@ begin
   for i := 0 to FWatchers.Count - 1 do
   begin
     w := TXuiJsWatcher(FWatchers[i]);
-    nv := CallFunction(w.Fn, MakeUndefined, []);
-    if w.Deep then
-    begin
-      // deep：以内容快照比较（原对象可能被原地修改，引用与旧值相同）
-      changed := w.HasLast and (DeepSnapshot(nv) <> w.LastSnap);
-      w.LastSnap := DeepSnapshot(nv);
-      if changed then
-        CallFunction(w.Cb, MakeUndefined, [nv, MakeUndefined]);
-    end
-    else
-    begin
-      changed := w.HasLast and (not StrictEquals(nv, w.Last));
-      if changed then
-        CallFunction(w.Cb, MakeUndefined, [nv, w.Last]);
+    try
+      nv := CallFunction(w.Fn, MakeUndefined, []);
+      if w.Deep then
+      begin
+        // deep：以内容快照比较（原对象可能被原地修改，引用与旧值相同）
+        changed := w.HasLast and (DeepSnapshot(nv) <> w.LastSnap);
+        w.LastSnap := DeepSnapshot(nv);
+        if changed then
+          CallFunction(w.Cb, MakeUndefined, [nv, MakeUndefined]);
+      end
+      else
+      begin
+        changed := w.HasLast and (not StrictEquals(nv, w.Last));
+        if changed then
+          CallFunction(w.Cb, MakeUndefined, [nv, w.Last]);
+      end;
+      w.Last := nv;
+      w.HasLast := True;
+    except
+      // 监听器内未捕获异常只上报不扩散（与宏任务回调一致）：不崩应用、不中断其余监听器
+      on E: EXuiJsThrow do
+        if Assigned(FOnCallbackError) then
+          FOnCallbackError(ToStringValue(E.Value));
+      on E: Exception do
+        if Assigned(FOnCallbackError) then
+          FOnCallbackError(E.Message);
     end;
-    w.Last := nv;
-    w.HasLast := True;
   end;
+end;
+// 文档级响应式登记（watch / onMount）在文档替换时清空：
+// 上一页注册的监听器不应继续作用于新页面的全局（否则会拿新 state 的旧引用求值而报错）
+procedure TXuiJsInterp.ClearPageReactive;
+begin
+  FWatchers.Clear;
+  FMountHooks.Clear;
 end;
 // 深度响应式标记：递归标记嵌套普通对象（函数除外；已标记子树剪枝）
 procedure TXuiJsInterp.MarkReactiveDeep(AObj: TXuiJsObject; ADepth: Integer);
@@ -1631,7 +1649,17 @@ var
   i: Integer;
 begin
   for i := 0 to FMountHooks.Count - 1 do
-    CallFunction(TXuiJsProp(FMountHooks[i]).Value, MakeUndefined, []);
+    try
+      CallFunction(TXuiJsProp(FMountHooks[i]).Value, MakeUndefined, []);
+    except
+      // 挂载钩子异常同样只上报不扩散
+      on E: EXuiJsThrow do
+        if Assigned(FOnCallbackError) then
+          FOnCallbackError(ToStringValue(E.Value));
+      on E: Exception do
+        if Assigned(FOnCallbackError) then
+          FOnCallbackError(E.Message);
+    end;
   FMountHooks.Clear;
 end;
 // computed(fn) 的 value 取值：版本号缓存（响应式刷新后失效重算）

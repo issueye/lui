@@ -396,7 +396,8 @@ begin
   end;
 
   // m7 页：+1 三次（插值/computed/:class/x-if）→ 输入名字（x-model 回写）→
-  // 添加条目 → 反转（keyed 复用）→ 切明细（x-show），再把指针移出按钮
+  // 添加条目 → 反转（keyed 复用）→ 切明细（x-show）→ 切到脚本页再切回（验证换页无残留），
+  // 最后把指针移出按钮
   if FBaseName = 'm7' then
   begin
     item := engine.Document.FindElementById('btn-inc');
@@ -408,6 +409,9 @@ begin
     ClickAt(engine.Document.FindElementById('btn-add'));
     ClickAt(engine.Document.FindElementById('btn-rev'));
     ClickAt(engine.Document.FindElementById('btn-show'));
+    ClickAt(engine.Document.FindElementById('nav-script'));
+    engine.Draw(nil, FHost.ClientRect);   // 换页后布局未算：先算一次，新页节点才有 BoxRect
+    ClickAt(engine.Document.FindElementById('nav-m7'));
     engine.HandleMouseMove(300, 520);
     Exit;
   end;

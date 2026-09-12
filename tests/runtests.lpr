@@ -8920,6 +8920,16 @@ begin
       node := engine.Document.FindElementById('rv1');
       Check((node.Count = 3) and (node[1].Text = 'r3'),
         '数组 splice 触发 x-for 刷新');
+
+      // watch 回调内未捕获异常只上报不扩散（此前会逃到宿主顶层弹异常框）
+      errs := script.ErrorCount;
+      script.Run('watch(function () { return state.nope.deep; }, function (nv, ov) { console.log("not-reached"); });', 'badw.ts');
+      script.Run('watch(function () { return st.a; }, function (nv, ov) { console.log("good" + nv); });', 'goodw.ts');
+      script.FlushReactive;
+      Check(script.ErrorCount > errs, 'watch 求值异常上报为脚本错误');
+      Check(Pos('not-reached', sink.Log.Text) = 0, 'watch 求值异常不执行回调');
+      src := RunAndFlush('st.a = st.a + 1;');
+      Check(Pos('good', src) > 0, 'watch 异常不阻断其它监听器与刷新链路');
     finally
       bridge.Free;
     end;
@@ -8941,6 +8951,7 @@ var
   bridge: TXuiDomBridge;
   sink: TScriptSink;
   node, ucRoot: TXuiNode;
+  errs: Integer;
   xmlPath, cssPath: string;
 begin
   WriteLn('--- M7 演示页（demo/m7）---');
@@ -8990,6 +9001,23 @@ begin
       Check((ucRoot <> nil) and (ucRoot.Count = 3) and
         (Pos('1 次点击', ucRoot[1].Text) > 0),
         '演示页 m7：函数 prop 在组件模板内随 props 重新求值');
+
+      // 页内切换：m7 → 脚本页（同一引擎/脚本实例上换文档；上一页的 watch 必须作废，
+      // 否则它会拿新页面的 state 求值而抛 "无法读取 undefined 的属性"）
+      if DemoFilePath('script.xml') <> '' then
+      begin
+        errs := script.ErrorCount;
+        engine.LoadFromFile(DemoFilePath('script.xml'));
+        DrawEngine(engine);
+        Check(script.ErrorCount = errs, '演示页切换 m7 → 脚本页：无脚本错误');
+        node := engine.Document.FindElementById('counter');
+        Check((node <> nil) and (node.Text = '共 1 条'), '演示页切换 m7 → 脚本页：新页脚本生效');
+        script.CallGlobal('OnAdd', []);
+        script.FlushReactive;
+        DrawEngine(engine);
+        node := engine.Document.FindElementById('counter');
+        Check((node <> nil) and (node.Text = '共 2 条'), '演示页切换后：脚本功能仍可用');
+      end;
     finally
       bridge.Free;
     end;
