@@ -13,6 +13,7 @@
     "render:svg": "bin\\lui-render.exe demo/svg_demo.xml -o bin/svg_demo_preview.png -w 800 -h 500 -t light -v",
     "render:gallery": "bin\\lui-render.exe demo/ui_gallery.xml -o bin/gallery_light.png -w 560 -h 980 -t light && bin\\lui-render.exe demo/ui_gallery.xml -o bin/gallery_dark.png -w 560 -h 980 -t dark",
     "dev": "bin\\lui-render.exe demo/svg_demo.xml -w 800 -h 600 -t light --watch",
+    "pack": "node scripts/pack.js",
     "clean": "node -e \"const fs = require('fs'); ['bin', 'tools/renderer/lib', 'tests/lib', 'demo/lib'].forEach(d => { if (fs.existsSync(d)) fs.rmSync(d, { recursive: true, force: true }); }); console.log('清理完毕');\""
   },
   "keywords": [

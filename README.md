@@ -57,6 +57,15 @@ lui-render <输入.xml|svg> [更多输入...] [选项]
 退出码：0 全部成功；1 渲染/输入错误；2 参数错误；3 批量部分失败。
 Windows 上 GDI+ 抗锯齿为一等体验；其它平台降级 GDI（见 M9 ADR 33）。
 
+## 打包分发
+
+```bash
+npm run pack        # 构建 + 组装 dist/lui/ + 压缩 lui-<版本>-win64.zip
+```
+
+包内布局：`lui-render.exe` / `demo1.exe` 在根，`pages/` 含演示页面与 `ui/` 运行时资源。
+`cd pages` 后运行 `..\demo1.exe login` 或 `..\lui-render.exe ui.xml -o out.png`。
+
 ## 脚本页写法（Vue 3 风格）
 
 ```xml

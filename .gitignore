@@ -11,3 +11,4 @@ tools/lib/
 bin/
 tools/renderer/lib/
 tools/renderer/*.res
+dist/
