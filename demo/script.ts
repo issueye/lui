@@ -38,3 +38,36 @@ function Boot(): void {
 }
 
 Boot();
+
+/* ---- P5 异步示例：await ui.delay 序列 + 网络请求（含错误捕获）---- */
+
+async function RunSeq(): void {
+  const st = document.find("async-status");
+  if (st === null) {
+    return;
+  }
+  st.text = "异步：步骤 1/3";
+  await ui.delay(400);
+  st.text = "异步：步骤 2/3";
+  await ui.delay(400);
+  st.text = "异步：步骤 3/3";
+  await ui.delay(400);
+  st.text = "异步：序列完成 ✓";
+}
+
+function OnSeq(e): void {
+  RunSeq();
+}
+
+function OnFetch(e): void {
+  const st = document.find("async-status");
+  if (st === null) {
+    return;
+  }
+  st.text = "异步：请求网络…";
+  ui.http.get("https://httpbin.org/get").then(function (resp) {
+    st.text = "异步：HTTP " + resp.status + " ✓";
+  }).catch(function (r) {
+    st.text = "异步：网络失败（已捕获）";
+  });
+}
