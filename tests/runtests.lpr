@@ -8451,6 +8451,8 @@ var
   bridge: TXuiDomBridge;
   sink: TScriptSink;
   node: TXuiNode;
+  keptA, keptC: TXuiNode;
+  errs: Integer;
   src: string;
   ioSeq: Integer;
 
@@ -8694,6 +8696,155 @@ begin
       node := engine.Document.FindElementById('sl');
       Check((node <> nil) and (node.Text = 'SLOT-OK') and
         (node.Parent.Tag = 'panel'), 'slot 内容移入组件槽位并按父作用域求值');
+
+      // ---- M7-4：键控复用 / 非键控同长度替换 / 多根组件 / 具名 slot / props 类型校验 ----
+
+      // keyed x-for：同 key 复用克隆（节点对象保持），文本随新数据更新
+      RunAndFlush(
+        'const kx = reactive({ rows: [{ id: 1, n: "A" }, { id: 2, n: "B" }, { id: 3, n: "C" }] });');
+      engine.LoadFromString(
+        '<window><panel id="kx1" x-for="r in kx.rows"><label x-text="r.n" x-key="r.id"/></panel></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('kx1');
+      keptA := node[0];
+      keptC := node[2];
+      errs := script.ErrorCount;
+      RunAndFlush('kx.rows = [{ id: 3, n: "C2" }, { id: 1, n: "A2" }];');
+      node := engine.Document.FindElementById('kx1');
+      Check(node.Count = 2, 'keyed x-for：重排且删除后条目数正确');
+      Check((node[0] = keptC) and (node[1] = keptA), 'keyed x-for：同 key 复用克隆（节点对象保持）');
+      Check((node[0].Text = 'C2') and (node[1].Text = 'A2'), 'keyed x-for：复用条目文本随新数据更新');
+      RunAndFlush('kx.rows.push({ id: 9, n: "D" });');
+      node := engine.Document.FindElementById('kx1');
+      Check((node.Count = 3) and (node[2].Text = 'D'), 'keyed x-for：新 key 追加克隆');
+      Check(script.ErrorCount = errs, 'keyed x-for：复用/移除全程无脚本错误');
+
+      // 非键控 x-for：同长度元素替换 → 就地更新（不留旧数据）
+      RunAndFlush(
+        'const nx = reactive({ rows: [{ n: "x1" }, { n: "x2" }] });');
+      engine.LoadFromString(
+        '<window><panel id="nx1" x-for="r in nx.rows"><label x-text="r.n"/></panel></window>');
+      DrawEngine(engine);
+      RunAndFlush('nx.rows = [{ n: "y1" }, { n: "y2" }];');
+      node := engine.Document.FindElementById('nx1');
+      Check((node.Count = 2) and (node[0].Text = 'y1') and (node[1].Text = 'y2'),
+        '非键控 x-for：同长度元素替换就地更新');
+
+      // 组件模板多根：按序插入宿主位置；宿主 id/class 落到首根
+      RunAndFlush(
+        'component("duo", { props: [], template: "<label class=\"d1\" text=\"first\"/><label class=\"d2\" text=\"second\"/>" });');
+      engine.LoadFromString('<window><duo id="duo1" class="host"/></window>');
+      DrawEngine(engine);
+      node := engine.Document.Root;   // <window>
+      Check((node.Count = 2) and (node[0].Text = 'first') and (node[1].Text = 'second'),
+        '组件模板多根：两棵根按序插入宿主位置');
+      Check((node[0].Id = 'duo1') and node[0].HasClass('host') and (node[1].Id = ''),
+        '多根组件：宿主 id/class 落到首个实例根');
+
+      // 具名 slot + 默认 slot；未匹配槽位的内容丢弃
+      RunAndFlush(
+        'component("page-box", { props: [], template: "<panel class=\"page\"><slot name=\"head\"/><label text=\"mid\"/><slot/></panel>" });');
+      engine.LoadFromString(
+        '<window><page-box>' +
+        '<label id="hd" slot="head" text="H"/>' +
+        '<label id="ft" text="F"/>' +
+        '<label id="dr" slot="none" text="X"/>' +
+        '</page-box></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('hd');
+      Check((node <> nil) and (node.Parent.Tag = 'panel') and
+        (node.Parent.IndexOfChild(node) = 0), '具名 slot：head 内容进入对应槽位');
+      node := engine.Document.FindElementById('ft');
+      Check((node <> nil) and (node.Parent.IndexOfChild(node) = 2),
+        '默认 slot：未标 slot 的内容进入无具名槽位');
+      Check(engine.Document.FindElementById('dr') = nil, '未匹配槽位的内容被丢弃');
+
+      // props 类型校验：静态属性按声明强转
+      RunAndFlush(
+        'component("typed", { props: { n: "number", s: "string" }, template: "<label x-text=\"props.s + props.n\"/>" });');
+      engine.LoadFromString('<window><typed id="ty1" n="7" s="v"/></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('ty1');
+      Check((node <> nil) and (node.Text = 'v7'), 'props 类型校验：静态属性按声明强转 number');
+
+      // props 类型校验：动态 prop 不匹配 → 上报且不写入
+      RunAndFlush('const tv = reactive({ bad: "str" });');
+      errs := script.ErrorCount;
+      engine.LoadFromString('<window><typed id="ty2" s="x" :n="tv.bad"/></window>');
+      DrawEngine(engine);
+      Check(script.ErrorCount > errs, 'props 类型校验：动态 prop 类型不匹配上报错误');
+      node := engine.Document.FindElementById('ty2');
+      Check((node <> nil) and (node.Text = 'xundefined'),
+        'props 类型校验：不匹配的写入被拒绝（保留旧值）');
+
+      // props 必填校验
+      errs := script.ErrorCount;
+      RunAndFlush(
+        'component("reqd", { props: { v: { type: "string", required: true } }, template: "<label x-text=\"props.v\"/>" });');
+      engine.LoadFromString('<window><reqd/></window>');
+      DrawEngine(engine);
+      Check(script.ErrorCount > errs, 'props 必填校验：缺失时上报错误');
+      Check(Pos('缺少必填 prop', sink.LastError) > 0, 'props 必填校验：错误信息含 prop 名');
+
+      // 组件作为 keyed 列表项：重排后组件 props 随新条目更新（键控作用域 × 组件实例叠加）
+      RunAndFlush(
+        'const cl = reactive({ rows: [{ id: 1, n: "C1" }, { id: 2, n: "C2" }] });' + #10 +
+        'component("crow", { props: ["n"], template: "<panel class=\"crow\"><label x-text=\"props.n\"/></panel>" });');
+      engine.LoadFromString(
+        '<window><panel id="kcl" x-for="r in cl.rows"><crow :n="r.n" x-key="r.id"/></panel></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('kcl');
+      Check((node.Count = 2) and (node[0][0].Text = 'C1') and (node[1][0].Text = 'C2'),
+        '组件作为 keyed 列表项：首次刷新即渲染');
+      RunAndFlush('cl.rows = [{ id: 2, n: "C2b" }, { id: 1, n: "C1b" }];');
+      node := engine.Document.FindElementById('kcl');
+      Check((node.Count = 2) and (node[0][0].Text = 'C2b') and (node[1][0].Text = 'C1b'),
+        '组件作为 keyed 列表项：重排后组件 props 随新条目更新');
+
+      // 已知边界：组件模板内的 x-for 与父级 keyed diff 叠加
+      RunAndFlush(
+        'const bl = reactive({ rows: [{ id: 1, tags: ["a", "b"] }, { id: 2, tags: ["c"] }] });' + #10 +
+        'component("tag-box", { props: ["tags"], template: "<panel class=\"tb\"><panel x-for=\"t in props.tags\"><label x-text=\"t\"/></panel></panel>" });');
+      engine.LoadFromString(
+        '<window><panel id="tbl" x-for="r in bl.rows"><tag-box :tags="r.tags" x-key="r.id"/></panel></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('tbl');
+      Check((node.Count = 2) and (node[0][0].Count = 2) and (node[1][0].Count = 1),
+        '组件内 x-for：按 props 数组渲染');
+      RunAndFlush('bl.rows = [{ id: 2, tags: ["c", "d"] }, { id: 1, tags: ["a"] }];');
+      node := engine.Document.FindElementById('tbl');
+      Check((node[0][0].Count = 2) and (node[0][0][0].Text = 'c') and
+        (node[0][0][1].Text = 'd') and (node[1][0].Count = 1) and
+        (node[1][0][0].Text = 'a'),
+        '组件内 x-for 与父级 keyed 复用叠加：内层列表随新 props 更新');
+
+      // x-for 容器缺少模板子节点：上报而非崩溃
+      errs := script.ErrorCount;
+      engine.LoadFromString('<window><panel id="badfor" x-for="x in bl.rows"/></window>');
+      DrawEngine(engine);
+      Check(script.ErrorCount > errs, 'x-for 缺少模板子节点：上报错误');
+      Check(engine.Document.FindElementById('badfor').Count = 0, 'x-for 缺少模板子节点：容器保持空');
+
+      // 组件宿主上的 x-if（单根实例：改指实例根后照常摘除/恢复）
+      RunAndFlush(
+        'const vv = reactive({ on: true });' + #10 +
+        'component("fx-box", { props: [], template: "<label class=\"fx\" text=\"FX\"/>" });');
+      engine.LoadFromString('<window><panel id="fxp"><fx-box id="fxc" x-if="vv.on"/></panel></window>');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('fxc');
+      Check((node <> nil) and (node.Text = 'FX'), '组件宿主 x-if：真值渲染实例');
+      RunAndFlush('vv.on = false;');
+      Check(engine.Document.FindElementById('fxc') = nil, '组件宿主 x-if：假值摘除实例');
+      RunAndFlush('vv.on = true;');
+      node := engine.Document.FindElementById('fxc');
+      Check((node <> nil) and (node.Parent.Tag = 'panel') and (node.Text = 'FX'),
+        '组件宿主 x-if：真值原位恢复实例');
+
+      // 多根组件 + x-if：明确不支持（上报）
+      errs := script.ErrorCount;
+      engine.LoadFromString('<window><duo id="duox" x-if="vv.on"/></window>');
+      DrawEngine(engine);
+      Check(script.ErrorCount > errs, '多根组件 + x-if：上报不支持');
     finally
       bridge.Free;
     end;
