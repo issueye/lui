@@ -1693,7 +1693,9 @@ begin
   for i := 0 to arr.Length - 1 do
   begin
     clone := CloneSubtree(ABinding.TemplateRef);
-    env := FScript.Interp.NewChildEnv(FScript.Interp.GlobalEnv);
+    // 迭代作用域的父级 = x-for 绑定的作用域（组件 / 外层迭代），
+    // 否则克隆内的绑定看不到 props 与外层迭代变量
+    env := FScript.Interp.NewChildEnv(ScopeOf(ABinding.Scope));
     env.Define(ABinding.ItemName, arr.Items[i]);
     env.Define('index', FScript.Num(i));
     FEngine.AttachElement(ABinding.Node, clone);
@@ -1871,7 +1873,7 @@ begin
 
     // 逐条目：求 key、按 key 复用旧克隆与其迭代作用域
     // （求 key 共用一个临时作用域：解释器不回收环境对象，避免每次刷新新建 N 个）
-    scratch := FScript.Interp.NewChildEnv(FScript.Interp.GlobalEnv);
+    scratch := FScript.Interp.NewChildEnv(ScopeOf(ABinding.Scope));
     for i := 0 to arr.Length - 1 do
     begin
       scratch.Define(ABinding.ItemName, arr.Items[i]);
@@ -1896,8 +1898,8 @@ begin
       end
       else
       begin
-        // 新条目：新建迭代作用域
-        env := FScript.Interp.NewChildEnv(FScript.Interp.GlobalEnv);
+        // 新条目：新建迭代作用域（父级 = x-for 绑定作用域，克隆内可见 props/外层变量）
+        env := FScript.Interp.NewChildEnv(ScopeOf(ABinding.Scope));
         env.Define(ABinding.ItemName, arr.Items[i]);
         env.Define('index', FScript.Num(i));
         newEnvs[i] := env;

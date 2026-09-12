@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-form：表单容器（校验协议见 ui/components/form.ts 的 UiRegistry / uiFormValidate） -->
+<panel class="ui-form">
+  <slot/>
+</panel>

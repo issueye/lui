@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-checkbox：受控勾选（点击整行切换；勾号用字形，无伪元素可用） -->
+<panel class="ui-checkbox" :class="{ 'is-checked': props.modelValue, 'is-disabled': props.disabled }"
+  :disabled="props.disabled" x-onclick="UiToggle(props)">
+  <panel class="ui-checkbox__box">
+    <label class="ui-checkbox__mark" x-if="props.modelValue" text="✓"/>
+  </panel>
+  <label class="ui-checkbox__label" :text="props.text"/>
+</panel>

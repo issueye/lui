@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-radio-group：数据驱动的单选组（x-for 容器只放一个模板子节点） -->
+<panel class="ui-radio-group">
+  <panel x-for="item in props.options" x-key="item.value">
+    <panel class="ui-radio" :class="{ 'is-checked': props.modelValue === item.value, 'is-disabled': props.disabled }"
+      :disabled="props.disabled" x-onclick="UiRadioPick(props, item.value)">
+      <panel class="ui-radio__dot"/>
+      <label class="ui-radio__label" :text="item.text"/>
+    </panel>
+  </panel>
+</panel>

@@ -8463,8 +8463,19 @@ var
   sink: TScriptSink;
   node, btn: TXuiNode;
   theme, index: string;
-  errs: Integer;
+  errs, seq: Integer;
   src: string;
+
+  function RunFlush(const ACode: string): string;
+  begin
+    Inc(seq);
+    sink.Log.Clear;
+    script.Run(ACode, 'uif' + IntToStr(seq) + '.ts');
+    script.FlushReactive;
+    script.DrainMicrotasks;
+    Result := sink.Log.Text;
+  end;
+
 begin
   WriteLn('--- M8 组件库（ui/）---');
   theme := RepoPath('ui' + PathDelim + 'theme' + PathDelim + 'lui-light.css');
@@ -8526,6 +8537,62 @@ begin
       node := engine.Document.FindElementById('i1');
       Check((node <> nil) and (node.Count = 1) and (node[0].Text = 'lui'),
         '组件库：ui-input 经 x-model 取到宿主状态');
+
+      // ---- M8-2：表单类组件 + 校验 ----
+      script.Run('const uiForm_ = reactive({ name: "", agree: false, pick: "b", level: 20, num: 3 });' + #10 +
+        'function OnSubmitProbe(): string { return uiFormValidate("f1") ? "ok" : "bad"; }', 'uiform.ts');
+      engine.LoadFromString(
+        '<window>' +
+        '<ui-form id="f1">' +
+        '<ui-form-item form="f1" prop="name" label="用户名" :model="uiForm_" ' +
+        ':rules="[UiRules.required(''请输入用户名''), UiRules.minLength(3, ''至少 3 个字符'')]">' +
+        '<ui-input id="fn" x-model="uiForm_.name" placeholder="用户名"/>' +
+        '</ui-form-item>' +
+        '</ui-form>' +
+        '<ui-checkbox id="cb1" text="同意条款" x-model="uiForm_.agree"/>' +
+        '<ui-switch id="sw1" x-model="uiForm_.agree"/>' +
+        '<ui-radio-group id="rg1" :options="[{value: ''a'', text: ''A''}, {value: ''b'', text: ''B''}]" x-model="uiForm_.pick"/>' +
+        '<ui-slider id="sl1" x-model="uiForm_.level" :max="100"/>' +
+        '<ui-input-number id="in1" x-model="uiForm_.num" :max="10"/>' +
+        '<label id="probe" x-text="''pick='' + uiForm_.pick + ''/lvl='' + uiForm_.level + ''/num='' + uiForm_.num"/>' +
+        '</window>');
+      DrawEngine(engine);
+
+      // 校验：初始为空 → form-item 标红并显示提示；置为合法值后提示消失
+      node := engine.Document.FindElementById('fn');
+      Check((node <> nil) and (node.Parent <> nil) and
+        (Pos('请输入用户名', node.Parent.Parent[2].Text) > 0),
+        '组件库：ui-form-item 校验提示（必填）');
+      RunFlush('uiForm_.name = "lui";');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('fn');
+      Check((node <> nil) and (node.Parent.Parent[2].Text = ''),
+        '组件库：校验通过后提示清空');
+
+      // 交互：勾选 / 开关 / 单选 / 滑块 / 步进
+      ClickNode(engine, engine.Document.FindElementById('cb1'));
+      DrawEngine(engine);
+      src := RunFlush('console.log("agree=" + uiForm_.agree);');
+      Check(Pos('agree=true', src) > 0, '组件库：ui-checkbox 点击切换并回写状态');
+      ClickNode(engine, engine.Document.FindElementById('sw1'));
+      DrawEngine(engine);
+      src := RunFlush('console.log("agree=" + uiForm_.agree);');
+      Check(Pos('agree=false', src) > 0, '组件库：ui-switch 点击切换并回写状态');
+      ClickNode(engine, engine.Document.FindElementById('rg1')[0][0]);
+      DrawEngine(engine);
+      src := RunFlush('console.log("pick=" + uiForm_.pick);');
+      Check(Pos('pick=a', src) > 0, '组件库：ui-radio-group 选择回写状态');
+      node := engine.Document.FindElementById('sl1');
+      ClickNode(engine, node);
+      DrawEngine(engine);
+      src := RunFlush('console.log("lvl=" + uiForm_.level);');
+      Check(Pos('lvl=', src) > 0, '组件库：ui-slider 点击定位取值');
+      ClickNode(engine, engine.Document.FindElementById('in1')[0]);
+      DrawEngine(engine);
+      src := RunFlush('console.log("num=" + uiForm_.num);');
+      Check(Pos('num=2', src) > 0, '组件库：ui-input-number 步进（− 1 步）');
+      src := RunFlush('console.log("v=" + (uiFormValidate("f1") ? "ok" : "bad"));');
+      Check(Pos('v=ok', src) > 0, '组件库：uiFormValidate 全部通过');
     finally
       bridge.Free;
     end;
@@ -8607,7 +8674,7 @@ var
   src: string;
   ioSeq: Integer;
 
-  function RunAndFlush(const ACode: string): string;
+  function RunFlush(const ACode: string): string;
   begin
     Inc(ioSeq);
     sink.Log.Clear;
@@ -8645,7 +8712,7 @@ begin
       DrawEngine(engine);
 
       // 初始渲染：状态 → 绑定
-      src := RunAndFlush(
+      src := RunFlush(
         'const state = reactive({' + #10 +
         '  greeting: "hi", count: 3, hot: "hot", locked: true,' + #10 +
         '  visible: true, on: true, name: "init",' + #10 +
@@ -8668,12 +8735,12 @@ begin
       Check(engine.Document <> nil, '文档可用');
 
       // 状态写入 → 安全点刷新 → UI 更新
-      RunAndFlush('state.greeting = "yo"; state.count = 8;');
+      RunFlush('state.greeting = "yo"; state.count = 8;');
       Check(engine.Document.FindElementById('t1').Text = 'yo', 'x-text 随状态更新');
       WriteLn('[dbg-int] [', engine.Document.FindElementById('t2').Text, ']');
       Check(engine.Document.FindElementById('t2').Text = '共 8 条', '插值随状态更新');
 
-      RunAndFlush('state.hot = "cold"; state.locked = false;');
+      RunFlush('state.hot = "cold"; state.locked = false;');
       node := engine.Document.FindElementById('b1');
       Check(node.HasClass('base') and node.HasClass('cold') and
         (not node.HasClass('hot')), 'x-class 更新为最新类');
@@ -8681,25 +8748,25 @@ begin
       Check(not XuiIsDisabled(node), 'x-disabled 解除');
 
       // x-show：隐藏/显示
-      RunAndFlush('state.visible = false;');
+      RunFlush('state.visible = false;');
       DrawEngine(engine);
       node := engine.Document.FindElementById('lb3');
       Check((node.Style <> nil) and (node.Style.Display = xdispNone), 'x-show=false 隐藏');
-      RunAndFlush('state.visible = true;');
+      RunFlush('state.visible = true;');
       DrawEngine(engine);
       node := engine.Document.FindElementById('lb3');
       Check(node.Style.Display <> xdispNone, 'x-show=true 恢复显示');
 
       // x-if：摘除/原位恢复
-      RunAndFlush('state.on = false;');
+      RunFlush('state.on = false;');
       node := engine.Document.FindElementById('cond');
       Check(node.Count = 0, 'x-if=false 摘除子树');
-      RunAndFlush('state.on = true;');
+      RunFlush('state.on = true;');
       node := engine.Document.FindElementById('cond');
       Check((node.Count = 1) and (node[0].Text = 'ON'), 'x-if=true 原位恢复');
 
       // x-for：数组增长 → 重建
-      RunAndFlush('state.items = [{ n: "x" }, { n: "y" }, { n: "z" }];');
+      RunFlush('state.items = [{ n: "x" }, { n: "y" }, { n: "z" }];');
       node := engine.Document.FindElementById('lst');
       Check(node.Count = 3, 'x-for 数组增长重建');
       DrawEngine(engine);
@@ -8708,16 +8775,16 @@ begin
         'x-for 克隆内容按序渲染');
 
       // x-model：输入回写状态（事件切片内完成）
-      RunAndFlush('state.name = "init";');
+      RunFlush('state.name = "init";');
       node := engine.Document.FindElementById('inp');
       ClickNode(engine, node);
       engine.HandleTextInput('li');
       DrawEngine(engine);
-      src := RunAndFlush('console.log("name=" + state.name);');
+      src := RunFlush('console.log("name=" + state.name);');
       Check(Pos('name=initli', src) > 0, 'x-model 输入回写状态');
 
       // 事件处理器写状态 → 事件切片结束 UI 已更新（onclick → 状态 → SafePoint 刷新）
-      RunAndFlush('function OnInc() { state.count = state.count + 1; }');
+      RunFlush('function OnInc() { state.count = state.count + 1; }');
       node := engine.Document.FindElementById('t2');
       engine.LoadFromString(
         '<window>' +
@@ -8732,7 +8799,7 @@ begin
 
       // computed / watch / onMount
       sink.Log.Clear;
-      src := RunAndFlush(
+      src := RunFlush(
         'const st = reactive({ a: 2 });' + #10 +
         'const double = computed(function () { return st.a * 2; });' + #10 +
         'console.log("c" + double.value);' + #10 +
@@ -8743,13 +8810,13 @@ begin
       Check(Pos('c4', src) > 0, 'computed 求值');
       Check(Pos('c10', src) > 0, 'computed 随状态失效重算');
       Check(Pos('mounted', src) > 0, 'onMount 在首次刷新后调用');
-      RunAndFlush('st.a = 9;');
+      RunFlush('st.a = 9;');
       Check(Pos('w5->9', sink.Log.Text) > 0, 'watch 捕获新旧值');
 
       // ---- M7-2：嵌套响应式 / 数组变更通知 / :class 对象语法 / watch immediate ----
 
       // 嵌套对象属性写入触发刷新（深度标记）
-      RunAndFlush(
+      RunFlush(
         'const st2 = reactive({ inner: { v: "d1" } });');
       script.Run('function SetInner2(v: string): boolean { st2.inner.v = v; return true; }', 'si2.ts');
       engine.LoadFromString(
@@ -8766,12 +8833,12 @@ begin
       engine.LoadFromString(
         '<window><panel id="lst" x-for="it in state.items"><label x-text="it.n"/></panel></window>');
       DrawEngine(engine);
-      RunAndFlush('state.items.push({ n: "w" });');
+      RunFlush('state.items.push({ n: "w" });');
       node := engine.Document.FindElementById('lst');
       Check(node.Count = 4, '数组 push 触发 x-for 重建');
 
       // keyed v-for：重排与删除按 key 复用
-      RunAndFlush(
+      RunFlush(
         'const keyed = reactive({ rows: [{ id: 1, n: "A" }, { id: 2, n: "B" }, { id: 3, n: "C" }] });');
       engine.LoadFromString(
         '<window><panel id="kl" x-for="r in keyed.rows"><label x-text="r.n" x-key="r.id"/></panel></window>');
@@ -8788,35 +8855,35 @@ begin
         'keyed x-for：重排与删除按 key 正确');
 
       // :class 对象语法
-      RunAndFlush(
+      RunFlush(
         'const cs = reactive({ on: true });');
       engine.LoadFromString(
         '<window><label id="cl" class="base" x-class="{ hot: cs.on, cold: !cs.on }" text="cls"/></window>');
       DrawEngine(engine);
       node := engine.Document.FindElementById('cl');
       Check(node.HasClass('hot') and (not node.HasClass('cold')), ':class 对象语法（真值键生效）');
-      RunAndFlush('cs.on = false;');
+      RunFlush('cs.on = false;');
       node := engine.Document.FindElementById('cl');
       Check(node.HasClass('cold') and (not node.HasClass('hot')), ':class 对象语法随状态切换');
 
       // watch immediate
-      src := RunAndFlush(
+      src := RunFlush(
         'const wi = reactive({ v: 3 });' + #10 +
         'watch(function () { return wi.v; }, function (nv, ov) { console.log("wi" + nv + "/" + ov); }, { immediate: true });');
       Check(Pos('wi3/undefined', src) > 0, 'watch immediate 注册即回调');
 
       // watch deep：嵌套对象属性变化触发（内容快照比较）
-      RunAndFlush(
+      RunFlush(
         'const dw = reactive({ o: { v: 1 } });' + #10 +
         'watch(function () { return dw.o; }, function (nv, ov) { console.log("deep-fire"); }, { deep: true });');
       Check(sink.Log.Text = '', 'deep watch 基线不触发');
-      RunAndFlush('dw.o.v = 2;');
+      RunFlush('dw.o.v = 2;');
       Check(Pos('deep-fire', sink.Log.Text) > 0, 'watch deep 捕获嵌套变化');
 
       // ---- M7-3：组件化（props / 动态 prop / slot / 函数 prop）----
 
       // 静态 prop + 函数 prop：组件内调用父传入的函数
-      RunAndFlush(
+      RunFlush(
         'function Dbl(n: number): number { return n * 2; }' + #10 +
         'component("badge", { props: ["count", "f"], template: "<panel class=\"badge\"><label x-text=\"props.f(props.count)\"/></panel>" });');
       engine.LoadFromString(
@@ -8827,18 +8894,18 @@ begin
         '组件实例化：静态 prop 与函数 prop');
 
       // 动态 prop：随父状态更新
-      RunAndFlush('const bc = reactive({ n: 9 });');
+      RunFlush('const bc = reactive({ n: 9 });');
       engine.LoadFromString(
         '<window><badge :count="bc.n" :f="Dbl"/></window>');
       DrawEngine(engine);
       node := engine.Document.Root[0];
       Check((node.Count = 1) and (node[0].Text = '18'), '动态 prop 初始渲染');
-      RunAndFlush('bc.n = 11;');
+      RunFlush('bc.n = 11;');
       node := engine.Document.Root[0];
       Check((node.Count = 1) and (node[0].Text = '22'), '动态 prop 随父状态更新');
 
       // slot：宿主子内容移入组件槽位，按父作用域求值
-      RunAndFlush(
+      RunFlush(
         'const slotState = reactive({ msg: "SLOT-OK" });' + #10 +
         'component("my-box", { props: [], template: "<panel class=\"box\"><slot/></panel>" });');
       engine.LoadFromString(
@@ -8851,7 +8918,7 @@ begin
       // ---- M7-4：键控复用 / 非键控同长度替换 / 多根组件 / 具名 slot / props 类型校验 ----
 
       // keyed x-for：同 key 复用克隆（节点对象保持），文本随新数据更新
-      RunAndFlush(
+      RunFlush(
         'const kx = reactive({ rows: [{ id: 1, n: "A" }, { id: 2, n: "B" }, { id: 3, n: "C" }] });');
       engine.LoadFromString(
         '<window><panel id="kx1" x-for="r in kx.rows"><label x-text="r.n" x-key="r.id"/></panel></window>');
@@ -8860,29 +8927,29 @@ begin
       keptA := node[0];
       keptC := node[2];
       errs := script.ErrorCount;
-      RunAndFlush('kx.rows = [{ id: 3, n: "C2" }, { id: 1, n: "A2" }];');
+      RunFlush('kx.rows = [{ id: 3, n: "C2" }, { id: 1, n: "A2" }];');
       node := engine.Document.FindElementById('kx1');
       Check(node.Count = 2, 'keyed x-for：重排且删除后条目数正确');
       Check((node[0] = keptC) and (node[1] = keptA), 'keyed x-for：同 key 复用克隆（节点对象保持）');
       Check((node[0].Text = 'C2') and (node[1].Text = 'A2'), 'keyed x-for：复用条目文本随新数据更新');
-      RunAndFlush('kx.rows.push({ id: 9, n: "D" });');
+      RunFlush('kx.rows.push({ id: 9, n: "D" });');
       node := engine.Document.FindElementById('kx1');
       Check((node.Count = 3) and (node[2].Text = 'D'), 'keyed x-for：新 key 追加克隆');
       Check(script.ErrorCount = errs, 'keyed x-for：复用/移除全程无脚本错误');
 
       // 非键控 x-for：同长度元素替换 → 就地更新（不留旧数据）
-      RunAndFlush(
+      RunFlush(
         'const nx = reactive({ rows: [{ n: "x1" }, { n: "x2" }] });');
       engine.LoadFromString(
         '<window><panel id="nx1" x-for="r in nx.rows"><label x-text="r.n"/></panel></window>');
       DrawEngine(engine);
-      RunAndFlush('nx.rows = [{ n: "y1" }, { n: "y2" }];');
+      RunFlush('nx.rows = [{ n: "y1" }, { n: "y2" }];');
       node := engine.Document.FindElementById('nx1');
       Check((node.Count = 2) and (node[0].Text = 'y1') and (node[1].Text = 'y2'),
         '非键控 x-for：同长度元素替换就地更新');
 
       // 组件模板多根：按序插入宿主位置；宿主 id/class 落到首根
-      RunAndFlush(
+      RunFlush(
         'component("duo", { props: [], template: "<label class=\"d1\" text=\"first\"/><label class=\"d2\" text=\"second\"/>" });');
       engine.LoadFromString('<window><duo id="duo1" class="host"/></window>');
       DrawEngine(engine);
@@ -8893,7 +8960,7 @@ begin
         '多根组件：宿主 id/class 落到首个实例根');
 
       // 具名 slot + 默认 slot；未匹配槽位的内容丢弃
-      RunAndFlush(
+      RunFlush(
         'component("page-box", { props: [], template: "<panel class=\"page\"><slot name=\"head\"/><label text=\"mid\"/><slot/></panel>" });');
       engine.LoadFromString(
         '<window><page-box>' +
@@ -8911,7 +8978,7 @@ begin
       Check(engine.Document.FindElementById('dr') = nil, '未匹配槽位的内容被丢弃');
 
       // props 类型校验：静态属性按声明强转
-      RunAndFlush(
+      RunFlush(
         'component("typed", { props: { n: "number", s: "string" }, template: "<label x-text=\"props.s + props.n\"/>" });');
       engine.LoadFromString('<window><typed id="ty1" n="7" s="v"/></window>');
       DrawEngine(engine);
@@ -8919,7 +8986,7 @@ begin
       Check((node <> nil) and (node.Text = 'v7'), 'props 类型校验：静态属性按声明强转 number');
 
       // props 类型校验：动态 prop 不匹配 → 上报且不写入
-      RunAndFlush('const tv = reactive({ bad: "str" });');
+      RunFlush('const tv = reactive({ bad: "str" });');
       errs := script.ErrorCount;
       engine.LoadFromString('<window><typed id="ty2" s="x" :n="tv.bad"/></window>');
       DrawEngine(engine);
@@ -8930,7 +8997,7 @@ begin
 
       // props 必填校验
       errs := script.ErrorCount;
-      RunAndFlush(
+      RunFlush(
         'component("reqd", { props: { v: { type: "string", required: true } }, template: "<label x-text=\"props.v\"/>" });');
       engine.LoadFromString('<window><reqd/></window>');
       DrawEngine(engine);
@@ -8938,7 +9005,7 @@ begin
       Check(Pos('缺少必填 prop', sink.LastError) > 0, 'props 必填校验：错误信息含 prop 名');
 
       // 组件作为 keyed 列表项：重排后组件 props 随新条目更新（键控作用域 × 组件实例叠加）
-      RunAndFlush(
+      RunFlush(
         'const cl = reactive({ rows: [{ id: 1, n: "C1" }, { id: 2, n: "C2" }] });' + #10 +
         'component("crow", { props: ["n"], template: "<panel class=\"crow\"><label x-text=\"props.n\"/></panel>" });');
       engine.LoadFromString(
@@ -8947,13 +9014,13 @@ begin
       node := engine.Document.FindElementById('kcl');
       Check((node.Count = 2) and (node[0][0].Text = 'C1') and (node[1][0].Text = 'C2'),
         '组件作为 keyed 列表项：首次刷新即渲染');
-      RunAndFlush('cl.rows = [{ id: 2, n: "C2b" }, { id: 1, n: "C1b" }];');
+      RunFlush('cl.rows = [{ id: 2, n: "C2b" }, { id: 1, n: "C1b" }];');
       node := engine.Document.FindElementById('kcl');
       Check((node.Count = 2) and (node[0][0].Text = 'C2b') and (node[1][0].Text = 'C1b'),
         '组件作为 keyed 列表项：重排后组件 props 随新条目更新');
 
       // 已知边界：组件模板内的 x-for 与父级 keyed diff 叠加
-      RunAndFlush(
+      RunFlush(
         'const bl = reactive({ rows: [{ id: 1, tags: ["a", "b"] }, { id: 2, tags: ["c"] }] });' + #10 +
         'component("tag-box", { props: ["tags"], template: "<panel class=\"tb\"><panel x-for=\"t in props.tags\"><label x-text=\"t\"/></panel></panel>" });');
       engine.LoadFromString(
@@ -8962,7 +9029,7 @@ begin
       node := engine.Document.FindElementById('tbl');
       Check((node.Count = 2) and (node[0][0].Count = 2) and (node[1][0].Count = 1),
         '组件内 x-for：按 props 数组渲染');
-      RunAndFlush('bl.rows = [{ id: 2, tags: ["c", "d"] }, { id: 1, tags: ["a"] }];');
+      RunFlush('bl.rows = [{ id: 2, tags: ["c", "d"] }, { id: 1, tags: ["a"] }];');
       node := engine.Document.FindElementById('tbl');
       Check((node[0][0].Count = 2) and (node[0][0][0].Text = 'c') and
         (node[0][0][1].Text = 'd') and (node[1][0].Count = 1) and
@@ -8977,16 +9044,16 @@ begin
       Check(engine.Document.FindElementById('badfor').Count = 0, 'x-for 缺少模板子节点：容器保持空');
 
       // 组件宿主上的 x-if（单根实例：改指实例根后照常摘除/恢复）
-      RunAndFlush(
+      RunFlush(
         'const vv = reactive({ on: true });' + #10 +
         'component("fx-box", { props: [], template: "<label class=\"fx\" text=\"FX\"/>" });');
       engine.LoadFromString('<window><panel id="fxp"><fx-box id="fxc" x-if="vv.on"/></panel></window>');
       DrawEngine(engine);
       node := engine.Document.FindElementById('fxc');
       Check((node <> nil) and (node.Text = 'FX'), '组件宿主 x-if：真值渲染实例');
-      RunAndFlush('vv.on = false;');
+      RunFlush('vv.on = false;');
       Check(engine.Document.FindElementById('fxc') = nil, '组件宿主 x-if：假值摘除实例');
-      RunAndFlush('vv.on = true;');
+      RunFlush('vv.on = true;');
       node := engine.Document.FindElementById('fxc');
       Check((node <> nil) and (node.Parent.Tag = 'panel') and (node.Text = 'FX'),
         '组件宿主 x-if：真值原位恢复实例');
@@ -9000,7 +9067,7 @@ begin
       // ---- M7-5：props default（原始值 / 工厂函数）与多根组件作为 keyed 列表项 ----
 
       // 原始值缺省 + 显式传入覆盖
-      RunAndFlush(
+      RunFlush(
         'component("dv-box", { props: { n: { type: "number", default: 5 }, s: { type: "string", default: "d" } }, template: "<label x-text=\"props.s + props.n\"/>" });');
       engine.LoadFromString('<window><dv-box id="dv1"/><dv-box id="dv2" s="x" n="9"/></window>');
       DrawEngine(engine);
@@ -9011,7 +9078,7 @@ begin
 
       // 工厂函数缺省：每次实例化调用一次（数组缺省不跨实例共享，且通过类型校验）
       errs := script.ErrorCount;
-      RunAndFlush(
+      RunFlush(
         'component("fx-list", { props: { tags: { type: "array", default: function () { return ["t1"]; } } }, template: "<panel class=\"fl\"><panel x-for=\"t in props.tags\"><label x-text=\"t\"/></panel></panel>" });');
       engine.LoadFromString('<window><fx-list id="fl1"/><fx-list id="fl2"/></window>');
       DrawEngine(engine);
@@ -9021,7 +9088,7 @@ begin
       Check(script.ErrorCount = errs, 'props default：缺省值通过类型校验，无错误上报');
 
       // 多根组件作为 keyed 列表项：两棵根成组渲染、重排后仍成组有序
-      RunAndFlush(
+      RunFlush(
         'const mg = reactive({ rows: [{ id: 1, n: "M1" }, { id: 2, n: "M2" }] });' + #10 +
         'component("pair", { props: ["n"], template: "<label class=\"p1\" x-text=\"props.n\"/><label class=\"p2\" text=\"tail\"/>" });');
       engine.LoadFromString(
@@ -9031,14 +9098,14 @@ begin
       Check((node.Count = 4) and (node[0].Text = 'M1') and (node[1].Text = 'tail') and
         (node[2].Text = 'M2') and (node[3].Text = 'tail'),
         '多根组件作为 keyed 列表项：两棵根成组渲染');
-      RunAndFlush('mg.rows = [{ id: 2, n: "M2b" }, { id: 1, n: "M1b" }];');
+      RunFlush('mg.rows = [{ id: 2, n: "M2b" }, { id: 1, n: "M1b" }];');
       node := engine.Document.FindElementById('mg1');
       Check((node.Count = 4) and (node[0].Text = 'M2b') and (node[1].Text = 'tail') and
         (node[2].Text = 'M1b') and (node[3].Text = 'tail'),
         '多根组件作为 keyed 列表项：重排后两棵根保持成组有序');
 
       // 函数 prop：kebab 属性名（:on-labels）转 camel（onLabels）后按 props 调用
-      RunAndFlush(
+      RunFlush(
         'function LabelOf(n: number): string { return "L" + n; }' + #10 +
         'component("uc2", { props: { count: { type: "number", default: 0 }, onLabels: { type: "function" } }, template: "<panel><label x-text=\"props.onLabels(props.count)\"/></panel>" });');
       engine.LoadFromString('<window><uc2 id="uc2" :count="7" :on-labels="LabelOf"/></window>');
@@ -9048,15 +9115,15 @@ begin
         '函数 prop：kebab 属性名转 camel 后可在模板内调用');
 
       // reverse / splice 的响应式变更通知（与 push/pop/shift/unshift 对齐）
-      RunAndFlush('const rv = reactive({ rows: [{ n: "r1" }, { n: "r2" }] });');
+      RunFlush('const rv = reactive({ rows: [{ n: "r1" }, { n: "r2" }] });');
       engine.LoadFromString(
         '<window><panel id="rv1" x-for="r in rv.rows"><label x-text="r.n"/></panel></window>');
       DrawEngine(engine);
-      RunAndFlush('rv.rows.reverse();');
+      RunFlush('rv.rows.reverse();');
       node := engine.Document.FindElementById('rv1');
       Check((node.Count = 2) and (node[0].Text = 'r2') and (node[1].Text = 'r1'),
         '数组 reverse 触发 x-for 刷新');
-      RunAndFlush('rv.rows.splice(1, 0, { n: "r3" });');
+      RunFlush('rv.rows.splice(1, 0, { n: "r3" });');
       node := engine.Document.FindElementById('rv1');
       Check((node.Count = 3) and (node[1].Text = 'r3'),
         '数组 splice 触发 x-for 刷新');
@@ -9068,13 +9135,13 @@ begin
       script.FlushReactive;
       Check(script.ErrorCount > errs, 'watch 求值异常上报为脚本错误');
       Check(Pos('not-reached', sink.Log.Text) = 0, 'watch 求值异常不执行回调');
-      src := RunAndFlush('st.a = st.a + 1;');
+      src := RunFlush('st.a = st.a + 1;');
       Check(Pos('good', src) > 0, 'watch 异常不阻断其它监听器与刷新链路');
 
       // ---- M8-0 ADR 22：x-onclick="expr" 事件表达式（组件对外抛事件的地基）----
 
       // 表达式与全局函数名两种写法（附：x-on:click 冒号别名）
-      RunAndFlush(
+      RunFlush(
         'const ev = reactive({ n: 0, calls: 0 });' + #10 +
         'function OnTap() { ev.calls = ev.calls + 1; }');
       engine.LoadFromString(
@@ -9092,7 +9159,7 @@ begin
         'x-onclick：表达式（赋值）与函数名两种写法都触发（含 x-on:click 别名）');
 
       // 组件模板内用回调 prop：父级 x-onclick="Fn" 映射为 onClick prop
-      RunAndFlush(
+      RunFlush(
         'const cev = reactive({ taps: 0 });' + #10 +
         'function OnHostTap() { cev.taps = cev.taps + 1; }' + #10 +
         'component("ui-tap", { props: { onClick: { type: "function" } }, ' +
@@ -9116,7 +9183,7 @@ begin
       Check(script.ErrorCount > errs, 'x-onclick：表达式出错上报为脚本错误（不崩应用）');
 
       // x-oninput：input 事件触发（函数名形式）
-      RunAndFlush(
+      RunFlush(
         'const iv = reactive({ n: 0 });' + #10 +
         'function OnIv() { iv.n = iv.n + 1; }');
       engine.LoadFromString(
@@ -9130,7 +9197,7 @@ begin
       Check((node <> nil) and (node.Text = 'n=1'), 'x-oninput：input 事件触发表达式');
 
       // 表达式形式可读 event 载荷（event.text = 输入后的文本）
-      RunAndFlush('const it2 = reactive({ t: "-" });');
+      RunFlush('const it2 = reactive({ t: "-" });');
       engine.LoadFromString(
         '<window><input id="iv3" x-oninput="it2.t = event.text"/>' +
         '<label id="iv4" text="t={{it2.t}}"/></window>');
@@ -9143,7 +9210,7 @@ begin
         'x-oninput：表达式可用 event.text 读取载荷');
 
       // ---- M8-0 ADR 23：x-model 组件双向绑定（props.modelValue ↔ props.onModelValue）----
-      RunAndFlush(
+      RunFlush(
         'const mv = reactive({ name: "init" });' + #10 +
         'component("ui-text", { props: { modelValue: { type: "string", default: "" } }, ' +
         'template: "<panel class=\"uitext\"><input :text=\"props.modelValue\" ' +
@@ -9158,11 +9225,11 @@ begin
       engine.HandleTextInput('abc');
       DrawEngine(engine);
       node := engine.Document.FindElementById('ut1');
-      src := RunAndFlush('console.log("mv=" + mv.name);');
+      src := RunFlush('console.log("mv=" + mv.name);');
       Check(Pos('mv=initabc', src) > 0,
         'x-model 组件：组件内输入经 props.onModelValue 回写宿主状态');
 
-      RunAndFlush('mv.name = "reset";');
+      RunFlush('mv.name = "reset";');
       DrawEngine(engine);
       node := engine.Document.FindElementById('ut1');
       Check((node <> nil) and (node[0].Text = 'reset'),
@@ -9189,7 +9256,7 @@ begin
       Check(script.ErrorCount > errs, 'templateFile：模板文件缺失上报为脚本错误');
 
       // ---- M8-0 ADR 24：浮层（挂到文档根 + 定位 + node.rect）----
-      RunAndFlush('const pp = reactive({ open: false });');
+      RunFlush('const pp = reactive({ open: false });');
       engine.LoadFromString(
         '<window>' +
         '<panel id="hostbox" style="overflow:hidden; width:120px; height:40px">' +
@@ -9198,7 +9265,7 @@ begin
         '<panel id="pop1" style="width:60px; height:30px"><label text="浮层"/></panel>' +
         '</window>');
       DrawEngine(engine);
-      src := RunAndFlush(
+      src := RunFlush(
         'console.log("rect=" + document.find("anchor1").rect.top + "/" + document.find("anchor1").rect.height);' +
         'ui.popup(document.find("pop1"), { anchor: "anchor1", placement: "bottom-start" });');
       DrawEngine(engine);
@@ -9215,19 +9282,19 @@ begin
       Check(Pos('rect=', src) > 0, 'node.rect：脚本可读元素矩形');
 
       // ---- M8-1 前置：:style 运行时样式 / :placeholder 运行时属性 / ui.include ----
-      RunAndFlush('const sty = reactive({ w: 40 });');
+      RunFlush('const sty = reactive({ w: 40 });');
       engine.LoadFromString(
         '<window><panel id="sty1" :style="''width:'' + sty.w + ''px; height:20px''"/></window>');
       DrawEngine(engine);
       node := engine.Document.FindElementById('sty1');
       Check((node <> nil) and (node.Style.Width.Value = 40), ':style：运行时样式生效');
-      RunAndFlush('sty.w = 80;');
+      RunFlush('sty.w = 80;');
       DrawEngine(engine);
       node := engine.Document.FindElementById('sty1');
       Check((node <> nil) and (node.Style.Width.Value = 80),
         ':style：状态变化后样式随之更新（组件按 props 算样式的基础）');
 
-      RunAndFlush('const ph = reactive({ hint: "请输入用户名" });');
+      RunFlush('const ph = reactive({ hint: "请输入用户名" });');
       engine.LoadFromString('<window><input id="ph1" :placeholder="ph.hint"/></window>');
       fake.Clear;
       DrawEngine(engine);

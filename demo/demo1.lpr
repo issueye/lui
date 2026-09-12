@@ -14,6 +14,8 @@ program demo1;
   demo1 m7 dark          M7 响应式演示（深色）
   demo1 ui               M8 组件库演示（ui-button / ui-input / ui-card / ui-row 等）
   demo1 ui dark          M8 组件库演示（深色）
+  demo1 uiform           M8 表单演示（ui-form 校验 / 勾选 / 单选 / 滑块 / 数字输入）
+  demo1 uiform dark      M8 表单演示（深色）
   demo1 watch            开启热重载：运行中修改 *.css / *.xml 自动生效
   demo1 shot [WxH]       渲染到 shot.png 后退出（布局/观感自动核对）
   demo1 todo demo shot   同上，但先模拟交互（输入 + Enter 添加 / 悬停 / 完成 / 删除 / 滚动）
@@ -451,6 +453,27 @@ begin
     Exit;
   end;
 
+  // ui-form 页：填表 → 勾选 → 选套餐 → 步进 → 提交（校验通过态）
+  if FBaseName = 'ui-form' then
+  begin
+    inputNode := engine.Document.FindElementById('f-name');
+    if inputNode <> nil then
+    begin
+      ClickAt(engine.Document.FindElementById('f-name'));
+      engine.HandleTextInput('lui');
+      ClickAt(engine.Document.FindElementById('f-mail'));
+      engine.HandleTextInput('me@lui.dev');
+      ClickAt(engine.Document.FindElementById('f-pwd'));
+      engine.HandleTextInput('secret');
+    end;
+    ClickAt(engine.Document.FindElementById('f-plan')[0][0]);
+    ClickAt(engine.Document.FindElementById('f-years')[0]);
+    ClickAt(engine.Document.FindElementById('f-agree'));
+    ClickAt(engine.Document.FindElementById('f-submit'));
+    engine.HandleMouseMove(300, 620);
+    Exit;
+  end;
+
   // todo
   inputNode := engine.Document.FindElementById('new-todo');
   if inputNode <> nil then
@@ -505,6 +528,8 @@ begin
       page := 'm7'
     else if arg = 'ui' then
       page := 'ui'
+    else if arg = 'uiform' then
+      page := 'ui-form'
     else if arg = 'login' then
       page := 'login'
     else if arg = 'shot' then

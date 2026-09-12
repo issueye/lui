@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-input-number：数字输入（− / + 步进；输入框事件解析成数值并夹取） -->
+<panel class="ui-input-number" :class="{ 'is-disabled': props.disabled }">
+  <panel class="ui-input-number__btn" :disabled="props.disabled" x-onclick="UiStep(props, -1)">
+    <label class="ui-input-number__sign" text="−"/>
+  </panel>
+  <input class="ui-input-number__field" :text="props.modelValue" :disabled="props.disabled"
+    x-oninput="UiNumberInput(props, event)"/>
+  <panel class="ui-input-number__btn" :disabled="props.disabled" x-onclick="UiStep(props, 1)">
+    <label class="ui-input-number__sign" text="+"/>
+  </panel>
+</panel>

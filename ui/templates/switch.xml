@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-switch：受控开关（旋钮用绝对定位 + 运行时样式，无 transform 可用） -->
+<panel class="ui-switch" :class="{ 'is-on': props.modelValue, 'is-disabled': props.disabled }"
+  :disabled="props.disabled" x-onclick="UiToggle(props)">
+  <panel class="ui-switch__knob" :style="UiKnobStyle(props.modelValue)"/>
+</panel>

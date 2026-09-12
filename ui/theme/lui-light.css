@@ -256,3 +256,207 @@ window {
   background-color: var(--ui-color-fill);
   border-color: var(--ui-color-border-light);
 }
+
+/* ---------- 勾选 / 开关 / 单选 ---------- */
+
+.ui-checkbox {
+  display: flex;
+  align-items: center;
+  column-gap: 6px;
+  height: var(--ui-height);
+  transition: var(--ui-transition);
+}
+
+.ui-checkbox__box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  background-color: var(--ui-color-bg);
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-sm);
+  transition: var(--ui-transition);
+}
+
+.ui-checkbox.is-checked .ui-checkbox__box {
+  background-color: var(--ui-color-primary);
+  border-color: var(--ui-color-primary);
+}
+
+.ui-checkbox__mark {
+  font-size: 11px;
+  line-height: 1;
+  color: #ffffff;
+}
+
+.ui-checkbox__label {
+  font-size: var(--ui-font-size);
+  color: var(--ui-color-text);
+}
+
+.ui-checkbox.is-disabled .ui-checkbox__label {
+  color: var(--ui-color-text-disabled);
+}
+
+.ui-checkbox.is-disabled .ui-checkbox__box {
+  background-color: var(--ui-color-fill);
+  border-color: var(--ui-color-border-light);
+}
+
+.ui-switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  background-color: var(--ui-color-border);
+  border-radius: 10px;
+  transition: var(--ui-transition);
+}
+
+.ui-switch.is-on {
+  background-color: var(--ui-color-primary);
+}
+
+.ui-switch.is-disabled {
+  background-color: var(--ui-color-fill);
+}
+
+.ui-switch__knob {
+  width: 16px;
+  height: 16px;
+  background-color: #ffffff;
+  border-radius: 8px;
+  transition: var(--ui-transition);
+}
+
+.ui-radio-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.ui-radio {
+  display: flex;
+  align-items: center;
+  column-gap: 6px;
+  height: 26px;
+  transition: var(--ui-transition);
+}
+
+.ui-radio__dot {
+  width: 14px;
+  height: 14px;
+  background-color: var(--ui-color-bg);
+  border: 1px solid var(--ui-color-border);
+  border-radius: 7px;
+  transition: var(--ui-transition);
+}
+
+.ui-radio.is-checked .ui-radio__dot {
+  background-color: var(--ui-color-primary);
+  border: 4px solid var(--ui-color-primary);
+}
+
+.ui-radio__label {
+  font-size: var(--ui-font-size);
+  color: var(--ui-color-text);
+}
+
+.ui-radio.is-disabled .ui-radio__label {
+  color: var(--ui-color-text-disabled);
+}
+
+/* ---------- 滑块 / 数字输入 ---------- */
+
+.ui-slider {
+  display: flex;
+  align-items: center;
+  height: var(--ui-height);
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.ui-slider__track {
+  width: 100%;
+  height: 4px;
+  background-color: var(--ui-color-fill);
+  border-radius: 2px;
+}
+
+.ui-slider__fill {
+  height: 4px;
+  background-color: var(--ui-color-primary);
+  border-radius: 2px;
+}
+
+.ui-input-number {
+  display: flex;
+  align-items: center;
+  column-gap: 4px;
+}
+
+.ui-input-number__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: var(--ui-height-sm);
+  background-color: var(--ui-color-bg);
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-sm);
+  transition: var(--ui-transition);
+}
+
+.ui-input-number__btn:hover {
+  border-color: var(--ui-color-primary);
+}
+
+.ui-input-number__sign {
+  font-size: var(--ui-font-size);
+  color: var(--ui-color-text-sub);
+}
+
+.ui-input-number__field {
+  width: 64px;
+  height: var(--ui-height-sm);
+  padding-left: 8px;
+  padding-right: 8px;
+  font-size: var(--ui-font-size);
+  color: var(--ui-color-text);
+  background-color: var(--ui-color-bg);
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-sm);
+}
+
+/* ---------- 表单 ---------- */
+
+.ui-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.ui-form-item {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 10px;
+}
+
+.ui-form-item__label {
+  font-size: var(--ui-font-size-sm);
+  color: var(--ui-color-text-sub);
+  margin-bottom: 4px;
+}
+
+.ui-form-item__control {
+  display: flex;
+  flex-direction: column;
+}
+
+.ui-form-item__error {
+  font-size: var(--ui-font-size-sm);
+  color: var(--ui-color-danger);
+  margin-top: 4px;
+}
+
+.ui-form-item.is-error .ui-input__field {
+  border-color: var(--ui-color-danger);
+}

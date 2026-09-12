@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-slider：点击定位取值（v1 不做拖动；引擎未给非 input 节点指针捕获） -->
+<panel class="ui-slider" :class="{ 'is-disabled': props.disabled }" :disabled="props.disabled"
+  x-onclick="UiSliderSet(props, event)">
+  <panel class="ui-slider__track">
+    <panel class="ui-slider__fill" :style="UiPercentStyle(props)"/>
+  </panel>
+</panel>

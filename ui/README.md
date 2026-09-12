@@ -38,7 +38,9 @@ ui/
 - 组件内部辅助函数统一 `Ui*` 前缀（TS 子集没有模块系统，全部落在全局命名空间）
 - 主题 token：`--ui-color-*`、`--ui-height-*`、`--ui-font-size-*`、`--ui-gap`、`--ui-radius*`、`--ui-transition`
 
-## 组件清单（M8-1 已交付）
+## 组件清单
+
+**M8-1（基础）**
 
 | 组件 | props | 说明 |
 | --- | --- | --- |
@@ -51,6 +53,36 @@ ui/
 | `ui-text` | text / type / size | 文本（颜色/字号） |
 | `ui-icon` | name(字形表) / glyph | 字形图标（Unicode；无 image 渲染） |
 | `ui-link` | text / disabled / onClick | 链接 |
+
+**M8-2（表单）**
+
+| 组件 | props | 说明 |
+| --- | --- | --- |
+| `ui-checkbox` | modelValue(bool) / text / disabled / onModelValue | 点击整行切换；勾号用字形 |
+| `ui-switch` | modelValue(bool) / disabled / onModelValue | 旋钮用绝对定位（无 transform） |
+| `ui-radio-group` | modelValue(string) / options[{value,text}] / disabled / onModelValue | **数据驱动**：组内选项由 options 渲染（组件间无 provide/inject，不做子组件收集） |
+| `ui-slider` | modelValue(number) / min / max / step / disabled | **点击定位取值**（不做拖动：引擎未给非 input 节点指针捕获） |
+| `ui-input-number` | modelValue / min / max / step / disabled | − / + 步进 + 输入解析并夹取 |
+| `ui-form` | —（默认 slot） | 表单容器 |
+| `ui-form-item` | form / prop / label / **model** / rules | 标签 + 控件 + 校验提示 |
+
+### 表单校验协议（无 provide/inject，用显式约定）
+
+```xml
+<ui-form id="reg">
+  <ui-form-item form="reg" prop="mail" label="邮箱" :model="form"
+    :rules="[UiRules.required('请输入邮箱'), UiRules.email('邮箱格式不正确')]">
+    <ui-input x-model="form.mail"/>
+  </ui-form-item>
+</ui-form>
+<ui-button text="提交" type="primary" x-onclick="OnSubmit"/>
+```
+
+- 规则用库导出的 **`UiRules`**（`required` / `min` / `max` / `minLength` / `email`），
+  也接受自定义函数规则（返回 `false` 视为不通过）
+- `ui-form-item` 每次刷新求值一次错误消息并显示（值变化才写内部响应式表，不会自激刷新）
+- 提交时调 **`uiFormValidate('reg')`** → 返回是否全部通过，并刷新错误显示
+- 校验时机：**随刷新实时校验**（引擎无 blur/change 驱动的校验钩子），`UiErrors` 也可供自定义展示
 
 ## 与 Element Plus 的差异（重要）
 

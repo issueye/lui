@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- M8-2：表单演示（ui-form / ui-form-item 校验 / 勾选 / 开关 / 单选 / 滑块 / 数字输入）
+     逻辑全在 ui-form.ts；校验规则来自库里的 UiRules，提交调 uiFormValidate(id) -->
+<window title="表单" width="400" height="720">
+  <script src="../ui/index.ts"/>
+  <script src="ui-form.ts"/>
+  <include src="nav.xml"/>
+  <panel class="page">
+    <panel class="header">
+      <label class="title" text="表单与校验"/>
+      <panel class="spacer"/>
+      <button id="theme" class="ghost" text="换肤" onclick="ThemeClick"/>
+      <button id="go-ui" class="ghost" text="组件页" to="ui" onclick="PageClick"/>
+    </panel>
+
+    <ui-card title="注册信息">
+      <ui-form id="reg">
+        <ui-form-item form="reg" prop="name" label="用户名" :model="form"
+          :rules="[UiRules.required('请输入用户名'), UiRules.minLength(3, '至少 3 个字符')]">
+          <ui-input id="f-name" x-model="form.name" placeholder="3 个字符以上"/>
+        </ui-form-item>
+        <ui-form-item form="reg" prop="mail" label="邮箱" :model="form"
+          :rules="[UiRules.required('请输入邮箱'), UiRules.email('邮箱格式不正确')]">
+          <ui-input id="f-mail" x-model="form.mail" placeholder="you@example.com"/>
+        </ui-form-item>
+        <ui-form-item form="reg" prop="pwd" label="密码" :model="form"
+          :rules="[UiRules.required('请输入密码'), UiRules.minLength(6, '至少 6 位')]">
+          <ui-input id="f-pwd" x-model="form.pwd" placeholder="6 位以上" password="true"/>
+        </ui-form-item>
+        <ui-form-item form="reg" prop="plan" label="套餐" :model="form"
+          :rules="[UiRules.required('请选择套餐')]">
+          <ui-radio-group id="f-plan" x-model="form.plan" :options="plans"/>
+        </ui-form-item>
+        <ui-form-item form="reg" prop="level" label="熟练度" :model="form">
+          <ui-slider id="f-level" x-model="form.level" :max="100" :step="10"/>
+        </ui-form-item>
+        <ui-form-item form="reg" prop="years" label="从业年限" :model="form">
+          <ui-input-number id="f-years" x-model="form.years" :max="40"/>
+        </ui-form-item>
+        <ui-form-item form="reg" prop="agree" :model="form"
+          :rules="[UiRules.required('请先同意条款')]">
+          <ui-checkbox id="f-agree" text="我已阅读并同意条款" x-model="form.agree"/>
+        </ui-form-item>
+      </ui-form>
+      <ui-space size="8">
+        <ui-button id="f-submit" text="提交校验" type="primary" x-onclick="OnSubmit"/>
+        <ui-button text="重置" x-onclick="OnReset"/>
+      </ui-space>
+      <label class="hint" x-text="'结果：' + state.result"/>
+    </ui-card>
+
+    <ui-card title="当前值（响应式）">
+      <label class="hint" x-text="form.name + ' / ' + form.mail + ' / 套餐 ' + form.plan"/>
+      <label class="hint" x-text="'熟练度 ' + form.level + ' / 年限 ' + form.years + ' / 同意 ' + form.agree"/>
+    </ui-card>
+  </panel>
+</window>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ui-form-item：标签 + 控件（默认 slot）+ 校验提示。
+     错误消息由 UiFieldError 每次刷新求值（值变化才写响应式对象，避免刷新循环）。 -->
+<panel class="ui-form-item" :class="{ 'is-error': UiFieldError(props.form, props.prop, props.model, props.rules) !== '' }">
+  <label class="ui-form-item__label" x-if="props.label !== ''" :text="props.label"/>
+  <panel class="ui-form-item__control">
+    <slot/>
+  </panel>
+  <label class="ui-form-item__error" :text="UiFieldError(props.form, props.prop, props.model, props.rules)"/>
+</panel>
