@@ -9090,6 +9090,32 @@ begin
         'component("tpl-bad", { props: [], templateFile: "no-such-file.xml" });');
       script.RunFile(tplDir + PathDelim + 'bad.ts');
       Check(script.ErrorCount > errs, 'templateFile：模板文件缺失上报为脚本错误');
+
+      // ---- M8-0 ADR 24：浮层（挂到文档根 + 定位 + node.rect）----
+      RunAndFlush('const pp = reactive({ open: false });');
+      engine.LoadFromString(
+        '<window>' +
+        '<panel id="hostbox" style="overflow:hidden; width:120px; height:40px">' +
+        '<button id="anchor1" text="锚点"/>' +
+        '</panel>' +
+        '<panel id="pop1" style="width:60px; height:30px"><label text="浮层"/></panel>' +
+        '</window>');
+      DrawEngine(engine);
+      src := RunAndFlush(
+        'console.log("rect=" + document.find("anchor1").rect.top + "/" + document.find("anchor1").rect.height);' +
+        'ui.popup(document.find("pop1"), { anchor: "anchor1", placement: "bottom-start" });');
+      DrawEngine(engine);
+      node := engine.Document.FindElementById('pop1');
+      Check((node <> nil) and (node.Parent = engine.Document.Root),
+        'ui.popup：浮层挂到文档根（脱离父级 overflow 裁剪）');
+      Check((node <> nil) and (node.Style.Position = xposAbsolute),
+        'ui.popup：内联 style 实现绝对定位');
+      Check((node <> nil) and
+        (node.Style.Inset.Top.Value >= engine.Document.FindElementById('anchor1').BoxRect.Bottom - 1),
+        'ui.popup：定位到锚点下方（bottom-start）');
+      Check((node <> nil) and (node.Style.Width.Value = 60),
+        'ui.popup：保留作者内联样式（width 未被定位覆盖）');
+      Check(Pos('rect=', src) > 0, 'node.rect：脚本可读元素矩形');
     finally
       bridge.Free;
     end;

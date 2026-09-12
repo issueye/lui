@@ -129,6 +129,10 @@ type
     function AddElement(AParent: TXuiNode; const AXMLFragment: string): TXuiNode;
     procedure RemoveElement(ANode: TXuiNode);
     procedure AttachElement(AParent: TXuiNode; ANode: TXuiNode);   // M7：运行时挂载节点（行为/样式装配）
+    // M8 ADR 24：浮层（挂到文档根 + 定位；style 用内联写入，样式重算后保留）
+    procedure AttachToOverlay(ANode: TXuiNode);
+    procedure PlacePopup(APopup, AAnchor: TXuiNode; const APlacement: string;
+      AOffsetX, AOffsetY: Integer);
     procedure ApplyNodeData(ANode: TXuiNode);                      // M7-3：对既有子树补装配（组件实例化用）
     procedure ClearChildren(AParent: TXuiNode);
     procedure SetText(ANode: TXuiNode; const AText: string);
@@ -1102,6 +1106,127 @@ begin
     Exit;
   AParent.AddChild(ANode);
   ApplyNodeDataRecursive(ANode);
+  InvalidateStyles;
+end;
+
+// M8 ADR 24：把浮层节点挂到文档根（不随父级 overflow 裁剪；定位元素在文档序之后绘制）
+procedure TXuiEngine.AttachToOverlay(ANode: TXuiNode);
+begin
+  if (ANode = nil) or (FDocument = nil) or (FDocument.Root = nil) then
+    Exit;
+  if ANode.Parent <> nil then
+    ANode.Parent.RemoveChild(ANode);
+  FDocument.Root.AddChild(ANode);
+  ApplyNodeDataRecursive(ANode);
+  InvalidateStyles;
+end;
+
+// 把定位声明并入既有内联 style（保留作者写的 width/height 等；同名声明以新值为准）
+function MergePositionStyle(const AExisting, APosition: string): string;
+var
+  parts: TStringList;
+  i, colon: Integer;
+  name, item: string;
+begin
+  Result := '';
+  parts := TStringList.Create;
+  try
+    parts.Delimiter := ';';
+    parts.StrictDelimiter := True;
+    parts.DelimitedText := AExisting;
+    for i := 0 to parts.Count - 1 do
+    begin
+      item := Trim(parts[i]);
+      if item = '' then
+        Continue;
+      colon := Pos(':', item);
+      if colon > 1 then
+        name := LowerCase(Trim(Copy(item, 1, colon - 1)))
+      else
+        name := LowerCase(item);
+      if (name = 'position') or (name = 'left') or (name = 'top') or
+         (name = 'right') or (name = 'bottom') then
+        Continue;
+      Result := Result + item + '; ';
+    end;
+  finally
+    parts.Free;
+  end;
+  Result := Result + APosition;
+end;
+
+// M8 ADR 24：浮层定位。写内联 style（position/left/top），因此随样式重算保留；
+// AAnchor = nil 时按文档根内容区定位（placement 可用 'center'）。
+// 位置按当前布局的 BoxRect 计算，浮层内容尺寸变化后再次调用即可重新对齐。
+procedure TXuiEngine.PlacePopup(APopup, AAnchor: TXuiNode; const APlacement: string;
+  AOffsetX, AOffsetY: Integer);
+var
+  ar, pr, base: TRect;
+  x, y, l, t: Integer;
+  place: string;
+begin
+  if (APopup = nil) or (FDocument = nil) or (FDocument.Root = nil) then
+    Exit;
+  place := LowerCase(Trim(APlacement));
+  if place = '' then
+    place := 'bottom-start';
+  if AAnchor <> nil then
+    ar := AAnchor.BoxRect
+  else
+    ar := FDocument.Root.ContentBox;
+  pr := APopup.BoxRect;
+  l := ar.Left;
+  t := ar.Bottom + AOffsetY;
+  if place = 'bottom' then
+    l := ar.Left + (ar.Right - ar.Left - (pr.Right - pr.Left)) div 2
+  else if place = 'bottom-end' then
+    l := ar.Right - (pr.Right - pr.Left) + AOffsetX
+  else if place = 'top-start' then
+    t := ar.Top - (pr.Bottom - pr.Top) - AOffsetY
+  else if place = 'top' then
+  begin
+    t := ar.Top - (pr.Bottom - pr.Top) - AOffsetY;
+    l := ar.Left + (ar.Right - ar.Left - (pr.Right - pr.Left)) div 2;
+  end
+  else if place = 'top-end' then
+  begin
+    t := ar.Top - (pr.Bottom - pr.Top) - AOffsetY;
+    l := ar.Right - (pr.Right - pr.Left) + AOffsetX;
+  end
+  else if (place = 'right') or (place = 'left') then
+  begin
+    if place = 'right' then
+      l := ar.Right + AOffsetX
+    else
+      l := ar.Left - (pr.Right - pr.Left) - AOffsetX;
+    t := ar.Top + AOffsetY;
+  end
+  else if place = 'center' then
+  begin
+    l := ar.Left + (ar.Right - ar.Left - (pr.Right - pr.Left)) div 2;
+    t := ar.Top + (ar.Bottom - ar.Top - (pr.Bottom - pr.Top)) div 2;
+  end
+  else
+    l := ar.Left + AOffsetX;   // bottom-start
+
+  // 边界夹取：整块留在文档根内容区内
+  base := FDocument.Root.ContentBox;
+  if l + (pr.Right - pr.Left) > base.Right then
+    l := base.Right - (pr.Right - pr.Left);
+  if t + (pr.Bottom - pr.Top) > base.Bottom then
+  begin
+    // 下方放不下则翻到锚点上方
+    t := ar.Top - (pr.Bottom - pr.Top) - AOffsetY;
+  end;
+  if l < base.Left then
+    l := base.Left;
+  if t < base.Top then
+    t := base.Top;
+
+  x := l;
+  y := t;
+  APopup.Attributes.Values['style'] := MergePositionStyle(APopup.AttributeValue('style'),
+    Format('position:absolute; left:%dpx; top:%dpx', [x, y]));
   InvalidateStyles;
 end;
 

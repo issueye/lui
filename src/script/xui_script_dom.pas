@@ -84,6 +84,9 @@ type
     // 文档重建：桥缓存与监听表随节点一起作废，然后重扫绑定
     procedure HandleResetBindings;
     function NodeValue(ANode: TXuiNode): TXuiJsValue;
+    // ui.popup：浮层挂到文档根并定位（M8 ADR 24）
+    function NativePopup(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
     property DocumentObject: TXuiJsObject read FDocumentObj;
   end;
 
@@ -248,6 +251,7 @@ function TXuiDomBridge.NodePropGet(AObj: TXuiJsObject; const AName: string;
   out AValue: TXuiJsValue): Boolean;
 var
   node: TXuiNode;
+  obj: TXuiJsObject;
 begin
   AValue := FScript.Undefined;
   Result := False;
@@ -268,6 +272,16 @@ begin
     AValue := FScript.Num(node.ScrollTop)
   else if AName = 'count' then
     AValue := FScript.Num(node.Count)
+  else if AName = 'rect' then
+  begin
+    // M8：元素矩形（供浮层定位/测量；来自最近一次布局的 border-box）
+    obj := FScript.Interp.CreateHostObject('Rect');
+    obj.SetOwn('left', FScript.Num(node.BoxRect.Left));
+    obj.SetOwn('top', FScript.Num(node.BoxRect.Top));
+    obj.SetOwn('width', FScript.Num(node.BoxRect.Right - node.BoxRect.Left));
+    obj.SetOwn('height', FScript.Num(node.BoxRect.Bottom - node.BoxRect.Top));
+    AValue := FScript.Interp.ObjectValue(obj);
+  end
   else if AName = 'parent' then
     AValue := NodeValue(node.Parent)
   else
@@ -482,6 +496,47 @@ begin
   Result := True;
 end;
 
+// ui.popup(node, opts)：把浮层节点挂到文档根并定位（M8 ADR 24）
+//   opts.anchor    ：锚点节点（DOM 桥节点）或 id 字符串；缺省 = 文档根内容区
+//   opts.placement ：'bottom-start'（默认）/ bottom / bottom-end / top(-start/-end) / left / right / center
+//   opts.offsetX/offsetY：像素偏移
+function TXuiDomBridge.NativePopup(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+var
+  node, anchor: TXuiNode;
+  opts: TXuiJsObject;
+  av: TXuiJsValue;
+  placement: string;
+  ox, oy: Integer;
+begin
+  Result := FScript.Undefined;
+  if System.Length(AArgs) < 1 then
+    Exit;
+  node := NodeOf(AArgs[0]);
+  if node = nil then
+    Exit;
+  anchor := nil;
+  placement := 'bottom-start';
+  ox := 0;
+  oy := 0;
+  if (System.Length(AArgs) >= 2) and (AArgs[1].Kind = jvObject) and
+     (AArgs[1].Obj <> nil) then
+  begin
+    opts := AArgs[1].Obj;
+    av := opts.GetOwn('anchor');
+    anchor := NodeOf(av);
+    if (anchor = nil) and (av.Kind = jvString) and (av.Str <> '') then
+      anchor := FEngine.Document.FindElementById(av.Str);
+    av := opts.GetOwn('placement');
+    if (av.Kind = jvString) and (av.Str <> '') then
+      placement := av.Str;
+    ox := FScript.Interp.ToInt32Value(opts.GetOwn('offsetX'));
+    oy := FScript.Interp.ToInt32Value(opts.GetOwn('offsetY'));
+  end;
+  FEngine.AttachToOverlay(node);
+  FEngine.PlacePopup(node, anchor, placement, ox, oy);
+end;
+
 procedure TXuiDomBridge.Install;
 var
   doc: TXuiJsObject;
@@ -500,7 +555,9 @@ begin
   FScript.RegisterValue('document', FScript.Interp.ObjectValue(doc));
 
   // ui.version（ui.now / ui.setTimeout 等定时器已由运行时在 P2 注册，此处并入同对象）
-  FScript.RegisterValue('ui.version', FScript.Str('lui M6'));
+  FScript.RegisterValue('ui.version', FScript.Str('lui M8'));
+  // ui.popup(node, {anchor, placement, offsetX, offsetY})：浮层挂到文档根并定位（M8 ADR 24）
+  FScript.RegisterNative('ui.popup', @NativePopup);
 
   // 引擎事件钩子（动态绑定）
   FEngine.OnScriptEvent := @HandleEngineEvent;
