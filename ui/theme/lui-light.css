@@ -464,11 +464,16 @@ window {
   border-color: var(--ui-color-primary);
 }
 
+/* 勾号：内联矢量图标，未勾选时不占位（display:none），勾选后由父级 color 着色 */
 .ui-checkbox__mark {
-  font-size: 11px;
-  font-weight: bold;
-  line-height: 1;
+  display: none;
+  width: 12px;
+  height: 12px;
   color: #ffffff;
+}
+
+.ui-checkbox.is-checked .ui-checkbox__mark {
+  display: block;
 }
 
 .ui-checkbox__label {
@@ -483,6 +488,11 @@ window {
 .ui-checkbox.is-disabled .ui-checkbox__box {
   background-color: var(--ui-color-fill);
   border-color: var(--ui-color-border-light);
+}
+
+/* 禁用 + 勾选：浅灰底上白勾不可辨，改用禁用文本色 */
+.ui-checkbox.is-disabled.is-checked .ui-checkbox__mark {
+  color: var(--ui-color-text-disabled);
 }
 
 .ui-switch {
@@ -1009,6 +1019,13 @@ window {
   position: relative;
   display: flex;
   align-items: center;
+}
+
+/* 引擎给 button/label/input 默认带 margin-top（块流的垂直节奏）。在 .ui-badge 这种居中
+   容器里它会把子元素下推、把容器撑高（按钮 26 → 容器 32），而角标锚在容器上，于是角标
+   相对按钮多偏 6px、看起来"飘"在角外。组件内归零，角标才贴住内容右上角。 */
+.ui-badge > * {
+  margin-top: 0;
 }
 
 .ui-badge__sup {

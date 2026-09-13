@@ -58,7 +58,7 @@ ui/
 
 | 组件 | props | 说明 |
 | --- | --- | --- |
-| `ui-checkbox` | modelValue(bool) / text / disabled / onModelValue | 点击整行切换；勾号用字形 |
+| `ui-checkbox` | modelValue(bool) / text / disabled / onModelValue | 点击整行切换；勾号用内联矢量 SVG（随状态显隐） |
 | `ui-switch` | modelValue(bool) / disabled / onModelValue | 旋钮用绝对定位（无 transform） |
 | `ui-radio-group` | modelValue(string) / options[{value,text}] / disabled / onModelValue | **数据驱动**：组内选项由 options 渲染（组件间无 provide/inject，不做子组件收集） |
 | `ui-slider` | modelValue(number) / min / max / step / disabled | **点击定位取值**（不做拖动：引擎未给非 input 节点指针捕获） |
@@ -93,6 +93,22 @@ ui/
 - **图标**：字形（✓ ★ ▾ 等），引擎暂不支持 image 渲染/矢量图标
 - **无 CSS 变量以外的 token 机制**：主题=覆盖 token；尺寸阶梯用 `--ui-height-*` 等 token
 - **暂缺**：受控组件的键盘可达性（方向键/Esc 需引擎补键盘事件）、`ui-input` 的 clearable/前后缀插槽
+
+## 组件开发注意（默认 margin 泄漏）
+
+引擎给 `button` / `label` / `input` 设了非零默认 `margin-top`（`button` 6px、`label`/`input` 2px），本意是块级流里的垂直节奏。它在**居中/绝对定位容器**里会变成陷阱：
+
+- 容器的自然高度被撑高（`.ui-badge` 里按钮 26px → 容器 32px），绝对定位的角标锚在容器上，
+  于是相对内容多偏 6px、看起来"飘"在角外；
+- flex 居中容器里子项被下推，视觉上不再与同排元素对齐。
+
+组件 CSS 内遇到"容器高度应等于子项高度"或"子项需严格居中"时，请显式归零：
+
+```css
+.ui-badge > * { margin-top: 0; }
+```
+
+真实 CSS 里这些标签默认 margin 为 0，所以组件内归零是符合直觉的写法。
 
 ## 已知问题
 

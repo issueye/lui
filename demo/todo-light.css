@@ -84,8 +84,13 @@ window {
   transition: all 120ms ease;
 }
 
+/* 勾号：内联矢量图标（未完成隐藏、完成后由 .check 的 color 着色）。
+   用矢量而非字形 ✓：字形在 16px 盒内受 ClearType 网格对齐影响呈锯齿块状。 */
 .check .check-mark {
   display: none;
+  width: 12px;
+  height: 12px;
+  color: #ffffff;
 }
 
 .item:hover .check {
@@ -133,10 +138,7 @@ window {
 }
 
 .item.done .check .check-mark {
-  display: flex;
-  font-size: 11px;
-  font-weight: bold;
-  line-height: 1;
+  display: block;
   color: #ffffff;
 }
 

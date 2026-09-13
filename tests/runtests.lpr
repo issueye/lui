@@ -8820,6 +8820,18 @@ begin
       Check((node <> nil) and (node.Count >= 2) and node[1].HasClass('is-dot'),
         '组件库：ui-badge dot 模式带有 is-dot 样式');
 
+      // 角标锚定：容器不得被子项默认 margin 撑高，角标须贴住内容右上角。
+      // 引擎给 button/label/input 默认带 margin-top，若未在组件内归零，容器会被撑高
+      // （按钮 26 → 容器 32），角标锚在容器上就会相对内容整体上移、看起来'飘'在角外。
+      node := engine.Document.FindElementById('bg1');
+      Check((node <> nil) and (node.Count >= 2) and
+        ((node.BoxRect.Bottom - node.BoxRect.Top) =
+         (node[0].BoxRect.Bottom - node[0].BoxRect.Top)),
+        '组件库：ui-badge 容器不被子项默认 margin 撑高');
+      // sup 高 16、top:-6 → 与内容顶边重叠恒为 10px（与子项 margin 无关）
+      Check((node.Count >= 2) and ((node[1].BoxRect.Bottom - node[0].BoxRect.Top) = 10),
+        '组件库：ui-badge 角标贴住内容右上角（未被默认 margin 顶飞）');
+
       // ui-progress 进度与状态修饰类
       node := engine.Document.FindElementById('prg1');
       Check((node <> nil) and node.HasClass('ui-progress') and node.HasClass('is-success'),

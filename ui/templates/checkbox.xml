@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- ui-checkbox：受控勾选（点击整行切换；勾号用字形，无伪元素可用） -->
+<!-- ui-checkbox：受控勾选（点击整行切换）。
+     勾号用内联矢量 SVG（fill=currentColor）而非字形 ✓：字体勾号在 16px 盒内受 ClearType
+     网格对齐影响，笔画呈锯齿块状且随字体回退漂移；矢量路径任意缩放下平滑，颜色随所在
+     节点的 color 继承，勾选/禁用状态各自由主题 CSS 着色。 -->
 <panel class="ui-checkbox" :class="{ 'is-checked': props.modelValue, 'is-disabled': props.disabled }"
   :disabled="props.disabled" x-onclick="UiToggle(props)">
   <panel class="ui-checkbox__box">
-    <label class="ui-checkbox__mark" x-if="props.modelValue" text="✓"/>
+    <svg class="ui-checkbox__mark" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="currentColor"/></svg>
   </panel>
   <label class="ui-checkbox__label" :text="props.text"/>
 </panel>

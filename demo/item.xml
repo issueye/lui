@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- M5 include 模板：单条待办结构（运行时 AddElement('<include src="item.xml"/>') 复用） -->
+<!-- M5 include 模板：单条待办结构（运行时 AddElement('<include src="item.xml"/>') 复用）。
+     勾号用内联矢量 SVG（见 todo-light.css 说明），随 .item.done 显示。 -->
 <panel class="item" onclick="TodoToggleClick">
-  <panel class="check"><label class="check-mark" text="✓"/></panel>
+  <panel class="check"><svg class="check-mark" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="currentColor"/></svg></panel>
   <label class="text" text="新任务"/>
   <panel class="del" onclick="TodoDeleteClick"><label text="×"/></panel>
 </panel>
