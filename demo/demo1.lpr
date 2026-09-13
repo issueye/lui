@@ -16,6 +16,8 @@ program demo1;
   demo1 ui dark          M8 组件库演示（深色）
   demo1 uiform           M8 表单演示（ui-form 校验 / 勾选 / 单选 / 滑块 / 数字输入）
   demo1 uiform dark      M8 表单演示（深色）
+  demo1 agent            M10 对话式 AI Agent（工具调用：计算器 / 时钟 / 知识检索）
+  demo1 agent dark       M10 对话式 AI Agent（深色）
   demo1 watch            开启热重载：运行中修改 *.css / *.xml 自动生效
   demo1 shot [WxH]       渲染到 shot.png 后退出（布局/观感自动核对）
   demo1 todo demo shot   同上，但先模拟交互（输入 + Enter 添加 / 悬停 / 完成 / 删除 / 滚动）
@@ -153,7 +155,7 @@ end;
 // 导航条：当前页按钮加 active（其余保持基础类，避免高亮残留）
 procedure TDemoForm.UpdateNav;
 const
-  Pages: array[0..8] of string = ('login', 'list', 'todo', 'script', 'm7', 'ui', 'uidlg', 'uidisp', 'uinav');
+  Pages: array[0..9] of string = ('login', 'list', 'todo', 'script', 'm7', 'ui', 'uidlg', 'uidisp', 'uinav', 'agent');
 var
   i: Integer;
   node: TXuiNode;
@@ -376,7 +378,7 @@ procedure TDemoForm.SimulateInteraction;
 var
   engine: TXuiEngine;
   list, item, inputNode: TXuiNode;
-  cx, cy: Integer;
+  cx, cy, pump: Integer;
 
   procedure ClickAt(ANode: TXuiNode);
   begin
@@ -504,6 +506,23 @@ begin
     Exit;
   end;
 
+  // agent 页（M10）：点「计算 12*(3+4)」快捷短语 → 走完整工具调用回路
+  // （步骤卡「执行中…」→ 完成后由 Typewriter 逐字输出回答；见 agent.ts）
+  if FBaseName = 'agent' then
+  begin
+    engine.Draw(nil, FHost.ClientRect);   // 首次点击前先布局：否则 BoxRect 未算，点击落空
+    ClickAt(engine.Document.FindElementById('p-calc'));
+    // 工具调用 + Typewriter 全在异步链上（ui.delay / await），需要引擎 Tick 推进定时器；
+    // 单次 Tick 只让首个到期定时器生效，故循环泵到流程走完（约 40 × 60ms 足够）。
+    for pump := 0 to 60 do
+    begin
+      engine.Tick(GetTickCount64 + QWord(pump) * 60);
+      engine.Draw(nil, FHost.ClientRect);
+    end;
+    engine.HandleMouseMove(10, 10);
+    Exit;
+  end;
+
   // todo
   inputNode := engine.Document.FindElementById('new-todo');
   if inputNode <> nil then
@@ -564,6 +583,8 @@ begin
       page := 'uidisp'
     else if arg = 'uinav' then
       page := 'uinav'
+    else if arg = 'agent' then
+      page := 'agent'
     else if arg = 'uiform' then
       page := 'ui-form'
     else if arg = 'uidialog' then

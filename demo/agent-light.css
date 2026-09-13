@@ -1,0 +1,377 @@
+/* lui M10 —— 对话式 AI Agent（浅色）
+   会话区固定高度 + overflow:hidden 滚动；用户气泡靠右、助手靠左；
+   工具调用以步骤卡内联呈现（含执行中 / 完成 / 失败三态）。 */
+
+window {
+  background-color: #eef1f5;
+}
+
+.agent {
+  padding: 10px 12px 12px 12px;
+}
+
+/* ---------- 顶栏 ---------- */
+
+.head {
+  display: flex;
+  align-items: center;
+  column-gap: 8px;
+  margin-bottom: 6px;
+}
+
+.head__title {
+  font-size: 15px;
+  font-weight: bold;
+  color: #1f1f1f;
+  margin: 0;
+}
+
+.pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  padding: 0 8px;
+  background-color: #e2e8f0;
+  border-radius: 9px;
+}
+
+.pill--on {
+  background-color: #1677ff;
+}
+
+.pill__text {
+  font-size: 11px;
+  color: #4b5563;
+  margin: 0;
+}
+
+.pill--on .pill__text {
+  color: #ffffff;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.head__btn {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: #4b5563;
+  background-color: #ffffff;
+  border: 1px solid #d7dbe2;
+  border-radius: 4px;
+  transition: all 120ms ease;
+}
+
+.head__btn:hover {
+  background-color: #f2f4f8;
+  color: #1677ff;
+}
+
+.status {
+  font-size: 11px;
+  color: #8c8c8c;
+  margin: 0 0 6px 0;
+}
+
+/* ---------- 设置面板 ---------- */
+
+.cfg {
+  padding: 8px 10px 10px 10px;
+  margin-bottom: 8px;
+  background-color: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.cfg__label {
+  font-size: 11px;
+  color: #6b7280;
+  margin: 0 0 2px 0;
+}
+
+.cfg__input {
+  height: 26px;
+  margin: 0 0 6px 0;
+  background-color: #f8fafc;
+  border: 1px solid #d7dbe2;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.cfg__input:focus {
+  border-color: #1677ff;
+  background-color: #ffffff;
+}
+
+.cfg__row {
+  display: flex;
+  align-items: center;
+  column-gap: 8px;
+}
+
+.cfg__toggle {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: #4b5563;
+  background-color: #ffffff;
+  border: 1px solid #d7dbe2;
+  border-radius: 4px;
+  transition: all 120ms ease;
+}
+
+.cfg__toggle.is-on {
+  color: #ffffff;
+  background-color: #52c41a;
+  border-color: #52c41a;
+}
+
+.cfg__hint {
+  font-size: 11px;
+  color: #9ca3af;
+  margin: 0;
+}
+
+/* ---------- 快捷短语 ---------- */
+
+.chips {
+  display: flex;
+  flex-direction: column;
+  row-gap: 5px;
+  margin-bottom: 8px;
+}
+
+.chips__row {
+  display: flex;
+  column-gap: 6px;
+  height: 26px;
+}
+
+.chip {
+  flex: 1;
+  height: 26px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: #1677ff;
+  background-color: #e6f4ff;
+  border: 1px solid #91caff;
+  border-radius: 13px;
+  transition: all 120ms ease;
+}
+
+.chip:hover {
+  background-color: #d0e8ff;
+}
+
+/* ---------- 会话区 ---------- */
+
+.chat {
+  overflow: hidden;
+  height: 460px;
+  padding: 10px;
+  background-color: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.msg {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 14px;
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  column-gap: 8px;
+}
+
+.row--user {
+  justify-content: flex-end;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  row-gap: 5px;
+  flex: 1;
+}
+
+.avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 13px;
+}
+
+.avatar--ai {
+  background-color: #1677ff;
+}
+
+.avatar--user {
+  background-color: #52c41a;
+}
+
+.avatar__text {
+  font-size: 11px;
+  font-weight: bold;
+  color: #ffffff;
+  margin: 0;
+}
+
+.role {
+  font-size: 11px;
+  color: #9ca3af;
+  margin: 0;
+}
+
+.bubble {
+  padding: 8px 10px;
+  background-color: #f1f5f9;
+  border-radius: 8px;
+}
+
+.bubble--user {
+  background-color: #e6f4ff;
+}
+
+.bubble__text {
+  font-size: 13px;
+  color: #1f2937;
+  margin: 0;
+}
+
+/* ---------- 工具步骤卡 ---------- */
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  row-gap: 4px;
+}
+
+.step {
+  display: flex;
+  align-items: flex-start;
+  column-gap: 6px;
+  padding: 5px 8px;
+  background-color: #fffbe6;
+  border: 1px solid #ffe58f;
+  border-radius: 6px;
+}
+
+.step--error {
+  background-color: #fff2f0;
+  border-color: #ffccc7;
+}
+
+.step__glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  background-color: #faad14;
+  border-radius: 8px;
+}
+
+.step--error .step__glyph {
+  background-color: #ff4d4f;
+}
+
+.step__glyph-text {
+  font-size: 10px;
+  font-weight: bold;
+  color: #ffffff;
+  margin: 0;
+}
+
+.step__main {
+  display: flex;
+  flex-direction: column;
+  row-gap: 1px;
+  flex: 1;
+}
+
+.step__name {
+  font-size: 11px;
+  font-weight: bold;
+  color: #d48806;
+  margin: 0;
+}
+
+.step--error .step__name {
+  color: #d9363e;
+}
+
+.step__run {
+  font-size: 11px;
+  color: #9ca3af;
+  margin: 0;
+}
+
+.step__result {
+  font-size: 11px;
+  color: #4b5563;
+  margin: 0;
+}
+
+.typing {
+  font-size: 11px;
+  color: #1677ff;
+  margin: 0;
+}
+
+/* ---------- 输入区 ---------- */
+
+.composer {
+  display: flex;
+  column-gap: 8px;
+  margin-top: 10px;
+}
+
+.composer__input {
+  flex: 1;
+  height: 32px;
+  margin: 0;
+  background-color: #ffffff;
+  border: 1px solid #c9cdd4;
+  border-radius: 6px;
+  font-size: 13px;
+  transition: all 150ms ease;
+}
+
+.composer__input:focus {
+  border-color: #1677ff;
+  background-color: #f7faff;
+}
+
+.composer__send {
+  width: 76px;
+  height: 32px;
+  font-size: 13px;
+  color: #ffffff;
+  background-color: #1677ff;
+  border-radius: 6px;
+  transition: all 120ms ease;
+}
+
+.composer__send:hover {
+  background-color: #0f6ae8;
+}
+
+.composer__send:active {
+  background-color: #0b56c2;
+}
+
+.composer__send:disabled {
+  background-color: #f2f3f5;
+  color: #b9bec7;
+}

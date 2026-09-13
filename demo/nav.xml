@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 应用内导航（各页 include 本文件）：点按调用宿主 published 方法 PageClick，
-     由按钮的 to 属性决定目标页（login / list / todo / script / m7 / ui / uidisp / uinav / uidlg）；
+     由按钮的 to 属性决定目标页（login / list / todo / script / m7 / ui / uidisp / uinav / uidlg / agent）；
      当前页按钮由宿主加 active 类高亮 -->
 <panel class="nav">
   <button id="nav-login" class="nav-btn" text="登录" to="login" onclick="PageClick"/>
@@ -12,4 +12,5 @@
   <button id="nav-uidisp" class="nav-btn" text="展示" to="uidisp" onclick="PageClick"/>
   <button id="nav-uinav" class="nav-btn" text="导航" to="uinav" onclick="PageClick"/>
   <button id="nav-uidlg" class="nav-btn" text="浮层" to="uidlg" onclick="PageClick"/>
+  <button id="nav-agent" class="nav-btn" text="智能体" to="agent" onclick="PageClick"/>
 </panel>

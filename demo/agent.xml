@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- M10：对话式 AI Agent 演示。逻辑全在 agent.ts；XML 只声明结构与绑定。
+     布局用固定高度而非 flex:1（引擎的 column 主轴 flex-grow 不可靠，见已知问题），
+     与 todo / m7 等页保持同一写法。 -->
+<window title="AI Agent" width="460" height="780">
+  <script src="agent.ts"/>
+  <include src="nav.xml"/>
+  <panel class="agent">
+
+    <panel class="head">
+      <label class="head__title" text="lui Agent"/>
+      <panel class="pill" :class="{ 'pill--on': state.online }">
+        <label class="pill__text" :text="state.online ? '在线' : '本地'"/>
+      </panel>
+      <panel class="spacer"/>
+      <button id="agent-config" class="head__btn" text="设置" onclick="ToggleConfig"/>
+      <button id="agent-clear" class="head__btn" text="清空" onclick="ClearChat"/>
+    </panel>
+
+    <label id="agent-status" class="status" :text="state.status"/>
+
+    <!-- 在线档设置：端点 / 模型 / 密钥（本地兜底无需填写） -->
+    <panel id="agent-cfg" class="cfg" x-show="state.cfg.show">
+      <label class="cfg__label" text="API 端点（OpenAI 兼容）"/>
+      <input id="cfg-url" class="cfg__input" x-model="state.cfg.baseUrl"/>
+      <label class="cfg__label" text="模型"/>
+      <input id="cfg-model" class="cfg__input" x-model="state.cfg.model"/>
+      <label class="cfg__label" text="API Key"/>
+      <input id="cfg-key" class="cfg__input" :password="true" x-model="state.cfg.apiKey"/>
+      <panel class="cfg__row">
+        <button id="agent-mode" class="cfg__toggle" :class="{ 'is-on': state.online }"
+          :text="state.online ? '在线模式：开' : '在线模式：关'" onclick="ToggleOnline"/>
+        <label class="cfg__hint" text="关则纯本地运行；开需端点可用"/>
+      </panel>
+    </panel>
+
+    <!-- 快捷短语：引擎 flex 不支持 wrap，故显式两行两列（文字与点击参数直接内联） -->
+    <panel class="chips">
+      <panel class="chips__row">
+        <button id="p-calc" class="chip" text="计算 12*(3+4)" x-onclick="UsePrompt('计算 12*(3+4)')"/>
+        <button id="p-time" class="chip" text="现在几点了" x-onclick="UsePrompt('现在几点了')"/>
+      </panel>
+      <panel class="chips__row">
+        <button id="p-kb" class="chip" text="lui 有哪些能力" x-onclick="UsePrompt('lui 有哪些能力')"/>
+        <button id="p-both" class="chip" text="99*99 和当前时间" x-onclick="UsePrompt('算一下 99*99 再告诉我时间')"/>
+      </panel>
+    </panel>
+
+    <!-- 会话区：可滚动，固定高度 + overflow:hidden（滚轮滚动） -->
+    <panel id="agent-scroll" class="chat">
+      <panel x-for="m in state.messages">
+        <panel x-key="m.id" class="msg">
+
+          <!-- 用户：气泡靠右、头像在右 -->
+          <panel x-if="m.role === 'user'" class="row row--user">
+            <panel class="bubble bubble--user">
+              <label class="bubble__text" :text="m.text"/>
+            </panel>
+            <panel class="avatar avatar--user">
+              <label class="avatar__text" text="我"/>
+            </panel>
+          </panel>
+
+          <!-- 助手/工具：头像在左，气泡 + 工具步骤卡 -->
+          <panel x-if="m.role !== 'user'" class="row">
+            <panel class="avatar avatar--ai">
+              <label class="avatar__text" text="AI"/>
+            </panel>
+            <panel class="col">
+              <label class="role" text="lui Agent"/>
+              <panel class="bubble" x-show="m.text !== ''">
+                <label class="bubble__text" :text="m.text"/>
+              </panel>
+              <panel class="steps" x-show="m.steps.length > 0">
+                <panel x-for="s in m.steps">
+                  <panel x-key="s.id" class="step" :class="{ 'step--error': s.error }">
+                    <panel class="step__glyph">
+                      <label class="step__glyph-text" :text="s.glyph"/>
+                    </panel>
+                    <panel class="step__main">
+                      <label class="step__name" :text="s.label + ' · ' + s.detail"/>
+                      <label class="step__run" x-if="!s.done" text="执行中…"/>
+                      <label class="step__result" x-if="s.done" :text="s.result"/>
+                    </panel>
+                  </panel>
+                </panel>
+              </panel>
+              <label class="typing" x-if="m.pending" text="● 生成中…"/>
+            </panel>
+          </panel>
+
+        </panel>
+      </panel>
+    </panel>
+
+    <panel class="composer">
+      <input id="agent-input" class="composer__input" x-model="state.draft"
+        onenter="Send" placeholder="输入消息，Enter 发送"/>
+      <button id="agent-send" class="composer__send" text="发送" onclick="Send"
+        :disabled="state.busy"/>
+    </panel>
+
+  </panel>
+</window>

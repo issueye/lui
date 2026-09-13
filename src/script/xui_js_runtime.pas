@@ -570,6 +570,22 @@ function IsNullish(const V: TXuiJsValue): Boolean; inline;
 begin
   Result := (V.Kind = jvUndefined) or (V.Kind = jvNull);
 end;
+
+// 64 位安全的向下/向上取整（Math 单元的 Floor/Ceil 是 32 位 Integer，会截断大数）
+function JsFloor(X: Double): Double; inline;
+begin
+  Result := Trunc(X);
+  if (X < 0) and (Result <> X) then
+    Result := Result - 1;
+end;
+
+function JsCeil(X: Double): Double; inline;
+begin
+  Result := Trunc(X);
+  if (X > 0) and (Result <> X) then
+    Result := Result + 1;
+end;
+
 // JS 数字 → 字符串（整数不带小数点）
 function NumberToString(N: Double): string;
 var
@@ -2201,6 +2217,10 @@ var
 begin
   if AFn.Name = 'now' then
     Exit(MakeNumber(FClockMs));
+  if AFn.Name = 'time' then
+    // 墙钟本地时间字符串：now() 是会话相对毫秒，无法表达"现在几点"；
+    // 智能体（工具调用需要时间戳）等场景用本函数
+    Exit(MakeString(FormatDateTime('yyyy-mm-dd hh:nn:ss', Now)));
   if (AFn.Name = 'clearTimeout') or (AFn.Name = 'clearInterval') then
   begin
     ClearTimer(ArgInt(AArgs, 0));
@@ -3766,6 +3786,7 @@ begin
   DefineNative(uiObj, 'clearInterval', @NativeUiTimer);
   DefineNative(uiObj, 'delay', @NativeUiTimer);
   DefineNative(uiObj, 'now', @NativeUiTimer);
+  DefineNative(uiObj, 'time', @NativeUiTimer);
   FGlobal.SetOwn('ui', ObjectValue(uiObj));
   // 响应式内核（M7）
   DefineNative(FGlobal, 'reactive', @NativeVue);
@@ -3850,9 +3871,11 @@ begin
   end;
   d := ToNumberValue(ArgAt(AArgs, 0));
   if AFn.Name = 'abs' then Exit(MakeNumber(Abs(d)));
-  if AFn.Name = 'floor' then Exit(MakeNumber(Floor(d)));
-  if AFn.Name = 'ceil' then Exit(MakeNumber(Ceil(d)));
-  if AFn.Name = 'round' then Exit(MakeNumber(Floor(d + 0.5)));
+  // 注意：不能用 Math 单元的 Floor/Ceil —— 它们返回 32 位 Integer，会把 |x| ≥ 2^31
+  // 的值静默截断（如 Math.round(9801000000) → 1211065408）。Trunc 返回 Int64，安全。
+  if AFn.Name = 'floor' then Exit(MakeNumber(JsFloor(d)));
+  if AFn.Name = 'ceil' then Exit(MakeNumber(JsCeil(d)));
+  if AFn.Name = 'round' then Exit(MakeNumber(JsFloor(d + 0.5)));   // JS：半值向 +∞ 取整
   if AFn.Name = 'trunc' then Exit(MakeNumber(Trunc(d)));
   if AFn.Name = 'sign' then
   begin

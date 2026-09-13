@@ -6534,6 +6534,13 @@ begin
 
       'ui.delay 到点 resolve(undefined)，ui.now 为相对时钟');
 
+    // ui.time()：墙钟本地时间字符串（now() 是会话相对毫秒，表达不了当前时刻）
+    sink.Log.Clear;
+    Run('console.log("T|" + ui.time() + "|");');
+    src := sink.Log.Text;
+    Check((Pos('T|', src) > 0) and (Length(Trim(src)) > 12),
+      'ui.time 返回墙钟时间字符串');
+
 
 
 
@@ -7954,6 +7961,10 @@ end;
 // fake 执行器：http → 200 + 响应体=URL；含 "slow" → 超时失败（SyncMode 下确定性触发）
 
 
+// 最近一次 fake http 请求携带的请求头（供断言 opts.headers 契约）
+var
+  IoLastHeaders: string;
+
 procedure IoFakeExecute(AReq: TXuiIoRequest; ARes: TXuiIoResult);
 
 
@@ -7979,6 +7990,7 @@ begin
 
 
   ARes.Ok := True;
+  IoLastHeaders := AReq.Headers;
 
 
   ARes.Status := 200;
@@ -8186,6 +8198,16 @@ begin
 
 
     Check(Pos('t200u1', src) > 0, 'http.get 响应对象（status/text）');
+
+    // opts.headers 契约：{headers:{...}} 里的头必须真正发出；选项键（timeout）不得混入请求头
+    IoLastHeaders := '';
+    src := RunAndPump(
+      'ui.http.post("u2", "{}", { timeout: 5000, headers: { "Content-Type": "application/json", "X-Token": "abc" } }).then(function (r) { console.log("h" + r.status); });');
+    Check((Pos('Content-Type: application/json', IoLastHeaders) > 0) and
+      (Pos('X-Token: abc', IoLastHeaders) > 0),
+      'http opts.headers 作为请求头发送（嵌套对象，非平铺）');
+    Check(Pos('timeout', IoLastHeaders) = 0,
+      'http opts 的选项键不混入请求头（timeout 被排除）');
 
 
 
@@ -9785,6 +9807,183 @@ begin
   end;
 end;
 
+// fake HTTP 执行器（定义见本段末尾）：模拟 OpenAI 兼容 /chat/completions
+procedure AgentFakeHttp(AReq: TXuiIoRequest; ARes: TXuiIoResult); forward;
+
+// ---- M10 对话式 AI Agent 演示页（demo/agent.xml + agent.ts）----
+// 覆盖：整页装配无脚本错误、首屏问候、离线工具调用回路（规划 → 工具执行 → 步骤卡 → 回答）、
+// 多意图规划、未知输入兜底，以及在线档 agent loop（注入 fake HTTP 执行器，确定性）。
+procedure TestAgentPage;
+var
+  engine: TXuiEngine;
+  fake: TFakeRenderer;
+  script: TXuiScript;
+  bridge: TXuiDomBridge;
+  sink: TScriptSink;
+  node, msgNode: TXuiNode;
+  errs: Integer;
+  pumpClock: Integer;
+  xmlPath, cssPath: string;
+
+  // 走完整异步链：定时器 + I/O + 微任务，模拟宿主连续 Tick
+  procedure Pump(Times: Integer);
+  var
+    t: Integer;
+  begin
+    // 时钟必须跨调用单调推进：每次从同一值重开会把虚拟时钟拨回，
+    // 后创建的定时器永远到不了期（早前 Pump 版本的真实缺陷）
+    for t := 1 to Times do
+    begin
+      Inc(pumpClock, 20);
+      engine.Tick(1000 + QWord(pumpClock));   // 定时器到期 + I/O 完成 + 排水
+      DrawEngine(engine);
+    end;
+  end;
+
+  // 子树文本汇总（TXuiNode.Text 只含本节点文本，不含后代）
+  function TextOf(ANode: TXuiNode): string;
+  var
+    k: Integer;
+  begin
+    Result := '';
+    if ANode = nil then Exit;
+    Result := ANode.Text;
+    for k := 0 to ANode.Count - 1 do
+      Result := Result + ' ' + TextOf(ANode[k]);
+  end;
+
+  // 末条消息节点（class=msg）。注：x-for 会保留一个容器包裹克隆体，
+  // 故不能直接取 agent-scroll 的末子节点
+  procedure CollectMsgs(ANode: TXuiNode; AList: TList);
+  var
+    k: Integer;
+  begin
+    if ANode = nil then Exit;
+    if ANode.HasClass('msg') then AList.Add(ANode)
+    else
+      for k := 0 to ANode.Count - 1 do
+        CollectMsgs(ANode[k], AList);
+  end;
+
+  function LastMessage: TXuiNode;
+  var
+    list: TList;
+  begin
+    Result := nil;
+    list := TList.Create;
+    try
+      CollectMsgs(engine.Document.FindElementById('agent-scroll'), list);
+      if list.Count > 0 then
+        Result := TXuiNode(list[list.Count - 1]);
+    finally
+      list.Free;
+    end;
+  end;
+
+begin
+  WriteLn('--- M10 演示页（demo/agent）---');
+  xmlPath := DemoFilePath('agent.xml');
+  if xmlPath = '' then
+  begin
+    WriteLn('SKIP  未找到 demo/agent.xml');
+    Exit;
+  end;
+  engine := NewTestEngine(fake);
+  script := TXuiScript.Create;
+  sink := TScriptSink.Create;
+  bridge := TXuiDomBridge.Create(engine, script);
+  try
+    bridge.Install;
+    engine.AttachScript(script);
+    script.OnError := @sink.HandleError;
+    script.Interp.OnLog := @sink.HandleLog;
+    cssPath := DemoFilePath('agent-light.css');
+    if cssPath <> '' then
+      engine.LoadStyleSheetFromFile(cssPath);
+    engine.LoadFromFile(xmlPath);   // 页面内 <script src="agent.ts"/>
+    pumpClock := 0;
+    DrawEngine(engine);
+
+    Check(script.ErrorCount = 0, '演示页 agent：整页加载无脚本错误');
+
+    // 首屏问候（顶层播种，CLI 单次出图也能看到）
+    msgNode := LastMessage;
+    Check((msgNode <> nil) and (Pos('lui Agent', TextOf(msgNode)) > 0),
+      '演示页 agent：首屏问候已渲染');
+
+    // --- 离线档：计算意图 → 工具调用 → 步骤卡 → 回答 ---
+    errs := script.ErrorCount;
+    script.CallGlobal('UsePrompt', [script.Str('计算 12*(3+4)')]);
+    script.FlushReactive;
+    Pump(400);
+    Check(script.ErrorCount = errs, '演示页 agent：离线工具回路无脚本错误');
+    node := engine.Document.FindElementById('agent-status');
+    Check((node <> nil) and (Pos('完成', node.Text) > 0),
+      '演示页 agent：离线流程结束（状态=完成）');
+
+    msgNode := LastMessage;
+    Check((msgNode <> nil) and (Pos('84', TextOf(msgNode)) > 0),
+      '演示页 agent：计算器工具结果进入回答（12*(3+4)=84）');
+    // 步骤卡：名称含工具标签与实参
+    Check((msgNode <> nil) and (msgNode.Count > 0) and
+      (Pos('计算器', TextOf(msgNode)) > 0) and (Pos('12*(3+4)', TextOf(msgNode)) > 0),
+      '演示页 agent：工具步骤卡展示工具名与参数');
+
+    // --- 离线档：多意图（算式 + 时间）→ 两次工具调用 ---
+    script.CallGlobal('UsePrompt', [script.Str('算一下 99*99 再告诉我时间')]);
+    script.FlushReactive;
+    Pump(400);
+    msgNode := LastMessage;
+    Check((msgNode <> nil) and (Pos('9801', TextOf(msgNode)) > 0),
+      '演示页 agent：大数乘法不走 32 位截断（99*99=9801）');
+    Check((msgNode <> nil) and (Pos('当前时间', TextOf(msgNode)) > 0),
+      '演示页 agent：多意图规划命中时间工具');
+
+    // --- 离线档：无工具命中 → 兜底引导语 ---
+    script.CallGlobal('UsePrompt', [script.Str('随便说点什么')]);
+    script.FlushReactive;
+    Pump(400);
+    msgNode := LastMessage;
+    Check((msgNode <> nil) and (Pos('可以调用工具', TextOf(msgNode)) > 0),
+      '演示页 agent：无工具命中时给出兜底提示');
+
+    // --- 在线档：注入 fake HTTP 执行器，走 agent loop（tool_calls → 本地执行 → 终答）---
+    script.IO.SyncMode := True;
+    script.IO.Executor := @AgentFakeHttp;
+    script.CallGlobal('ToggleOnline', []);   // 切到在线档（state.online = true）
+    script.FlushReactive;
+    errs := script.ErrorCount;
+    script.CallGlobal('UsePrompt', [script.Str('计算 5+5')]);
+    script.FlushReactive;
+    Pump(400);
+    Check(script.ErrorCount = errs, '演示页 agent：在线档 agent loop 无脚本错误');
+    msgNode := LastMessage;
+    Check((msgNode <> nil) and (Pos('10', TextOf(msgNode)) > 0),
+      '演示页 agent：在线 tool_calls 经本地执行后回填并给出终答');
+  finally
+    bridge.Free;
+    sink.Free;
+    script.Free;
+    engine.Free;
+  end;
+end;
+
+// fake HTTP：模拟 OpenAI 兼容 /chat/completions。
+// 首轮返回 calculator 的 tool_call；带 tool 结果后再问则返回终答。
+procedure AgentFakeHttp(AReq: TXuiIoRequest; ARes: TXuiIoResult);
+begin
+  ARes.Ok := True;
+  ARes.Status := 200;
+  ARes.Headers := 'Content-Type: application/json';
+  if Pos('tool_call_id', AReq.Body) > 0 then
+    ARes.Data := '{"choices":[{"message":{"role":"assistant","content":"在线回答：结果是 10。"}}]}'
+  else
+    ARes.Data := '{"choices":[{"message":{"role":"assistant","content":"",' +
+      '"tool_calls":[{"id":"call_1","type":"function","function":{' +
+      '"name":"calculator","arguments":"{\"expr\":\"5+5\"}"}}]}}]}';
+end;
+
+
 // P3 集成：await ui.delay 后改 DOM（async 机器 × 定时器 × 排水全链路）
 
 
@@ -10986,6 +11185,7 @@ begin
     TestScriptIO;
     TestScriptReactive;
     TestDemoPage;
+    TestAgentPage;
 
 
 

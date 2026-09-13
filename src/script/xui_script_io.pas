@@ -407,6 +407,8 @@ var
   url, host, path, wUrl, wHost, wPath, wHeaders, ws: WideString;
   rest, port: Integer;
   secure, isPost: Boolean;
+  verb: PWideChar;
+  flags: DWORD;
   hs, hc, hr: THandle;
   bodyBytes: RawByteString;
   bodyLen: DWORD;
@@ -463,11 +465,18 @@ begin
       raise Exception.Create('无法连接 ' + Utf8Encode(wHost));
     try
       isPost := (AReq.Kind = iokHttpPost);
-      if secure then
-        hr := WinHttpOpenRequest(hc, 'POST', PWideChar(wPath), nil, nil, nil,
-          WINHTTP_FLAG_SECURE)
+      // 动词由请求种类决定，TLS 只决定端口与 WINHTTP_FLAG_SECURE：
+      // 此前用 secure 选动词，导致 https GET 发成 POST、http POST 发成 GET
+      if isPost then
+        verb := 'POST'
       else
-        hr := WinHttpOpenRequest(hc, 'GET', PWideChar(wPath), nil, nil, nil, 0);
+        verb := 'GET';
+      if secure then
+        flags := WINHTTP_FLAG_SECURE
+      else
+        flags := 0;
+      hr := WinHttpOpenRequest(hc, PWideChar(verb), PWideChar(wPath), nil, nil,
+        nil, flags);
       if hr = 0 then
         raise Exception.Create('WinHttpOpenRequest 失败');
       try
@@ -668,18 +677,42 @@ begin
     Result := FInterp.ArgInt([FInterp.PropValue(AOpts, 'timeout')], 0);
 end;
 
+// opts.headers（对象）→ "Name: value" 行。文档契约为 {timeout?, headers?}：
+// 此前直接把 opts 的顶层属性当请求头发，导致 opts.headers 整对象被 toString 成一行
+// 垃圾头（"headers: [object Object]"），而 Content-Type / Authorization 根本没发出。
+// 现优先取嵌套 headers；无嵌套时兼容旧的平铺写法，但跳过 timeout / signal 选项键。
 function TXuiScriptIO.OptHeaders(const AOpts: TXuiJsValue): string;
 var
-  o: TXuiJsObject;
+  o, hdrObj: TXuiJsObject;
+  hdrVal: TXuiJsValue;
   i: Integer;
+
+  procedure AddProp(AObj: TXuiJsObject; AIndex: Integer);
+  var
+    nm: string;
+  begin
+    nm := TXuiJsProp(AObj.Props[AIndex]).Name;
+    if (nm = 'timeout') or (nm = 'signal') then
+      Exit;
+    Result := Result + nm + ': ' +
+      FInterp.ToStringValue(TXuiJsProp(AObj.Props[AIndex]).Value) + #13#10;
+  end;
+
 begin
   Result := '';
   if (AOpts.Kind <> jvObject) or (AOpts.Obj = nil) then
     Exit;
   o := AOpts.Obj;
+  hdrVal := o.GetOwn('headers');
+  if (hdrVal.Kind = jvObject) and (hdrVal.Obj <> nil) then
+  begin
+    hdrObj := hdrVal.Obj;
+    for i := 0 to hdrObj.Props.Count - 1 do
+      AddProp(hdrObj, i);
+    Exit;
+  end;
   for i := 0 to o.Props.Count - 1 do
-    Result := Result + TXuiJsProp(o.Props[i]).Name + ': ' +
-      FInterp.ToStringValue(TXuiJsProp(o.Props[i]).Value) + #13#10;
+    AddProp(o, i);
 end;
 
 procedure TXuiScriptIO.CheckSignal(const AOpts: TXuiJsValue);

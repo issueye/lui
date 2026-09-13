@@ -650,6 +650,10 @@ begin
 
   // ui.version（ui.now / ui.setTimeout 等定时器已由运行时在 P2 注册，此处并入同对象）
   FScript.RegisterValue('ui.version', FScript.Str('lui M8'));
+  // 真实 I/O（M6 P4）：ui.http / ui.fs / ui.storage 由 TXuiScript.IO 懒安装——若页面上
+  // 没人显式取过 .IO（宿主/测试才会取），脚本里的 ui.http 就是 undefined。这里在页面
+  // 装配时主动装配一次，保证 <script> 中的 ui.http / ui.fs / ui.storage 一定可用。
+  FScript.IO;
   // ui.popup(node, {anchor, placement, offsetX, offsetY})：浮层挂到文档根并定位（M8 ADR 24）
   FScript.RegisterNative('ui.popup', @NativePopup);
   FScript.RegisterNative('ui.include', @NativeInclude);   // 脚本 include（只执行一次）

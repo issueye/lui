@@ -28,12 +28,12 @@ bin/lui-render.exe demo/ui_gallery.xml
 | 目录 | 内容 |
 | --- | --- |
 | `src/core` `src/css` `src/layout` `src/render` | 引擎：DOM/样式/布局/渲染（GDI 与 GDI+ 后端，SVG 矢量） |
-| `src/ui` | 交互/行为/宿主/引擎门面 + `xui_app.pas`（应用装配门面） |
+| `src/ui` | 交互/行为/宿主/引擎门面 + `xui_app.pas`（装配门面）+ `xui_embed.pas`（资源内嵌运行时） |
 | `src/script` | TS 子集脚本引擎：解释器 + DOM 桥 + 响应式绑定 + I/O |
 | `ui/` | 组件库（`ui-*` 标签；`ui/index.ts` 入口、`templates/` 模板、`theme/` 主题） |
-| `demo/` | 演示页面（login / list / todo / script / m7 / ui / uildg / uidisp / uinav） |
-| `tools/renderer` | 独立渲染器 lui-render（CLI + GUI） |
-| `tests/` | 单元测试（`npm test` 运行，当前 633 项） |
+| `demo/` | 演示页面（login / list / todo / script / m7 / ui / uildg / uidisp / uinav / **agent**） |
+| `tools/renderer` | 独立渲染器 lui-render（CLI + GUI）与单程序版工程 |
+| `tests/` | 单元测试（`npm test` 运行，当前 647 项） |
 
 ## 文档
 
@@ -42,6 +42,7 @@ bin/lui-render.exe demo/ui_gallery.xml
 - `docs/M7-响应式绑定设计方案.md` —— 响应式绑定（Vue 3 对照）
 - `docs/M8-组件库设计方案.md` —— 组件库
 - `docs/M9-独立渲染器设计方案.md` —— lui-render 渲染器
+- `docs/M10-AI-Agent设计方案.md` —— 对话式 AI Agent（工具调用 / 离线+在线双档）
 
 ## lui-render CLI
 
@@ -53,6 +54,7 @@ lui-render <输入.xml|svg> [更多输入...] [选项]
   --json       结果 JSON 汇总（stdout）；日志走 stderr
   --bench <N>  渲染后重复 N 次完整重排并输出耗时（性能基准）
   --watch      依赖变更自动重跑         --version / --help
+  --list-embedded  列出 exe 内嵌资源    --add-page <xml>  输出页面资源清单（供打包）
 ```
 
 退出码：0 全部成功；1 渲染/输入错误；2 参数错误；3 批量部分失败。
@@ -66,6 +68,33 @@ npm run pack        # 构建 + 组装 dist/lui/ + 压缩 lui-<版本>-win64.zip
 
 包内布局：`lui-render.exe` / `demo1.exe` 在根，`pages/` 含演示页面与 `ui/` 运行时资源。
 `cd pages` 后运行 `..\demo1.exe login` 或 `..\lui-render.exe ui.xml -o out.png`。
+
+## 单程序分发（资源内嵌）
+
+```bash
+npm run single      # 生成内嵌资源 → 编译 → 冒烟，产出 bin/lui-render-single.exe
+```
+
+把演示页面（xml/css/ts/svg）与 `ui/` 组件库运行时（组件脚本 + 模板 + 主题）一并编码进
+可执行文件，产出一个**不依赖任何外部文件**的 `lui-render-single.exe`（约 28 MB）。
+拷到任意目录即可出图，无需携带 `ui/` 与 `pages/`：
+
+```bash
+lui-render-single.exe ui_gallery.xml -o out.png -w 560 -H 980 -t light   # 页面名直接来自内嵌集
+lui-render-single.exe --list-embedded                                    # 查看内嵌了哪些资源
+```
+
+设计要点（见 M9 ADR 34）：
+
+- **磁盘优先的超集语义**：命令行给的文件若在磁盘上存在则直接用磁盘文件，内嵌资源只在
+  找不到时参与解析。因此同一个 exe 既能渲染内嵌演示页，也能渲染任意外部 XML（改工作区
+  文件立即生效，不必重新内嵌）。
+- **解包而非虚拟文件系统**：运行时按内容指纹把资源解包到 `%TEMP%\lui-embed-<指纹>`
+  （带就绪标记，仅首次运行解包），再走引擎既有文件访问路径，因此相对引用、`<include>`、
+  `<script src>`、组件模板、SVG、依赖热重载全部照旧可用。
+- **资源发现单一来源**：打包脚本调用渲染器自身的 `--add-page` 解析每页的关联资源
+  （同名 css/ts、`nav-*.css`、`<include src>`、`<script src>`），规则与引擎同源，不重复维护。
+- **可定制**：`node scripts/embed.js --pages demo/login.xml,demo/ui_gallery.xml` 只内嵌指定页。
 
 ## 脚本页写法（Vue 3 风格）
 
@@ -81,6 +110,23 @@ npm run pack        # 构建 + 组装 dist/lui/ + 压缩 lui-<版本>-win64.zip
 const state = reactive({ n: 0 });
 function OnAdd() { state.n = state.n + 1; }   // 只改状态，UI 自动更新
 ```
+
+## 对话式 AI Agent（demo/agent）
+
+用 lui 现有能力实现的多轮会话 + 工具调用应用，演示完整的 agent 回路。
+
+```bash
+bin/lui-render.exe demo/agent.xml -o agent.png -w 460 -H 780 -t light   # CLI 出图
+demo/demo1.exe agent demo   # GUI：点快捷短语走完整工具回路
+```
+
+- **离线档（默认）**：内置规则规划器解析意图 → 顺序调用工具 → 据结果拼装回答，再用打字机
+  逐字输出。纯本地、确定性，无需网络与密钥，CI/截图都走这一档。
+- **在线档（可选）**：填入 OpenAI 兼容端点（设置面板），走真正的 agent loop——
+  `tool_calls` → 本地执行 → 以 `role=tool` 回填 → 循环至终答；失败自动回落离线档。
+- **工具本地执行**：计算器（自研表达式求值器，非 `eval`）/ 当前时间 / 知识检索。
+
+## 脚本页写法（Vue 3 风格）
 
 支持 `x-if` / `x-for`（含 `x-key` 键控 diff）/ `x-model` / `:class` 对象语法 /
 `computed` / `watch` / `onMount` / `component()` 自定义组件（props/slot/回调 props）。
