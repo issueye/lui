@@ -42,6 +42,14 @@ const projects = {
   demo: { name: 'Demo 应用程序', lpi: 'demo/demo1.lpi' }
 };
 
+// 单程序版（M9-P4）：需先生成内嵌资源单元再编译，整体交给 scripts/embed.js 编排，
+// 不走下面的通用 lazbuild 流程
+if (target === 'single') {
+  const res = spawnSync(process.execPath, [path.resolve(__dirname, 'embed.js')],
+    { stdio: 'inherit', cwd: path.resolve(__dirname, '..') });
+  process.exit(res.status || 0);
+}
+
 function buildTarget(key) {
   const p = projects[key];
   if (!p) {

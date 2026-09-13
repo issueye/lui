@@ -10,5 +10,8 @@ demo/lib/x86_64-win64/*
 tools/lib/
 bin/
 tools/renderer/lib/
+tools/renderer/lib-single/
+tools/renderer/embedded/
 tools/renderer/*.res
 dist/
+.commandcode/

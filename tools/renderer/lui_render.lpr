@@ -22,7 +22,11 @@ uses
   xui_css_parser, xui_css_match, xui_engine, xui_events, xui_widget,
   xui_input, xui_svg, xui_script, xui_script_dom, xui_script_bind, xui_app,
   {$IFDEF WINDOWS}xui_render_gdiplus,{$ENDIF}
-  xui_host;
+  xui_host, xui_embed
+  // 单程序版（-dLUI_EMBED）额外链接构建期生成的内嵌资源单元；
+  // 该单元在 initialization 中把资源清单注册给 xui_embed
+  {$IFDEF LUI_EMBED}, xui_embed_assets{$ENDIF}
+  ;
 
 const
   AppVersion = '0.9.0';
@@ -41,6 +45,8 @@ type
     Verbose: Boolean;
     Bench: Integer;          // --bench N：渲染后重复 N 次完整重排（性能基准）
     JsonOut: Boolean;        // --json：结果以 JSON 输出到 stdout
+    ListEmbedded: Boolean;   // --list-embedded：列出内嵌资源后退出
+    AddPage: string;         // --add-page <xml>：输出该页面的资源清单（供打包脚本内嵌）
     IsCliMode: Boolean;
   end;
 
@@ -69,6 +75,8 @@ begin
   WriteLn('  --watch                   监听输入文件变更并自动重跑');
   WriteLn('  --bench <次数>            渲染后重复 N 次完整重排并输出耗时（性能基准）');
   WriteLn('  --json                    结果以 JSON 输出到 stdout（日志走 stderr）');
+  WriteLn('  --list-embedded           列出 exe 内嵌的资源（单程序版；普通版为空）');
+  WriteLn('  --add-page <页面.xml>     输出该页面的资源清单（供 npm run embed 打包内嵌）');
   WriteLn('  -v, --verbose             输出详细过程日志');
   WriteLn('  -V, --version             输出版本号');
   WriteLn('  -?, --help                显示此帮助说明');
@@ -87,6 +95,105 @@ begin
   Halt(2);
 end;
 
+{ --list-embedded：列出可执行文件中内嵌的资源（单程序版）；
+  普通版（无内嵌）输出提示后返回，用于自动化验证两种构建的差异 }
+procedure ListEmbeddedAssets;
+var
+  names: TStringList;
+  i: Integer;
+begin
+  if not XuiEmbedAvailable then
+  begin
+    WriteLn('（本可执行文件未内嵌任何资源；单程序版请用 npm run build:single 构建）');
+    Exit;
+  end;
+  names := XuiEmbedNames;
+  try
+    WriteLn(Format('内嵌资源 %d 项:', [names.Count]));
+    for i := 0 to names.Count - 1 do
+      WriteLn('  ' + names[i]);
+  finally
+    names.Free;
+  end;
+end;
+
+{ --add-page：把一个页面 xml 连同其同目录关联资源（同名 css/ts、nav-*.css、
+  <include src>、<script src>、assets/ 下的资产）梳理成清单，供打包脚本暂存内嵌。
+
+  输出协议（stdout，TAB 分隔，供 scripts/embed.js 解析；此模式下不渲染、不打印其它内容）：
+    BASEDIR<TAB><页面绝对目录>
+    FILE<TAB><相对该目录的文件名，'/' 分隔>
+  资源发现规则与引擎一致（同名-主题.css 优先、include/script 相对页面目录解析）。 }
+procedure DumpPageBundle(const APageFile: string);
+var
+  pageDir, pageFile, line, ref, token: string;
+  seen: TStringList;
+  lines: TStringList;
+  i, p, q: Integer;
+
+  procedure Emit(const ARel: string);
+  var
+    norm: string;
+  begin
+    norm := StringReplace(ARel, '\', '/', [rfReplaceAll]);
+    if (norm = '') or (seen.IndexOf(norm) >= 0) then
+      Exit;
+    if not FileExists(pageDir + StringReplace(norm, '/', PathDelim, [rfReplaceAll])) then
+      Exit;
+    seen.Add(norm);
+    WriteLn('FILE'#9 + norm);
+  end;
+
+begin
+  if not FileExists(APageFile) then
+  begin
+    WriteLn(Format('[错误] 页面文件不存在: %s', [APageFile]));
+    Halt(1);
+  end;
+  pageFile := ExpandFileName(APageFile);
+  pageDir := IncludeTrailingPathDelimiter(ExtractFileDir(pageFile));
+  seen := TStringList.Create;
+  lines := TStringList.Create;
+  try
+    WriteLn('BASEDIR'#9 + ExcludeTrailingPathDelimiter(pageDir));
+
+    // 页面自身 + 同名样式/脚本（浅色/深色/无后缀，与 xui_app 的发现顺序一致）
+    Emit(ExtractFileName(pageFile));
+    Emit(ChangeFileExt(ExtractFileName(pageFile), '.ts'));
+    Emit(ChangeFileExt(ExtractFileName(pageFile), '-light.ts'));
+    Emit(ChangeFileExt(ExtractFileName(pageFile), '-dark.ts'));
+    Emit(ChangeFileExt(ExtractFileName(pageFile), '-light.css'));
+    Emit(ChangeFileExt(ExtractFileName(pageFile), '-dark.css'));
+    Emit(ChangeFileExt(ExtractFileName(pageFile), '.css'));
+    Emit('nav-light.css');
+    Emit('nav-dark.css');
+
+    // XML 中的 src 引用（<include src> / <script src>）：仅接受页面目录内的相对路径
+    lines.LoadFromFile(pageFile);
+    for i := 0 to lines.Count - 1 do
+    begin
+      line := lines[i];
+      token := 'src="';
+      p := Pos(token, line);
+      while p > 0 do
+      begin
+        q := PosEx('"', line, p + Length(token));
+        if q = 0 then
+          Break;
+        ref := Trim(Copy(line, p + Length(token), q - (p + Length(token))));
+        // 跳过上级/绝对引用（如 ../ui/index.ts —— 组件库由包内 ui/ 提供）
+        if (ref <> '') and (Pos('..', ref) = 0) and (Pos(':', ref) = 0) and
+           (Copy(ref, 1, 1) <> '/') and (Copy(ref, 1, 1) <> '\') then
+          Emit(ref);
+        p := PosEx(token, line, q + 1);
+      end;
+    end;
+  finally
+    lines.Free;
+    seen.Free;
+  end;
+end;
+
 function ParseCommandLine: Boolean;
 var
   i: Integer;
@@ -100,14 +207,28 @@ var
     AVal := ParamStr(i);
   end;
 
+  { 输入解析（单程序版）：磁盘上的原样路径优先（超集语义）；磁盘上没有时，
+    回落到 exe 内嵌资源（相对路径，'..' 引用不参与内嵌解析）。 }
   procedure AddInput(const AFile: string);
+  var
+    resolved: string;
   begin
-    if not FileExists(AFile) then
+    if FileExists(AFile) then
     begin
-      WriteLn(Format('错误: 输入文件不存在: "%s"', [AFile]));
-      Halt(1);
+      Opt.Inputs.Add(AFile);
+      Exit;
     end;
-    Opt.Inputs.Add(AFile);
+    if Pos('..', AFile) = 0 then
+    begin
+      resolved := XuiEmbedResolve(AFile);
+      if resolved <> '' then
+      begin
+        Opt.Inputs.Add(resolved);
+        Exit;
+      end;
+    end;
+    WriteLn(Format('错误: 输入文件不存在: "%s"', [AFile]));
+    Halt(1);
   end;
 
 begin
@@ -123,6 +244,8 @@ begin
   Opt.Verbose := False;
   Opt.Bench := 0;
   Opt.JsonOut := False;
+  Opt.ListEmbedded := False;
+  Opt.AddPage := '';
   Opt.IsCliMode := False;
 
   i := 1;
@@ -177,6 +300,10 @@ begin
     end
     else if arg = '--json' then
       Opt.JsonOut := True
+    else if arg = '--list-embedded' then
+      Opt.ListEmbedded := True
+    else if arg = '--add-page' then
+      NeedValue('--add-page', Opt.AddPage)
     else if (arg = '-v') or (arg = '--verbose') then
       Opt.Verbose := True
     else if (Copy(arg, 1, 1) = '-') and (arg <> '-') then
@@ -184,6 +311,19 @@ begin
     else
       AddInput(arg);
     Inc(i);
+  end;
+
+  if Opt.ListEmbedded then
+  begin
+    ListEmbeddedAssets;
+    Halt(0);
+  end;
+
+  // --add-page：仅输出资源清单（供打包脚本内嵌），不渲染
+  if Opt.AddPage <> '' then
+  begin
+    DumpPageBundle(Opt.AddPage);
+    Halt(0);
   end;
 
   if Opt.Inputs.Count = 0 then
@@ -197,35 +337,6 @@ begin
     ParamError('-o 只能与单个输入搭配；多输入请使用 -O/--outdir');
 
   Opt.IsCliMode := (Opt.OutputFile <> '') or (Opt.OutDir <> '') or (Opt.Inputs.Count > 1);
-end;
-
-{ 寻找项目根目录 }
-function FindRepoRoot: string;
-var
-  dir: string;
-
-  function LooksLikeRoot(const ADir: string): Boolean;
-  begin
-    Result := DirectoryExists(ADir + PathDelim + 'ui') and
-      FileExists(ADir + PathDelim + 'ui' + PathDelim + 'index.ts');
-  end;
-
-begin
-  Result := '';
-  dir := GetCurrentDir;
-  while (dir <> '') and (Length(dir) > 3) do
-  begin
-    if LooksLikeRoot(dir) then
-      Exit(dir);
-    dir := ExtractFileDir(dir);
-  end;
-  dir := ExtractFilePath(ParamStr(0));
-  while (dir <> '') and (Length(dir) > 3) do
-  begin
-    if LooksLikeRoot(dir) then
-      Exit(dir);
-    dir := ExtractFileDir(dir);
-  end;
 end;
 
 // 确保输出目录存在；失败给出中文提示
