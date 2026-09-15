@@ -90,6 +90,10 @@ function main() {
   copy(path.join('ui', 'templates'), stage);
   copy(path.join('ui', 'theme'), stage);
 
+  // scaffold/ 项目模板（M11）：`lui-render --init` 从它生成工程骨架，
+  // 与 ui/ 同级（脚手架把同级 ui/ 整树复制进新工程，故两者必须一起在包里）。
+  copy(path.join('scaffold'), stage);
+
   // 演示页面（xml/css/ts + include 片段 + 资产），剔除截图与日志
   for (const f of fs.readdirSync(path.join(root, 'demo'))) {
     const ext = path.extname(f).toLowerCase();
@@ -107,12 +111,18 @@ function main() {
     '  lui-render.exe  独立渲染器（CLI 出图 / GUI 预览）',
     withDemo ? '  demo1.exe       演示应用（登录 / 列表 / Todo / 脚本 / 组件库 / 浮层）' : '',
     '  pages\\          演示页面与 ui/ 运行时资源（组件库 + 主题）',
+    '  ui\\             组件库运行时（新建工程时整树拷走）',
+    '  scaffold\\       项目模板：lui-render --init <目录> 用它生成工程骨架',
     '',
     '用法（建议在 pages\\ 目录下运行，资源按相对路径解析）：',
     '  cd pages',
     withDemo ? '  ..\\demo1.exe login            # 演示应用' : '',
     '  ..\\lui-render.exe ui.xml -o ui.png -w 560 -H 980   # 页面出图',
     '  ..\\lui-render.exe --help      # 完整选项',
+    '',
+    '新建自己的工程：',
+    '  ..\\lui-render.exe --init myapp -w 480 -H 560',
+    '  cd myapp && run-dev.cmd       # 开发 / run-test.cmd 测试 / run-pack.cmd 交付',
     ''
   ].filter(Boolean).join('\r\n') + '\r\n');
 
@@ -128,11 +138,85 @@ function main() {
   console.log(smokeOk
     ? '[冒烟] 打包内渲染器出图成功（pages/ 工作目录）'
     : '[警告] 打包内渲染器冒烟失败（status=' + smoke.status + '）');
-  fs.rmSync(tmp, { recursive: true, force: true });
   if (!smokeOk) {
+    fs.rmSync(tmp, { recursive: true, force: true });
     console.error('[错误] 冒烟失败，中止打包');
     process.exit(1);
   }
+
+  // 3b. 冒烟验证 --init：用打包内的模板生成工程，再渲染生成的起步页。
+  //     这一步同时证明三件事：scaffold/ 随包分发、同级 ui/ 被整树复制、生成物能直接出图。
+  const proj = path.join(tmp, 'myapp');
+  const init = spawnSync(path.join(stage, 'lui-render.exe'),
+    ['--init', proj, '-w', '420', '-H', '420'], { cwd: tmp, encoding: 'utf-8' });
+  const genPage = path.join(proj, 'src', 'main.xml');
+  const genCss = path.join(proj, 'src', 'main-light.css');
+  const genUi = path.join(proj, 'ui', 'index.ts');
+  const initOk = init.status === 0 && fs.existsSync(genPage) && fs.existsSync(genCss) &&
+    fs.existsSync(genUi);
+  if (!initOk) {
+    console.error('[错误] --init 冒烟失败（status=' + init.status + '）:\n' +
+      (init.stdout || '') + (init.stderr || ''));
+    fs.rmSync(tmp, { recursive: true, force: true });
+    process.exit(1);
+  }
+  // 生成的 run-*.cmd 里渲染器路径应指向包内 exe（不是构建机的仓库路径）
+  const devCmd = fs.readFileSync(path.join(proj, 'run-dev.cmd'), 'utf-8');
+  if (!devCmd.includes(path.join(stage, 'lui-render.exe'))) {
+    console.error('[错误] 生成的 run-dev.cmd 未指向包内渲染器');
+    fs.rmSync(tmp, { recursive: true, force: true });
+    process.exit(1);
+  }
+  const genOut = path.join(proj, 'out', 'init.png');
+  const genRender = spawnSync(path.join(stage, 'lui-render.exe'),
+    [genPage, '-o', genOut, '-w', '420', '-H', '420', '-t', 'light'],
+    { cwd: proj, encoding: 'utf-8' });
+  const genOk = genRender.status === 0 && fs.existsSync(genOut) && fs.statSync(genOut).size > 1000;
+  console.log(genOk
+    ? '[冒烟] --init 生成工程并出图成功（模板 + ui/ 运行时齐备）'
+    : '[警告] --init 生成的工程渲染失败（status=' + genRender.status + '）');
+  if (!genOk) {
+    console.error((genRender.stdout || '') + (genRender.stderr || ''));
+    fs.rmSync(tmp, { recursive: true, force: true });
+    process.exit(1);
+  }
+
+  // 3c. --json 契约：stdout 必须只含可解析的 JSON（日志走 stderr）。
+  //     这条约定是 ADR 32 的核心，一旦有人把日志写回 stdout，脚本化调用就会断。
+  const jsonRun = spawnSync(path.join(stage, 'lui-render.exe'),
+    [genPage, '-O', path.join(proj, 'out'), '-t', 'both', '--json'],
+    { cwd: proj, encoding: 'utf-8' });
+  let jsonOk = false, jsonDetail = '';
+  try {
+    const parsed = JSON.parse(jsonRun.stdout);
+    jsonOk = parsed.total === 2 && parsed.failed === 0 && parsed.items.length === 2;
+    jsonDetail = `total=${parsed.total} items=${parsed.items.length}`;
+  } catch (e) {
+    jsonDetail = 'stdout 不是合法 JSON: ' + String(e.message).slice(0, 80);
+  }
+  console.log(jsonOk
+    ? `[冒烟] --json 输出可解析（${jsonDetail}）`
+    : `[警告] --json 契约被破坏（${jsonDetail}）`);
+  if (!jsonOk) {
+    console.error('stdout 实际内容:\n' + jsonRun.stdout);
+    fs.rmSync(tmp, { recursive: true, force: true });
+    process.exit(1);
+  }
+
+  // 3d. 参数健壮性：`--init --force` 曾把 --force 当目录名，真的建出过叫 "--force" 的目录
+  const badArg = spawnSync(path.join(stage, 'lui-render.exe'), ['--init', '--force'],
+    { cwd: tmp, encoding: 'utf-8' });
+  const forceDir = path.join(tmp, '--force');
+  const badArgOk = badArg.status === 2 && !fs.existsSync(forceDir);
+  console.log(badArgOk
+    ? '[冒烟] 选项缺值被正确拒绝（未把选项当成目录名）'
+    : `[警告] 选项缺值处理异常（status=${badArg.status}, 建出了 --force 目录=${fs.existsSync(forceDir)}）`);
+  if (!badArgOk) {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    process.exit(1);
+  }
+
+  fs.rmSync(tmp, { recursive: true, force: true });
 
   // 4. 压缩
   if (!noZip) {

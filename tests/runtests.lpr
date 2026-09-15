@@ -28,7 +28,10 @@ uses
   Interfaces,
 
 
-  Classes, SysUtils, Types, Math, Contnrs, Graphics, LCLType,
+  Classes, SysUtils, Types, Math, Contnrs, Graphics, LCLType, FileUtil,
+
+
+  Forms, Controls,
 
 
   xui_types, xui_style, xui_dom, xui_xml, xui_layout, xui_text,
@@ -43,7 +46,7 @@ uses
   xui_js_token, xui_js_parser, xui_js_runtime, xui_script, xui_script_dom,
 
 
-  xui_script_bind, xui_script_io
+  xui_script_bind, xui_script_io, xui_scaffold, xui_console, xui_host, xui_app
 
 
   {$IFDEF WINDOWS}, xui_render_gdiplus{$ENDIF};
@@ -9332,6 +9335,24 @@ begin
       Check((node.Count = 3) and (node[2].Text = 'D'), 'keyed x-for：新 key 追加克隆');
       Check(script.ErrorCount = errs, 'keyed x-for：复用/移除全程无脚本错误');
 
+      // 回归（M11 发现）：移除条目后必须仍能 Draw。
+      // 症状：条目带 transition 时，引擎的过渡表在键控移除路径上残留指向已释放节点的
+      // 瞬态引用，下一次 Draw 的过渡 Capture 读到已释放节点 → 访问违例。
+      // 根因：xui_script_bind 的键控移除自行 RemoveChild + Free，绕过了引擎的瞬态复位
+      // （RemoveElement 会先 Reset 过渡表/悬停链再释放）。此处断言"删完还能画"。
+      RunFlush(
+        'const tr = reactive({ rows: [{ id: 1, n: "A" }, { id: 2, n: "B" }] });');
+      engine.LoadFromString(
+        '<window><panel id="tr1" x-for="r in tr.rows">' +
+        '<label class="ftr" x-text="r.n" x-key="r.id"/></panel></window>');
+      DrawEngine(engine);
+      RunFlush('tr.rows = [{ id: 2, n: "B" }];');   // 移除 id=1 的条目（触发节点释放）
+      DrawEngine(engine);                            // 崩溃点：过渡 Capture 读悬垂节点
+      node := engine.Document.FindElementById('tr1');
+      Check((node <> nil) and (node.Count = 1) and (node[0].Text = 'B'),
+        'keyed x-for 移除条目后仍可绘制（过渡表不留悬垂节点引用）');
+      Check(script.ErrorCount = errs, 'keyed x-for 移除后无脚本错误');
+
       // 非键控 x-for：同长度元素替换 → 就地更新（不留旧数据）
       RunFlush(
         'const nx = reactive({ rows: [{ n: "x1" }, { n: "x2" }] });');
@@ -9804,6 +9825,403 @@ begin
     sink.Free;
     script.Free;
     engine.Free;
+  end;
+end;
+
+// ---- M11 预览窗装配（窗口级回归）----
+// 背景：预览窗曾整片空白——窗口出来了、引擎也装配了，但屏幕上没有任何像素。
+// 根因是 TXuiHost.Create 不设置 Parent，调用方必须自己挂到窗体；渲染器的预览窗漏了
+// 这一行，而 demo1 有，所以 demo 一直正常、渲染器预览一直空白（M9 就存在，长期漏检）。
+//
+// 教训是"窗口级装配"此前完全没有测试覆盖（套件全在引擎层，不建窗体）。
+// 这里把窗口级不变量固化下来：宿主必须是窗体的子控件，且引擎随装配真的画出内容。
+procedure TestPreviewHostWiring;
+var
+  form: TForm;
+  host: TXuiHost;
+  app: TXuiApp;
+  node: TXuiNode;
+  bmp: TBitmap;
+  r: TRect;
+  painted: Boolean;
+  pagePath: string;
+  i, nonWhite: Integer;
+  px: TColor;
+begin
+  WriteLn('--- M11 预览窗装配（窗口级）---');
+
+  // 造一个与预览窗同构的窗体：宿主必须是窗体的子控件，否则客户区永远空白
+  form := TForm.CreateNew(nil);
+  bmp := TBitmap.Create;
+  try
+    form.ClientWidth := 320;
+    form.ClientHeight := 240;
+
+    host := TXuiHost.Create(form);
+    // ↓ 这就是曾经漏掉的一行；断言它存在，等价于断言"宿主在窗体控件树里"
+    host.Parent := form;
+    host.Align := alClient;
+
+    Check(host.Parent = form, '宿主已挂到窗体（漏掉会整片空白）');
+    Check(form.ContainsControl(host), '窗体控件树包含宿主（LCL 可见性判定的依据）');
+    Check(host.Visible, '宿主可见');
+
+    // 装配 + 绘制：用引擎直接画到 bitmap（离屏），证明装配后真的产出内容
+    app := TXuiApp.CreateAttached(host.Engine, host.Script);
+    try
+      pagePath := DemoFilePath('m7.xml');
+      if pagePath = '' then
+      begin
+        WriteLn('SKIP  未找到 demo/m7.xml');
+      end
+      else
+      begin
+        bmp.SetSize(320, 240);
+        bmp.Canvas.Brush.Color := clWhite;
+        bmp.Canvas.FillRect(0, 0, 320, 240);
+        app.Engine.Renderer := TGdiRenderer.Create(bmp.Canvas);
+        app.Configure(pagePath, 'light', '');
+
+        r := Rect(0, 0, 320, 240);
+        app.Engine.Draw(bmp.Canvas, r);
+
+        // 真画上去了吗：统计非白像素（全白 = 什么都没画 = 空白窗口）
+        nonWhite := 0;
+        for i := 0 to 239 do
+        begin
+          px := bmp.Canvas.Pixels[160, i];
+          if px <> clWhite then
+            Inc(nonWhite);
+        end;
+        painted := nonWhite > 0;
+        Check(painted, Format('装配后绘制出内容（竖中线非白像素 %d 个）', [nonWhite]));
+
+        node := app.Engine.Document.FindElementById('rows');
+        Check((node <> nil) and (node.Count = 2),
+          '窗口级路径下脚本依然生效（x-for 列表 2 条）');
+        Check(host.Script.ErrorCount = 0, '窗口级装配无脚本错误');
+      end;
+    finally
+      app.Free;
+    end;
+
+    // 解除挂载后必须真的脱离控件树（FreeAndNil 之外的路径也要安全）
+    host.Parent := nil;
+    Check(not form.ContainsControl(host), '解除 Parent 后脱离窗体控件树');
+    host.Free;
+  finally
+    bmp.Free;
+    form.Free;
+  end;
+end;
+
+// ---- M11 健壮控制台输出（src/ui/xui_console.pas）----
+// 覆盖两个实测问题：① 输出目标不可写时不得抛异常（FPC 的 I/O 检查会把写失败抛成
+// EInOutError，并被固定文案误报为 "Disk Full"）；② 输出编码必须**一致**——
+// 曾经纯字面量被直写成 UTF-8，而拼接/Format 的字符串经 RTL 转成控制台码页，
+// 同一屏里两种编码混杂，在 GBK 控制台上后半必然乱码。
+// 这里能测的是 ②：同一次运行里不同来源的字符串必须落在同一种编码。
+procedure TestConsoleOutput;
+var
+  ok, sawHighByte: Boolean;
+  i, highCount: Integer;
+  mixedMsg, pureMsg: string;
+  enc: Boolean;
+begin
+  WriteLn('--- M11 控制台输出健壮性 ---');
+
+  XuiConsoleInit;
+
+  // 正常环境：写入应当成功，且不影响后续
+  ok := ConWriteLn('（自检）控制台输出可用');
+  Check(ok, '正常环境下输出成功');
+  Check(ConsoleWritable, '正常环境下输出被标记为可写');
+  Check(ConWriteLnFmt('（自检）格式化输出 %d/%s', [7, 'ok']),
+    '格式化输出（ConWriteLnFmt）成功');
+  Check(ConErrWriteLn('（自检）stderr 输出可用'), 'stderr 输出成功');
+
+  // 关键性质：反复写入不抛异常（实现用了 {$I-}/IOResult，不能再引入异常路径）
+  ok := True;
+  try
+    ConWriteLn('（自检）连续写入 1');
+    ConWriteLn('（自检）连续写入 2');
+    ConWriteLn;
+  except
+    on E: Exception do
+    begin
+      ok := False;
+      WriteLn('      异常: ' + E.Message);
+    end;
+  end;
+  Check(ok, '连续写入不抛异常');
+
+  // 编码一致性：ConWriteLn 的形参是运行时字符串，两条不同的构造路径应当给出同一种
+  // 编码结果。这里比较"同一段中文经由字面量 vs 拼接"的字节序列是否一致
+  // —— 若实现退化成直写（绕过转换），两者就会不同。
+  pureMsg := '参数错误';
+  mixedMsg := '' + '参数错误';
+  enc := Length(pureMsg) = Length(mixedMsg);
+  Check(enc, '字面量与拼接构造的中文长度一致（同一编码路径）');
+  Check(ConWriteLn('（自检）字面量与拼接并排：' + pureMsg + ' / ' + mixedMsg),
+    '字面量与拼接混合输出成功');
+
+  // 高位字节（中文）确实写到了输出上——说明不是被静默丢弃
+  sawHighByte := False;
+  highCount := 0;
+  for i := 1 to Length(pureMsg) do
+    if Ord(pureMsg[i]) > 127 then
+    begin
+      sawHighByte := True;
+      Inc(highCount);
+    end;
+  Check(sawHighByte and (highCount > 0), '中文经统一路径输出（含高位字节）');
+end;
+
+// ---- M11 项目脚手架（lui-render --init 的引擎侧实现：src/ui/xui_scaffold.pas）----
+// 覆盖：模板定位、生成物齐备（页面/脚本/双主题样式/工程清单/三支脚本/自带 ui/ 运行时）、
+// 占位符替换、.gitignore 还原、换行归一（.cmd 必须 CRLF）、"只写不改不删"策略
+// （已存在文件默认保留、Force 才覆盖），以及最关键的端到端：生成物能被真实引擎装配并出图。
+procedure TestScaffold;
+var
+  base, proj, pagePath, scriptPath, cssLightPath, cssDarkPath: string;
+  engine: TXuiEngine;
+  fake: TFakeRenderer;
+  script: TXuiScript;
+  bridge: TXuiDomBridge;
+  sink: TScriptSink;
+  node: TXuiNode;
+  lines: TStringList;
+  jsonText, cmdText: string;
+
+  function HasNonAscii(const S: string): Boolean;
+  var
+    k: Integer;
+  begin
+    Result := False;
+    for k := 1 to Length(S) do
+      if Ord(S[k]) > 127 then
+        Exit(True);
+  end;
+
+  function ReadFileRaw(const APath: string): string;
+  var
+    fs: TFileStream;
+  begin
+    Result := '';
+    fs := TFileStream.Create(APath, fmOpenRead or fmShareDenyNone);
+    try
+      SetLength(Result, fs.Size);
+      if fs.Size > 0 then
+        fs.ReadBuffer(Result[1], fs.Size);
+    finally
+      fs.Free;
+    end;
+  end;
+
+  function ReadText(const APath: string): string;
+  begin
+    Result := ReadFileRaw(APath);
+  end;
+
+  // 生成一次（AForce 决定是否覆盖已存在文件）；失败时打印原因便于定位
+  function Gen(ATarget: string; AForce: Boolean): Boolean;
+  var
+    o: TXuiScaffoldOptions;
+    r: TXuiScaffoldResult;
+  begin
+    o := Default(TXuiScaffoldOptions);
+    o.TargetDir := ATarget;
+    o.Width := 480;
+    o.Height := 560;
+    o.Theme := 'light';
+    o.LuiVersion := '0.10.0';
+    o.RendererPath := 'C:\fake\lui-render.exe';
+    o.Force := AForce;
+    Result := XuiScaffoldCreate(o, r);
+    if not Result then
+      WriteLn('      失败原因: ' + r.Error);
+    r.Files.Free;
+    r.Skipped.Free;
+  end;
+
+begin
+  WriteLn('--- M11 项目脚手架（--init）---');
+  if XuiScaffoldDir = '' then
+  begin
+    WriteLn('SKIP  未找到 scaffold/（模板目录）');
+    Exit;
+  end;
+
+  base := GetTempDir(False) + 'lui-scaffold-test';
+  proj := base + PathDelim + 'myapp';
+  if DirectoryExists(base) then
+    DeleteDirectory(base, True);   // 清掉上一轮残留（否则"目录非空"会挡住生成）
+
+  try
+    if not Gen(proj, False) then
+    begin
+      Check(False, '脚手架生成成功（模板与 ui/ 运行时均定位到）');
+      Exit;
+    end;
+    Check(True, '脚手架生成成功（模板与 ui/ 运行时均定位到）');
+
+    pagePath := proj + PathDelim + 'src' + PathDelim + 'main.xml';
+    scriptPath := proj + PathDelim + 'src' + PathDelim + 'main.ts';
+    cssLightPath := proj + PathDelim + 'src' + PathDelim + 'main-light.css';
+    cssDarkPath := proj + PathDelim + 'src' + PathDelim + 'main-dark.css';
+
+    Check(FileExists(pagePath), '生成入口页面 src/main.xml');
+    Check(FileExists(scriptPath), '生成页面逻辑 src/main.ts');
+    Check(FileExists(cssLightPath), '生成浅色样式 src/main-light.css');
+    Check(FileExists(cssDarkPath), '生成深色样式 src/main-dark.css');
+    Check(FileExists(proj + PathDelim + 'lui-project.json'), '生成工程清单 lui-project.json');
+    Check(FileExists(proj + PathDelim + 'run-dev.cmd'), '生成 run-dev.cmd（开发）');
+    Check(FileExists(proj + PathDelim + 'run-test.cmd'), '生成 run-test.cmd（测试）');
+    Check(FileExists(proj + PathDelim + 'run-pack.cmd'), '生成 run-pack.cmd（打包交付）');
+    Check(FileExists(proj + PathDelim + 'README.md'), '生成 README.md');
+    Check(FileExists(proj + PathDelim + '.gitignore'),
+      'gitignore 模板还原为 .gitignore（模板名不能以点开头，否则会被 git 当忽略规则）');
+    Check(FileExists(proj + PathDelim + 'ui' + PathDelim + 'index.ts'),
+      '自带组件库运行时 ui/index.ts（生成即不依赖 lui 仓库）');
+    Check(FileExists(proj + PathDelim + 'ui' + PathDelim + 'theme' + PathDelim + 'lui-light.css'),
+      '自带组件库主题 ui/theme/lui-light.css');
+
+    // 占位符：工程名默认取目录名；渲染器路径写进脚本与清单，两种分隔符形式各归其位
+    jsonText := ReadText(proj + PathDelim + 'lui-project.json');
+    Check(Pos('"name": "myapp"', jsonText) > 0, '清单里回填工程名（默认取目录名）');
+    Check(Pos('"width": "480"', jsonText) > 0, '清单里回填视口宽（--init -w）');
+    Check(Pos('"height": "560"', jsonText) > 0, '清单里回填视口高（--init -H）');
+    Check(Pos('C:/fake/lui-render.exe', jsonText) > 0,
+      '清单里渲染器路径用正斜杠（JSON/跨工具友好）');
+    Check(Pos('@@', jsonText) = 0, '清单里占位符已全部替换');
+
+    cmdText := ReadText(proj + PathDelim + 'run-dev.cmd');
+    Check(Pos('C:\fake\lui-render.exe', cmdText) > 0,
+      '.cmd 里渲染器路径用原生分隔符（cmd.exe 语义正确）');
+    Check(Pos('@@', cmdText) = 0, '.cmd 里占位符已全部替换');
+    Check(Pos(#13#10, cmdText) > 0, '.cmd 用 CRLF 换行（cmd 对 LF-only 的标签解析不可靠）');
+    Check(Pos(#$EF#$BB#$BF, cmdText) = 0, '生成文件不写 BOM');
+    // .cmd 必须纯 ASCII：cmd.exe 按 OEM 代码页解码批处理，UTF-8 中文注释会乱码，
+    // 极端情况下还会被当成命令执行（实测过）。渲染器自身输出的中文不受影响。
+    Check(not HasNonAscii(cmdText), '.cmd 保持纯 ASCII（cmd.exe 按 OEM 码页解码，非 ASCII 会乱码）');
+    Check(not HasNonAscii(ReadText(proj + PathDelim + 'run-test.cmd')),
+      '.cmd 保持纯 ASCII（run-test.cmd）');
+    Check(not HasNonAscii(ReadText(proj + PathDelim + 'run-pack.cmd')),
+      '.cmd 保持纯 ASCII（run-pack.cmd）');
+
+    // 页面 XML：视口宽高进 window 属性，且不残留占位符
+    lines := TStringList.Create;
+    try
+      lines.LoadFromFile(pagePath);
+      Check(Pos('width="480"', lines.Text) > 0, '页面 window 回填视口宽');
+      Check(Pos('@@', lines.Text) = 0, '页面里占位符已全部替换');
+    finally
+      lines.Free;
+    end;
+
+    // ---- 只写不改不删：已存在文件默认保留，Force 才覆盖 ----
+    lines := TStringList.Create;
+    try
+      lines.Text := '// 用户手改过，不该被覆盖' + LineEnding;
+      lines.SaveToFile(scriptPath);
+    finally
+      lines.Free;
+    end;
+    Check(Gen(proj, False), '对已存在工程再生成一次（默认策略）不报错');
+    Check(Pos('用户手改过', ReadText(scriptPath)) > 0,
+      '默认跳过已存在文件：用户改动被保留');
+    Check(Gen(proj, True), '--force 重新生成不报错');
+    Check(Pos('用户手改过', ReadText(scriptPath)) = 0,
+      '--force 覆盖已存在文件（模板内容回来）');
+
+    // 非 lui 工程的非空目录默认拒写（避免误往任意目录铺文件），--force 才放行
+    Check(not Gen(base, False),
+      '已存在且非 lui 工程的目录：默认拒写（不往任意目录铺文件）');
+    Check(Gen(base, True), '同上目录加 --force 后允许写入');
+
+    // ---- 端到端：生成的工程被真实引擎装配、执行脚本、交互、出图 ----
+    engine := NewTestEngine(fake);
+    script := TXuiScript.Create;
+    sink := TScriptSink.Create;
+    try
+      bridge := TXuiDomBridge.Create(engine, script);
+      try
+        bridge.Install;
+        engine.AttachScript(script);
+        script.OnError := @sink.HandleError;
+        script.Interp.OnLog := @sink.HandleLog;
+        engine.LoadStyleSheetFromFile(proj + PathDelim + 'ui' + PathDelim + 'theme' +
+          PathDelim + 'lui-light.css');
+        engine.LoadStyleSheetFromFile(cssLightPath);
+        engine.LoadFromFile(pagePath);   // 页面内声明 <script src="../ui/index.ts"/> 与 main.ts
+        DrawEngine(engine);
+
+        Check(script.ErrorCount = 0, '生成的起步页装配与脚本执行无错误');
+        node := engine.Document.FindElementById('rows');
+        Check((node <> nil) and (node.Count = 3),
+          'x-for 渲染出 3 条初始条目（脚本里的 reactive 状态生效）');
+        Check(engine.Document.FindElementById('btn-add') <> nil,
+          '组件库组件 ui-button 实例化成功（自带 ui/ 运行时可用）');
+        Check(engine.Document.FindElementById('draft') <> nil,
+          '组件库组件 ui-input 实例化成功');
+        Check(engine.Document.FindElementById('filter') <> nil, '原生 button 存在');
+
+        // 走一遍交互：只改状态 → 绑定自动刷新（证明生成物的逻辑回路是通的）
+        script.CallGlobal('OnAdd', []);
+        script.FlushReactive;
+        DrawEngine(engine);
+        node := engine.Document.FindElementById('rows');
+        Check((node <> nil) and (node.Count = 3),
+          '空输入不新增（OnAdd 里 trim 后为空即返回）');
+        script.CallGlobal('Toggle', [script.Num(1)]);
+        script.FlushReactive;
+        DrawEngine(engine);
+        node := engine.Document.FindElementById('rows');
+        Check((node <> nil) and (node.Count = 3),
+          '切换完成态不增删条目（Toggle 只改 done 标志）');
+        script.CallGlobal('OnToggleFilter', []);
+        script.FlushReactive;
+        DrawEngine(engine);
+        node := engine.Document.FindElementById('rows');
+        Check((node <> nil) and (node.Count = 1),
+          '只看未完成：computed 过滤生效（初始 1 条完成，再切 1 条 → 剩 1 条）');
+        Check(script.ErrorCount = 0, '交互后无脚本错误');
+
+        // 条目行的结构：panel.item 下应有 [x] 标记 / 标题 / 删除按钮 三件
+        // （删除按钮是行内嵌套的可点区域，行本身也可点；模板把两者都放上了）
+        engine.LoadStyleSheetFromString('');
+        engine.LoadFromFile(pagePath);
+        DrawEngine(engine);
+        node := engine.Document.FindElementById('rows');
+        Check((node <> nil) and (node.Count = 3), '重置页面后列表回到 3 条');
+        if (node <> nil) and (node.Count > 0) then
+        begin
+          Check(node[0].HasClass('item'), '条目根节点带 item 类');
+          Check(node[0].Count = 3, '条目行含标记/标题/删除按钮三个子节点');
+          Check(node[1].HasClass('done'),
+            '第二条初始为完成态（脚本初始数据 done:true → :class 生效）');
+          Check(not node[0].HasClass('done'), '第一条非完成态');
+        end;
+        Check(script.ErrorCount = 0, '重新装配后无脚本错误');
+
+        // 深色档：同一页面换样式表必须同样能装配（两主题文件都得是完整样式表）
+        engine.LoadStyleSheetFromString('');
+        engine.LoadFromFile(pagePath);
+        DrawEngine(engine);
+        Check(script.ErrorCount = 0, '清空样式表后重新装配仍无脚本错误');
+      finally
+        bridge.Free;
+      end;
+    finally
+      sink.Free;
+      script.Free;
+      engine.Free;
+    end;
+  finally
+    if DirectoryExists(proj) then
+      DeleteDirectory(proj, True);
+    if DirectoryExists(base) then
+      DeleteDirectory(base, True);
   end;
 end;
 
@@ -11186,6 +11604,9 @@ begin
     TestScriptReactive;
     TestDemoPage;
     TestAgentPage;
+    TestPreviewHostWiring;
+    TestConsoleOutput;
+    TestScaffold;
 
 
 

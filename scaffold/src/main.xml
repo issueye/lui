@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- @@PROJECT_NAME@@ — lui 工程的演示页。
+     结构写在这里；样式在同名 -light.css / -dark.css；逻辑在 main.ts。
+     组件库（ui-*）来自工程自带的 ui/ 运行时（../ui/index.ts）。
+
+     两套事件写法都演示了：
+       x-onclick="表达式"  在页面脚本作用域求值（可带参数，如 Toggle(it.id)）
+       onclick="Name"      先找宿主 published 方法，找不到再回退脚本全局函数 Name -->
+<window title="@@PROJECT_NAME@@" width="@@WIDTH@@" height="@@HEIGHT@@">
+  <script src="../ui/index.ts"/>
+  <script src="main.ts"/>
+
+  <panel class="app">
+    <panel class="header">
+      <label class="title" text="@@PROJECT_NAME@@"/>
+      <panel class="spacer"/>
+      <button id="filter" class="ghost" text="只看未完成"
+        x-class="{ active: state.hideDone }" x-onclick="OnToggleFilter"/>
+    </panel>
+
+    <!-- 新增：x-model 双向绑定 + 组件回调（x-onclick 传函数名，组件内调用它） -->
+    <ui-card title="新增">
+      <panel class="row">
+        <ui-input id="draft" x-model="state.draft" placeholder="输入内容后回车"/>
+        <ui-button id="btn-add" text="添加" type="primary" x-onclick="OnAdd"/>
+      </panel>
+      <label class="hint" x-text="summary.value"/>
+    </ui-card>
+
+    <!-- 列表：x-for + x-key 键控复用；行内 x-onclick 直接带迭代作用域 -->
+    <ui-card title="列表">
+      <ui-checkbox x-model="state.hideDone" text="只看未完成（x-model）"/>
+      <ui-divider/>
+      <panel id="rows" x-for="it in visible.value">
+        <panel class="item" x-key="it.id" x-class="{ done: it.done }"
+          x-onclick="Toggle(it.id)">
+          <label class="mark" x-text="it.done ? '[x]' : '[ ]'"/>
+          <label class="item-title" x-text="it.title"/>
+          <button class="ghost" text="删除" x-onclick="Remove(it.id)"/>
+        </panel>
+      </panel>
+      <label class="hint" x-show="visible.value.length === 0" text="没有可显示的条目"/>
+      <ui-progress :percentage="percent.value"/>
+      <panel class="toolbar">
+        <ui-button text="清空已完成" size="small" x-onclick="OnClearDone"/>
+        <ui-button text="全部重置" size="small" x-onclick="OnReset"/>
+      </panel>
+    </ui-card>
+
+    <label class="foot" text="F5 热重载 · T 切主题 · Esc 退出"/>
+  </panel>
+</window>

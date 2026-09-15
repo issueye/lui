@@ -1,0 +1,137 @@
+/* @@PROJECT_NAME@@ — 深色主题（完整样式表）。
+   引擎按主题只加载其中一个（light 或 dark），不是在浅色之上叠加覆盖，
+   所以这里的布局声明必须与 main-light.css 一一对应，只有颜色不同。 */
+
+window {
+  background-color: #16181d;
+}
+
+.app {
+  padding: 14px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  column-gap: 8px;
+  margin-bottom: 10px;
+}
+
+.title {
+  font-size: 16px;
+  font-weight: bold;
+  color: #e8eaed;
+  margin: 0;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.ghost {
+  height: 28px;
+  padding-left: 10px;
+  padding-right: 10px;
+  font-size: 12px;
+  color: #b8bcc4;
+  background-color: #21242b;
+  border: 1px solid #3a3f47;
+  border-radius: 5px;
+  transition: all 150ms ease;
+}
+
+.ghost:hover {
+  background-color: #2a2e36;
+}
+
+/* 页头过滤按钮的激活态（x-class 对象语法切上来的类） */
+.active {
+  border-color: #6ea8fe;
+  color: #a9c8ff;
+  background-color: #1e2a3d;
+}
+
+/* 新增行：组件在 flex 行里默认按内容收缩，需要显式占满剩余宽度 */
+.row {
+  display: flex;
+  align-items: center;
+  column-gap: 8px;
+}
+
+.row .ui-input {
+  flex: 1;
+}
+
+.row button {
+  width: 64px;
+  height: 28px;
+  font-size: 12px;
+  border-radius: 5px;
+}
+
+/* 列表条目：整行可点切换完成态 */
+.item {
+  display: flex;
+  align-items: center;
+  column-gap: 8px;
+  height: 34px;
+  padding-left: 10px;
+  padding-right: 10px;
+  margin-bottom: 6px;
+  background-color: #21242b;
+  border: 1px solid #2f343c;
+  border-radius: 6px;
+  transition: all 120ms ease;
+}
+
+.item:hover {
+  background-color: #272b33;
+}
+
+.mark {
+  width: 26px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.item-title {
+  flex: 1;
+  font-size: 13px;
+  color: #e8eaed;
+}
+
+.item button {
+  width: 48px;
+  height: 24px;
+  font-size: 12px;
+  border-radius: 4px;
+}
+
+/* 完成态：x-class="{ done: it.done }" 挂在条目根上。
+   引擎不支持 text-decoration，完成态靠文字变灰 + 前面的 [x] 标记区分。 */
+.done .item-title {
+  color: #6b7280;
+}
+
+.done .mark {
+  color: #5cae74;
+}
+
+.toolbar {
+  display: flex;
+  column-gap: 8px;
+  margin-top: 8px;
+}
+
+.hint {
+  font-size: 12px;
+  color: #9aa1ab;
+  margin-top: 8px;
+}
+
+.foot {
+  font-size: 12px;
+  color: #6b7280;
+  text-align: center;
+  margin-top: 6px;
+}

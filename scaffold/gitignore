@@ -1,0 +1,4 @@
+# 渲染产物与交付目录（run-test.cmd / run-pack.cmd 生成）
+out/
+dist/
+*.png

@@ -2001,6 +2001,10 @@ begin
     end;
 
     // 移除：未被复用的旧条目（整组节点连带其绑定）
+    // 必须走 FEngine.RemoveElement，不能自行 RemoveChild + Free：引擎还持有指向节点的
+    // 瞬态引用（过渡动画表、悬停链、指针捕捉），自行释放会留下悬垂指针——下一次 Draw
+    // 的过渡 Capture 就会读到已释放节点（实测访问违例）。RemoveElement 先复位这些状态
+    // 再摘除、释放并置脏，是运行时删节点的正确入口。
     for i := ABinding.Items.Count - 1 downto 0 do
       if not used[i] then
       begin
@@ -2008,9 +2012,7 @@ begin
         begin
           removed := TXuiNode(TXuiForItem(ABinding.Items[i]).Nodes[k]);
           PruneCloneSubtree(removed);
-          if removed.Parent <> nil then
-            removed.Parent.RemoveChild(removed);
-          removed.Free;
+          FEngine.RemoveElement(removed);
         end;
         ABinding.Items.Delete(i);
       end;

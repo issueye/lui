@@ -1,0 +1,13 @@
+{
+  "name": "@@PROJECT_NAME@@",
+  "version": "@@PROJECT_VERSION@@",
+  "generator": "lui-render --init",
+  "luiVersion": "@@LUI_VERSION@@",
+  "createdAt": "@@DATE@@",
+  "entry": "src/main.xml",
+  "script": "src/main.ts",
+  "styles": ["src/main-light.css", "src/main-dark.css"],
+  "viewport": { "width": "@@WIDTH@@", "height": "@@HEIGHT@@" },
+  "theme": "@@THEME@@",
+  "renderer": "@@RENDERER_POSIX@@"
+}

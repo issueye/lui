@@ -107,6 +107,13 @@ function main() {
     files.set('ui/' + rel, path.join(root, 'ui', rel));
   }
 
+  // scaffold/ 项目模板（M11）：单程序版要能 `--init` 生成工程，
+  // 模板与 ui/ 运行时都得在 exe 里（脚手架按"scaffold/ 与 ui/ 同级"复制运行时）。
+  // 顺带把模板体积算进清单，改动模板会换指纹、触发重新解包。
+  for (const rel of walk(path.join(root, 'scaffold'), '')) {
+    files.set('scaffold/' + rel, path.join(root, 'scaffold', rel));
+  }
+
   // 页面及其关联资源 → pages/
   let pageCount = 0;
   for (const relPage of pageList) {

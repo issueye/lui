@@ -1,6 +1,6 @@
 {
   "name": "lui",
-  "version": "0.8.0",
+  "version": "0.10.0",
   "description": "lui — 轻量级声明式现代化 Free Pascal UI 渲染引擎与组件库",
   "main": "ui/index.ts",
   "scripts": {
@@ -15,6 +15,8 @@
     "dev": "bin\\lui-render.exe demo/svg_demo.xml -w 800 -H 600 -t light --watch",
     "single": "node scripts/build.js single",
     "pack": "node scripts/pack.js",
+    "init": "node scripts/init.js",
+    "scaffold": "node scripts/init.js --self-test",
     "clean": "node -e \"const fs = require('fs'); ['bin', 'tools/renderer/lib', 'tools/renderer/lib-single', 'tools/renderer/embedded', 'tests/lib', 'demo/lib'].forEach(d => { if (fs.existsSync(d)) fs.rmSync(d, { recursive: true, force: true }); }); console.log('清理完毕');\""
   },
   "keywords": [
@@ -24,7 +26,9 @@
     "ui-framework",
     "declarative-ui",
     "svg",
-    "renderer"
+    "renderer",
+    "scaffold",
+    "cli"
   ],
   "author": "issueye",
   "license": "MIT"
