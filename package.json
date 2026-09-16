@@ -8,7 +8,7 @@
     "build:renderer": "node scripts/build.js renderer",
     "build:test": "node scripts/build.js test",
     "build:demo": "node scripts/build.js demo",
-    "test": "node scripts/build.js test && node scripts/build.js renderer && tests\\runtests.exe",
+    "test": "node scripts/build.js test && node scripts/build.js renderer && node scripts/verify-baseline.js",
     "render": "bin\\lui-render.exe",
     "render:svg": "bin\\lui-render.exe demo/svg_demo.xml -o bin/svg_demo_preview.png -w 800 -H 500 -t light -v",
     "render:gallery": "bin\\lui-render.exe demo/ui_gallery.xml -o bin/gallery_light.png -w 560 -H 980 -t light && bin\\lui-render.exe demo/ui_gallery.xml -o bin/gallery_dark.png -w 560 -H 980 -t dark",
@@ -17,6 +17,7 @@
     "pack": "node scripts/pack.js",
     "init": "node scripts/init.js",
     "scaffold": "node scripts/init.js --self-test",
+    "verify:baseline": "node scripts/verify-baseline.js",
     "clean": "node -e \"const fs = require('fs'); ['bin', 'tools/renderer/lib', 'tools/renderer/lib-single', 'tools/renderer/embedded', 'tests/lib', 'demo/lib'].forEach(d => { if (fs.existsSync(d)) fs.rmSync(d, { recursive: true, force: true }); }); console.log('清理完毕');\""
   },
   "keywords": [

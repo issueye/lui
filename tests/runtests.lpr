@@ -64,6 +64,39 @@ var
 
 
 
+// 测试输出也必须走 xui_console 的安全路径。测试套件包含“关闭/不可写 stdout”的回归场景，
+// 如果后续的 PASS/FAIL 和分组标题仍直接调用 WriteLn，前一个安全写入失败后会再次触发
+// EInOutError（FPC 常见文案为“Disk Full”），导致测试自身无法报告结果。
+procedure TestWriteLn; overload;
+begin
+  ConWriteLn;
+end;
+
+procedure TestWriteLn(const S: string); overload;
+begin
+  ConWriteLn(S);
+end;
+
+procedure TestWriteLn(const A, B: string); overload;
+begin
+  ConWrite(A);
+  ConWriteLn(B);
+end;
+
+procedure TestWriteLn(const A, B, C: string); overload;
+begin
+  ConWrite(A);
+  ConWrite(B);
+  ConWriteLn(C);
+end;
+
+{$MACRO ON}
+{$DEFINE WriteLn := TestWriteLn}
+
+
+
+
+
 procedure Check(ACondition: Boolean; const AName: string);
 
 
@@ -256,7 +289,8 @@ const
 
 
 
-procedure TestXmlParsing;
+{$IFDEF LUI_CORE_INLINE}
+procedure TestXmlParsingInline;
 
 
 var
@@ -361,7 +395,9 @@ end;
 
 
 
-procedure TestDefaultStyles;
+{$ENDIF}
+{$IFDEF LUI_CORE_INLINE}
+procedure TestDefaultStylesInline;
 
 
 var
@@ -430,7 +466,9 @@ end;
 
 
 
-procedure TestCssParser;
+{$ENDIF}
+{$IFDEF LUI_CORE_INLINE}
+procedure TestCssParserInline;
 
 
 var
@@ -520,7 +558,9 @@ end;
 
 
 
-procedure TestCssApplyAndCascade;
+{$ENDIF}
+{$IFDEF LUI_CORE_INLINE}
+procedure TestCssApplyAndCascadeInline;
 
 
 var
@@ -673,7 +713,9 @@ end;
 
 
 
-procedure TestThemeSkin;
+{$ENDIF}
+{$IFDEF LUI_CORE_INLINE}
+procedure TestThemeSkinInline;
 
 
 var
@@ -805,7 +847,9 @@ end;
 
 
 
-procedure TestCssCascadeOnNode;
+{$ENDIF}
+{$IFDEF LUI_CORE_INLINE}
+procedure TestCssCascadeOnNodeInline;
 
 
 var
@@ -898,7 +942,9 @@ end;
 
 
 
-procedure TestBlockLayout;
+{$ENDIF}
+{$IFDEF LUI_CORE_INLINE}
+procedure TestBlockLayoutInline;
 
 
 var
@@ -1015,6 +1061,7 @@ end;
 
 
 
+{$ENDIF}
 { ---------- M3：假渲染器与辅助 ---------- }
 
 
@@ -1507,12 +1554,53 @@ end;
 
 
 
+{$I layout_contract.inc}
+{$I layout_flex.inc}
+{$I layout_flex_advanced.inc}
+{$I layout_text_position.inc}
+{$I layout_css_props.inc}
+{$I layout_engine_rendering.inc}
+{$I event_helpers.inc}
+{$I event_hit_test.inc}
+{$I event_pseudo_click.inc}
+{$I event_binding.inc}
+{$I event_scroll_dom.inc}
+{$I input_tests.inc}
+{$I input_transition.inc}
+{$I include_templates.inc}
+{$I script_helpers.inc}
+{$I script_core.inc}
+{$I script_async.inc}
+{$I script_timers.inc}
+{$I script_async_await.inc}
+{$I script_integration.inc}
+{$I script_promise_integration.inc}
+{$I script_timers_integration.inc}
+{$I script_async_integration.inc}
+{$I script_io.inc}
+{$I css_variables.inc}
+{$I script_reactive.inc}
+{$I script_demo_page.inc}
+{$I host_regressions.inc}
+{$I scaffold_regression.inc}
+{$I agent_page.inc}
+{$I remaining_regressions.inc}
+{$I ui_library.inc}
+{$I core_layout.inc}
+{$I core_css.inc}
+
+
+
+
 { ---------- M3：flex ---------- }
 
 
 
 
 
+{ Staged extraction: the modular definitions are active above; keep the old
+  inline copies disabled until the whole M3 block has been migrated. }
+{$IFDEF LUI_LAYOUT_FLEX_INLINE}
 procedure TestFlexRow;
 
 
@@ -1591,6 +1679,9 @@ end;
 
 
 
+{ Staged extraction: the modular definitions are active above; keep the old
+  inline copies disabled until the whole M3 block has been migrated. }
+{$IFDEF LUI_LAYOUT_FLEX_INLINE}
 procedure TestFlexJustify;
 
 
@@ -1759,6 +1850,8 @@ end;
 
 
 
+{$ENDIF}
+{$IFDEF LUI_LAYOUT_FLEX_INLINE}
 procedure TestFlexGrow;
 
 
@@ -1822,6 +1915,7 @@ end;
 
 
 
+{$ENDIF}
 procedure TestFlexAlign;
 
 
@@ -2104,6 +2198,9 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_LAYOUT_M3_INLINE}
 { ---------- M3：文本换行 ---------- }
 
 
@@ -2533,6 +2630,9 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_LAYOUT_CSS_INLINE}
 { ---------- M3：CSS 属性解析 ---------- }
 
 
@@ -2683,6 +2783,9 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_LAYOUT_ENGINE_INLINE}
 { ---------- M3：引擎绘制（裁剪 / visibility / 绘制序） ---------- }
 
 
@@ -2803,6 +2906,9 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_M4_HELPERS_INLINE}
 { ---------- M4：RTTI 探针 ---------- }
 
 
@@ -3157,6 +3263,9 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_M4_TESTS_INLINE}
 procedure TestHitTest;
 
 
@@ -3242,11 +3351,9 @@ begin
 
 
 end;
+{$ENDIF}
 
-
-
-
-
+{$IFDEF LUI_M4_TESTS_INLINE}
 procedure TestPseudoAndClick;
 
 
@@ -3440,11 +3547,9 @@ begin
 
 
 end;
+{$ENDIF}
 
-
-
-
-
+{$IFDEF LUI_M4_TESTS_INLINE}
 procedure TestEventBindingFallback;
 
 
@@ -3575,11 +3680,9 @@ begin
 
 
 end;
+{$ENDIF}
 
-
-
-
-
+{$IFDEF LUI_M4_TESTS_INLINE}
 procedure TestScroll;
 
 
@@ -3862,6 +3965,9 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_M5_INLINE}
 { ---------- M5：输入框 / 键盘 / 焦点 ---------- }
 
 
@@ -4507,6 +4613,9 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_M5_TRANSITION_INLINE}
 { ---------- M5：过渡动画 ---------- }
 
 
@@ -4750,6 +4859,9 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_M5_INCLUDE_INLINE}
 { ---------- M5：include 模板 ---------- }
 
 
@@ -5092,6 +5204,9 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_SCRIPT_HELPERS_INLINE}
 { ---------- M6：脚本引擎（内核级 + 集成）---------- }
 
 
@@ -5245,6 +5360,9 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_SCRIPT_CORE_INLINE}
 // 内核：词法/语法/解释器（不依赖引擎）
 
 
@@ -5470,12 +5588,15 @@ end;
 
 
 
+{$ENDIF}
+
 { ---------- M6 P1：Promise 与微任务 ---------- }
 
 
 
 
 
+{$IFDEF LUI_SCRIPT_ASYNC_INLINE}
 // 内核级：Promise 语义、微任务时序、预算切片化、GC 根扩展（不依赖引擎）
 
 
@@ -6184,12 +6305,15 @@ end;
 
 
 
+{$ENDIF}
+
 { ---------- M6 P2：定时器宏任务 ---------- }
 
 
 
 
 
+{$IFDEF LUI_SCRIPT_TIMERS_INLINE}
 // 内核级：ui.setTimeout/setInterval/clear/delay/now 与宏任务泵（人造时间推进）
 
 
@@ -6656,12 +6780,15 @@ end;
 
 
 
+{$ENDIF}
+
 { ---------- M6 P3：async/await ---------- }
 
 
 
 
 
+{$IFDEF LUI_SCRIPT_ASYNC_AWAIT_INLINE}
 // 内核级：完整 await 矩阵（表达式/循环/try/finally/递归）、位置校验、错误传播、GC
 
 
@@ -7250,6 +7377,9 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_SCRIPT_INTEGRATION_INLINE}
 // 集成：脚本经引擎操作 DOM（桥 + 事件第二来源 + 动态绑定 + 错误路由）
 
 
@@ -7505,6 +7635,9 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_SCRIPT_PROMISE_INTEGRATION_INLINE}
 // P1 集成：事件切片结束排水（then 回调改 DOM 立即生效）+ 未处理拒绝/预算的错误分类
 
 
@@ -7730,6 +7863,9 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_SCRIPT_TIMERS_INTEGRATION_INLINE}
 // P2 集成：引擎 Tick 驱动定时器（NeedsTick / 相对时钟 / delay-Promise / 宏任务错误分类）
 
 
@@ -7955,6 +8091,9 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_SCRIPT_IO_INLINE}
 { ---------- M6 P4：真实 I/O（fake 注入 + 文件往返）---------- }
 
 
@@ -8474,6 +8613,10 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_UI_LIBRARY_INLINE}
+// Staged extraction: active component-library coverage lives in ui_library.inc.
 { ---------- M8：组件库（ui/）---------- }
 
 const
@@ -9001,6 +9144,9 @@ begin
   end;
 end;
 
+{$ENDIF}
+
+{$IFDEF LUI_CSS_VARIABLES_INLINE}
 { ---------- M8：CSS 变量（自定义属性）---------- }
 
 // --x 声明 + var() 取值：继承 / 回退 / 简写值内替换 / 主题覆盖（后加载样式表重定义）
@@ -9043,6 +9189,11 @@ begin
   end;
 end;
 
+{$ENDIF}
+
+{$IFDEF LUI_SCRIPT_REACTIVE_INLINE}
+{ Staged extraction: the modular M7/M8 reactive suite is active above; retain
+  the original inline copy behind a switch until the migration is retired. }
 { ---------- M7：响应式绑定（参照 Vue 3）---------- }
 
 // 演示页文件定位（测试既可从仓库根、也可从 tests 目录运行）
@@ -9740,6 +9891,10 @@ begin
   end;
 end;
 
+{$ENDIF}
+
+{$IFDEF LUI_SCRIPT_DEMO_PAGE_INLINE}
+// Staged extraction: the active demo-page test lives in script_demo_page.inc.
 // 演示页整页加载（demo/m7.xml + 同名 m7.ts）：走引擎真实的文档加载路径。
 // 关键点：脚本在首轮扫描之后才运行，component(...) 的注册必须让绑定集重建，
 // 否则组件标签会被当普通标签处理（真实应用里组件永不实例化）。
@@ -9828,6 +9983,10 @@ begin
   end;
 end;
 
+{$ENDIF}
+
+{$IFDEF LUI_HOST_REGRESSIONS_INLINE}
+// Staged extraction: active host/console regressions live in host_regressions.inc.
 // ---- M11 预览窗装配（窗口级回归）----
 // 背景：预览窗曾整片空白——窗口出来了、引擎也装配了，但屏幕上没有任何像素。
 // 根因是 TXuiHost.Create 不设置 Parent，调用方必须自己挂到窗体；渲染器的预览窗漏了
@@ -9977,6 +10136,10 @@ begin
   Check(sawHighByte and (highCount > 0), '中文经统一路径输出（含高位字节）');
 end;
 
+{$ENDIF}
+
+{$IFDEF LUI_SCAFFOLD_INLINE}
+// Staged extraction: active scaffold coverage lives in scaffold_regression.inc.
 // ---- M11 项目脚手架（lui-render --init 的引擎侧实现：src/ui/xui_scaffold.pas）----
 // 覆盖：模板定位、生成物齐备（页面/脚本/双主题样式/工程清单/三支脚本/自带 ui/ 运行时）、
 // 占位符替换、.gitignore 还原、换行归一（.cmd 必须 CRLF）、"只写不改不删"策略
@@ -10225,6 +10388,10 @@ begin
   end;
 end;
 
+{$ENDIF}
+
+{$IFDEF LUI_AGENT_PAGE_INLINE}
+// Staged extraction: active agent coverage lives in agent_page.inc.
 // fake HTTP 执行器（定义见本段末尾）：模拟 OpenAI 兼容 /chat/completions
 procedure AgentFakeHttp(AReq: TXuiIoRequest; ARes: TXuiIoResult); forward;
 
@@ -10401,7 +10568,10 @@ begin
       '"name":"calculator","arguments":"{\"expr\":\"5+5\"}"}}]}}]}';
 end;
 
+{$ENDIF}
 
+
+{$IFDEF LUI_SCRIPT_ASYNC_INTEGRATION_INLINE}
 // P3 集成：await ui.delay 后改 DOM（async 机器 × 定时器 × 排水全链路）
 
 
@@ -10585,6 +10755,10 @@ end;
 
 
 
+{$ENDIF}
+
+{$IFDEF LUI_REMAINING_REGRESSIONS_INLINE}
+// Staged extraction: active small regressions live in remaining_regressions.inc.
 procedure TestHotReload;
 
 
@@ -11447,6 +11621,8 @@ begin
   end;
 end;
 
+{$ENDIF}
+
 begin
   Measurer := TFakeMeasurer.Create;
   try
@@ -11511,6 +11687,8 @@ begin
 
 
     TestM3CssProps;
+
+    TestLayoutContract;
 
 
     TestEngineRendering;
@@ -11616,6 +11794,7 @@ begin
 
 
     WriteLn(Format('结果: %d 通过, %d 失败', [PassCount, FailCount]));
+    ConWriteLnFmt('LUI_TEST_RESULT passed=%d failed=%d', [PassCount, FailCount]);
 
 
     if FailCount > 0 then

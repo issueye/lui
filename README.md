@@ -12,6 +12,9 @@ npm run build          # 渲染器 + 单元测试 + Demo 三目标
 # 单元测试
 npm test
 
+# 回归基线校验（复用已编译测试程序，并核对文档中的测试数量）
+npm run verify:baseline
+
 # 新建一个自己的工程（开发 / 测试 / 打包 / 交付 一次到位）
 npm run init -- myapp
 cd myapp
@@ -44,7 +47,7 @@ bin/lui-render.exe demo/ui_gallery.xml
 | `scaffold/` | 项目模板：`lui-render --init` 用它生成工程骨架（含自带 `ui/` 运行时） |
 | `demo/` | 演示页面（login / list / todo / script / m7 / ui / uildg / uidisp / uinav / **agent**） |
 | `tools/renderer` | 独立渲染器 lui-render（CLI + GUI + 项目工具链）与单程序版工程 |
-| `tests/` | 单元测试（`npm test` 运行，当前 708 项） |
+| `tests/` | 单元测试（`npm test` 运行，当前 722 项） |
 
 ## 文档
 
@@ -55,6 +58,7 @@ bin/lui-render.exe demo/ui_gallery.xml
 - `docs/M9-独立渲染器设计方案.md` —— lui-render 渲染器
 - `docs/M10-AI-Agent设计方案.md` —— 对话式 AI Agent（工具调用 / 离线+在线双档）
 - `docs/M11-项目脚手架设计方案.md` —— 项目脚手架与开发/测试/打包/交付工具链
+- `docs/测试套件模块化.md` —— 回归测试 include 分组与迁移约定
 
 ## 新建工程（`lui-render --init`）
 
