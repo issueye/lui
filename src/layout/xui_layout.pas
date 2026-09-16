@@ -624,8 +624,8 @@ begin
       heightBase := definiteH
     else
       heightBase := ACtx.ViewportHeight;
-    // 滚动：子节点从内容盒顶减去 ScrollTop 处开始排布（返回的仍是自然内容高）
-    contentH := ArrangeChildren(ANode, contentLeft, contentTop - ANode.ScrollTop, contentW,
+    // 滚动：子节点从内容盒左上减去 ScrollLeft/ScrollTop 处开始排布（返回的仍是自然内容高）
+    contentH := ArrangeChildren(ANode, contentLeft - ANode.ScrollLeft, contentTop - ANode.ScrollTop, contentW,
       ACtx, heightBase,
       IfThen(definiteH >= 0, Max(0, definiteH - 2 * bw - padT - padB), -1));
     ANode.ContentHeight := contentH;
@@ -688,16 +688,39 @@ begin
     EnsureStyles(ANode[i], ANode.Style);
 end;
 
-// 滚动偏移收敛：内容变短/容器变大后把 ScrollTop 夹回合法范围
-function ClampScrollTops(ANode: TXuiNode): Boolean;
+// 滚动范围收敛（R2/R3）：先记录自然内容宽，再把 ScrollTop/ScrollLeft 夹回合法范围。
+// ContentHeight 仍由布局期记录；ContentWidth 在此按子节点在未滚动坐标系下的最大延伸求得，
+// 且下界为内容盒宽度（子节点更窄时不产生横向滚动）。
+function ClampScrollOffsets(ANode: TXuiNode): Boolean;
 var
   i: Integer;
-  boxH, maxTop: Single;
+  content: TRect;
+  boxW, boxH, maxTop, maxLeft, extentR: Single;
+  child: TXuiNode;
 begin
   Result := False;
   if ANode.Style <> nil then
   begin
-    boxH := ANode.ContentBox.Bottom - ANode.ContentBox.Top;
+    content := ANode.ContentBox;
+    boxW := content.Right - content.Left;
+    boxH := content.Bottom - content.Top;
+
+    if ANode.Count > 0 then
+    begin
+      extentR := content.Left;
+      for i := 0 to ANode.Count - 1 do
+      begin
+        child := ANode[i];
+        if (child.Style = nil) or (child.Style.Display = xdispNone) or
+           (child.Style.Position = xposAbsolute) then
+          Continue;
+        extentR := Max(extentR, child.BoxRect.Right + ANode.ScrollLeft);
+      end;
+      ANode.ContentWidth := Max(boxW, extentR - content.Left);
+    end
+    else
+      ANode.ContentWidth := boxW;
+
     maxTop := Max(0, ANode.ContentHeight - boxH);
     if ANode.ScrollTop > maxTop then
     begin
@@ -709,9 +732,21 @@ begin
       ANode.ScrollTop := 0;
       Result := True;
     end;
+
+    maxLeft := Max(0, ANode.ContentWidth - boxW);
+    if ANode.ScrollLeft > maxLeft then
+    begin
+      ANode.ScrollLeft := maxLeft;
+      Result := True;
+    end;
+    if ANode.ScrollLeft < 0 then
+    begin
+      ANode.ScrollLeft := 0;
+      Result := True;
+    end;
   end;
   for i := 0 to ANode.Count - 1 do
-    if ClampScrollTops(ANode[i]) then
+    if ClampScrollOffsets(ANode[i]) then
       Result := True;
 end;
 
@@ -734,8 +769,8 @@ begin
   // 根元素铺满视口
   ArrangeNode(root, 0, 0, AViewportWidth, ctx, AViewportHeight, AViewportHeight);
 
-  // 收尾 1：滚动偏移夹取（必要时重排一次）
-  if ClampScrollTops(root) then
+  // 收尾 1：滚动范围与偏移收敛（必要时重排一次）
+  if ClampScrollOffsets(root) then
     ArrangeNode(root, 0, 0, AViewportWidth, ctx, AViewportHeight, AViewportHeight);
 
   // 收尾 2：所有包含块矩形定稿后再定位绝对定位元素

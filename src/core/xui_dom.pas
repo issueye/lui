@@ -29,7 +29,9 @@ type
     BoxRect: TRect;           // 布局结果：border-box（绝对坐标）
     TextLines: TXuiLineArray; // 布局期断行结果（绘制期直接使用，避免重复测量）
     ContentHeight: Single;    // 布局期记录的自然内容高（滚动范围用）
+    ContentWidth: Single;     // 布局期记录的自然内容宽（R3 横向滚动范围用）
     ScrollTop: Single;        // 纵向滚动偏移（overflow 容器）
+    ScrollLeft: Single;       // 横向滚动偏移（R3）
     Bindings: TObjectList;    // TXuiEventBinding 列表（xui_events，节点拥有）
     Behavior: TObject;        // 元素行为（xui_widget，节点拥有；行为内 FNode 为弱引用）
     InlineStyleCache: TObject; // 内联 style 解析缓存（xui_css_match 维护，按原文失效）
@@ -83,7 +85,9 @@ begin
   ClassList := TStringList.Create;
   Pseudos := [];
   ScrollTop := 0;
+  ScrollLeft := 0;
   ContentHeight := 0;
+  ContentWidth := 0;
   Style := nil; // 由样式阶段填充
 end;
 

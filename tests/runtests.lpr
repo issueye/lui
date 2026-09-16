@@ -37,7 +37,7 @@ uses
   xui_types, xui_style, xui_dom, xui_xml, xui_layout, xui_text,
 
 
-  xui_css_token, xui_css_parser, xui_css_match, xui_render, xui_engine,
+  xui_css_token, xui_css_parser, xui_css_match, xui_render, xui_engine, xui_scroll,
 
 
   xui_events, xui_widget, xui_input, xui_svg,
@@ -1569,6 +1569,7 @@ end;
 {$I input_transition.inc}
 {$I include_templates.inc}
 {$I script_helpers.inc}
+{$I scroll_model.inc}
 {$I script_core.inc}
 {$I script_async.inc}
 {$I script_timers.inc}
@@ -11713,6 +11714,18 @@ begin
 
 
     TestRuntimeDom;
+
+
+    TestScrollOverflowParsing;
+
+
+    TestScrollMetrics;
+
+
+    TestScrollBarsAndWheel;
+
+
+    TestScrollLeftScriptBridge;
 
 
     TestRoundedAndOpacity;

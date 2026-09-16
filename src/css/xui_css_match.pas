@@ -679,8 +679,13 @@ begin
 
   if prop = 'overflow' then
   begin
-    if (vl = 'hidden') or (vl = 'scroll') or (vl = 'auto') then
+    // R2：auto/scroll 保留“显示滚动条”语义；hidden 仅裁剪 + 可编程滚动（无滚动条）
+    if vl = 'hidden' then
       AStyle.Overflow := xovHidden
+    else if vl = 'auto' then
+      AStyle.Overflow := xovAuto
+    else if vl = 'scroll' then
+      AStyle.Overflow := xovScroll
     else
       AStyle.Overflow := xovVisible;
     Exit;

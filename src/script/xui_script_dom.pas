@@ -8,7 +8,7 @@ unit xui_script_dom;
 
   暴露面（见 M6 设计文档 §4）：
     document.find(id) / document.add(xml)
-    node.id / tag / text / class / disabled / scrollTop / count / parent
+    node.id / tag / text / class / disabled / scrollTop / scrollLeft / count / parent
     node.find(id) / hasClass(name) / on(type, fn) / off(type, fn)
     node.add(xml) / remove() / clear() / eachChild(fn)
   事件对象（处理器首参）：{ type, node, x, y, delta, key, text, shift:{shift,ctrl,alt} }
@@ -296,6 +296,8 @@ begin
     AValue := FScript.Bool(XuiIsDisabled(node))
   else if AName = 'scrollTop' then
     AValue := FScript.Num(node.ScrollTop)
+  else if AName = 'scrollLeft' then
+    AValue := FScript.Num(node.ScrollLeft)
   else if AName = 'count' then
     AValue := FScript.Num(node.Count)
   else if AName = 'style' then
@@ -356,6 +358,12 @@ begin
   else if AName = 'scrollTop' then
   begin
     node.ScrollTop := FScript.ToNumberValue(AValue);
+    FEngine.InvalidateLayout;
+    Result := True;
+  end
+  else if AName = 'scrollLeft' then
+  begin
+    node.ScrollLeft := FScript.ToNumberValue(AValue);
     FEngine.InvalidateLayout;
     Result := True;
   end
