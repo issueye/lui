@@ -27,7 +27,7 @@ var
 
 type
   TXuiInputBehavior = class(TXuiBehavior)
-  private
+  protected
     FCaret: Integer;            // 光标字节偏移（0..Length(Text)）
     FAnchor: Integer;           // 选区锚点；= FCaret 表示无选区
     FScrollX: Single;           // 水平滚动（像素）
@@ -45,7 +45,8 @@ type
     function ValueIndexByCount(ACount: Integer): Integer;
     procedure SetCaret(APos: Integer; AExtend: Boolean);
     procedure DeleteRange(ALo, AHi: Integer);
-    procedure InsertText(const AText: string);
+    // 插入文本（单行输入折叠换行；多行输入覆盖为保留换行）
+    procedure InsertText(const AText: string); virtual;
     function AlignOffset(ANode: TXuiNode; ATextW: Single): Single;
     function TextWidth(ANode: TXuiNode; const AText: string): Single;
     function PosFromX(ANode: TXuiNode; AX: Integer): Integer;
@@ -62,6 +63,33 @@ type
     function WantsCaret: Boolean; override;
     function CaretRect(ANode: TXuiNode; out ARect: TRect): Boolean; override;
     procedure SetDisabled(AValue: Boolean); override;
+  end;
+
+  // R1：多行输入（textarea）。复用单行输入的编辑模型（值即 Node.Text、光标/选区为字节偏移），
+  // 增加：按内容宽软换行、显式换行、行内定位（Home/End）、上下行移动（按像素亲和）、
+  // 垂直+水平滚动（复用引擎滚动模型：上报 ContentHeight/ContentWidth + ScrollTop/ScrollLeft）。
+  //
+  // Enter 策略由属性 `enterkey` 选择（引擎不把应用策略写死）：
+  //   enterkey="newline"（默认，贴近浏览器 textarea）：Enter 换行，Ctrl+Enter 提交（派发 onenter）
+  //   enterkey="submit"（聊天/表单输入）：Enter 提交，Shift+Enter 换行
+  //
+  // 已知边界（与不支持清单同步）：不做自动增高上限（建议显式 CSS height）、Tab 仍是焦点遍历、
+  // 不可断长词允许溢出（与引擎断行规则一致）、无撤销/重做。
+  TXuiTextAreaBehavior = class(TXuiInputBehavior)
+  private
+    FSubmitOnEnter: Boolean;
+    FScrollCaret: Integer;   // 上次执行光标跟随时的光标位置（-1 = 未跟随过）
+    function LineHeightOf(ANode: TXuiNode): Single;
+    function PosFromXY(ANode: TXuiNode; AX, AY: Integer): Integer;
+    function HandleTextAreaKey(ANode: TXuiNode; AKey: Word;
+      AShift: TXuiShiftState): Boolean;
+  public
+    constructor Create;
+    procedure HandleAttribute(const AName, AValue: string); override;
+    function HandleEvent(ANode: TXuiNode; const AEvent: TXuiEvent): Boolean; override;
+    procedure InsertText(const AText: string); override;
+    function RenderContent(ANode: TXuiNode; ARenderer: TXuiCustomRenderer;
+      AMeasure: TXuiMeasureFunc; ACaretVisible: Boolean): Boolean; override;
   end;
 
 implementation
@@ -137,6 +165,486 @@ begin
   while (Result > 0) and (Result < Length(AText)) and
         ((Byte(AText[Result + 1]) and $C0) = $80) do
     Dec(Result);
+end;
+
+{ ---------------- R1：多行输入（textarea） ---------------- }
+
+type
+  // 一个视觉行（软换行后）：值中的字节区间 + 行宽
+  TTextAreaLine = record
+    StartByte: Integer;
+    Len: Integer;
+    Width: Single;
+  end;
+  TTextAreaLineArray = array of TTextAreaLine;
+
+// 与 xui_text 的 CJK 判定保持一致（可作为断行点）
+function TextAreaBreakable(ACode: LongWord): Boolean;
+begin
+  Result :=
+    ((ACode >= $2E80) and (ACode <= $9FFF)) or
+    ((ACode >= $A960) and (ACode <= $A97F)) or
+    ((ACode >= $AC00) and (ACode <= $D7AF)) or
+    ((ACode >= $F900) and (ACode <= $FAFF)) or
+    ((ACode >= $FE30) and (ACode <= $FE4F)) or
+    ((ACode >= $FF00) and (ACode <= $FF60)) or
+    ((ACode >= $FFE0) and (ACode <= $FFE6));
+end;
+
+function MeasureTextSimple(const AText: string; AStyle: TXuiStyle;
+  AMeasure: TXuiMeasureFunc): Single;
+begin
+  if AStyle = nil then
+    Exit(0);
+  if AMeasure <> nil then
+    Result := AMeasure(AText, AStyle).cx
+  else
+    Result := Length(AText) * AStyle.FontSize * 0.6;
+end;
+
+// 行内第 ACount 个码点对应的字节偏移（截断到行尾）
+function TextAreaByteAtCount(const AValue: string; const ALine: TTextAreaLine;
+  ACount: Integer): Integer;
+var
+  k, l, n: Integer;
+begin
+  k := ALine.StartByte;
+  n := 0;
+  while (n < ACount) and (k < ALine.StartByte + ALine.Len) do
+  begin
+    Utf8CodeAt(AValue, k + 1, l);
+    Inc(k, l);
+    Inc(n);
+  end;
+  Result := XuiSnapIndex(AValue, k);
+end;
+
+// 行内 x 像素 → 码点序号（就近取整）
+function TextAreaCountAtX(const ALineText: string; AStyle: TXuiStyle;
+  AMeasure: TXuiMeasureFunc; AX: Single): Integer;
+var
+  k, l, count: Integer;
+  w, best: Single;
+begin
+  Result := 0;
+  count := 0;
+  best := Abs(AX);
+  k := 1;
+  while k <= Length(ALineText) do
+  begin
+    Utf8CodeAt(ALineText, k, l);
+    Inc(k, l);
+    Inc(count);
+    w := MeasureTextSimple(Copy(ALineText, 1, k - 1), AStyle, AMeasure);
+    if Abs(w - AX) < best then
+    begin
+      best := Abs(w - AX);
+      Result := count;
+    end;
+  end;
+end;
+
+// 断行：先按 #10 切逻辑行，再按内容宽软断行；空格与 CJK 处可断，不可断长词允许溢出
+procedure BuildTextAreaLines(const AValue: string; AStyle: TXuiStyle;
+  AMaxW: Single; AMeasure: TXuiMeasureFunc; out ALines: TTextAreaLineArray);
+var
+  n, pos, nlPos, i, next, lastBreak, len: Integer;
+  code: LongWord;
+  progressed: Boolean;
+
+  procedure Emit(AStart, ALen: Integer);
+  begin
+    if n >= Length(ALines) then
+      SetLength(ALines, n * 2 + 8);
+    ALines[n].StartByte := AStart;
+    ALines[n].Len := ALen;
+    ALines[n].Width := MeasureTextSimple(Copy(AValue, AStart + 1, ALen), AStyle, AMeasure);
+    Inc(n);
+  end;
+
+begin
+  n := 0;
+  SetLength(ALines, 0);
+  pos := 0;
+  while pos <= Length(AValue) do
+  begin
+    nlPos := pos;
+    while (nlPos < Length(AValue)) and (AValue[nlPos + 1] <> #10) do
+      Inc(nlPos);
+
+    if nlPos = pos then
+      Emit(pos, 0) // 空逻辑行（连续换行 / 结尾换行）
+    else
+    // 软断行 [pos, nlPos)：每轮至少产出一行，避免死循环
+    while pos < nlPos do
+    begin
+      lastBreak := -1;
+      i := pos;
+      progressed := False;
+      while i < nlPos do
+      begin
+        code := Utf8CodeAt(AValue, i + 1, len);
+        next := i + len;
+        // 先判溢出：优先在“当前字符之前”的最后一个可断点断行（空格 / CJK）
+        if (AMaxW > 0) and
+           (MeasureTextSimple(Copy(AValue, pos + 1, next - pos), AStyle, AMeasure) > AMaxW) then
+        begin
+          if lastBreak > pos then
+          begin
+            Emit(pos, lastBreak - pos);
+            pos := lastBreak;
+            while (pos < nlPos) and (AValue[pos + 1] = ' ') do
+              Inc(pos);
+            progressed := True;
+            Break;
+          end
+          else if i > pos then
+          begin
+            // 无可断点：按字符硬断（textarea 语义：长串也要换行，不横向溢出）
+            Emit(pos, i - pos);
+            pos := i;
+            // 新行首的空白丢弃（与引擎断行规则一致，避免行首缩进空档）
+            while (pos < nlPos) and (AValue[pos + 1] = ' ') do
+              Inc(pos);
+            progressed := True;
+            Break;
+          end;
+          // 单字符就超宽：放行该字符（避免死循环），下一字符再判
+        end;
+        if code = 32 then
+          lastBreak := i
+        else if TextAreaBreakable(code) then
+          lastBreak := next;
+        i := next;
+      end;
+      if not progressed then
+      begin
+        Emit(pos, nlPos - pos);
+        pos := nlPos;
+      end;
+    end;
+    pos := nlPos + 1; // 跳过换行符
+  end;
+  SetLength(ALines, n);
+end;
+
+// 光标所在的视觉行：最后一个 StartByte <= AByte 的行
+function TextAreaLineAtByte(const ALines: TTextAreaLineArray; AByte: Integer): Integer;
+var
+  k: Integer;
+begin
+  Result := 0;
+  for k := 0 to High(ALines) do
+    if ALines[k].StartByte <= AByte then
+      Result := k;
+end;
+
+{ TXuiTextAreaBehavior }
+
+function TXuiTextAreaBehavior.LineHeightOf(ANode: TXuiNode): Single;
+begin
+  Result := 0;
+  if ANode.Style = nil then
+    Exit;
+  Result := LineHeightPx(ANode.Style);
+  if Result <= 0 then
+    Result := ANode.Style.FontSize * 1.4;
+end;
+
+constructor TXuiTextAreaBehavior.Create;
+begin
+  inherited Create;
+  FScrollCaret := -1;
+end;
+
+procedure TXuiTextAreaBehavior.HandleAttribute(const AName, AValue: string);
+begin
+  inherited HandleAttribute(AName, AValue);
+  if FNode <> nil then
+    FNode.SelfScrolls := True; // 滚动范围由本行为上报
+  if CompareText(AName, 'enterkey') = 0 then
+    FSubmitOnEnter := CompareText(Trim(AValue), 'submit') = 0;
+end;
+
+procedure TXuiTextAreaBehavior.InsertText(const AText: string);
+var
+  text, value, prefix, suffix: string;
+  lo, hi, keep: Integer;
+begin
+  if (FNode = nil) or (AText = '') then
+    Exit;
+  // 多行：保留换行（统一为 LF）；制表符折叠为空格（引擎无制表位模型）
+  text := StringReplace(AText, #13#10, #10, [rfReplaceAll]);
+  text := StringReplace(text, #13, #10, [rfReplaceAll]);
+  text := StringReplace(text, #9, ' ', [rfReplaceAll]);
+  if text = '' then
+    Exit;
+  value := FNode.Text;
+  lo := SelLo;
+  hi := SelHi;
+  prefix := Copy(value, 1, lo);
+  suffix := Copy(value, hi + 1, Length(value));
+  if FMaxLength > 0 then
+  begin
+    keep := FMaxLength - Utf8Length(prefix) - Utf8Length(suffix);
+    if keep <= 0 then
+      Exit;
+    text := XuiTruncateUtf8(text, keep);
+  end;
+  FNode.Text := prefix + text + suffix;
+  FCaret := lo + Length(text);
+  FAnchor := FCaret;
+end;
+
+function TXuiTextAreaBehavior.PosFromXY(ANode: TXuiNode; AX, AY: Integer): Integer;
+var
+  lines: TTextAreaLineArray;
+  content: TRect;
+  lineH: Single;
+  idx: Integer;
+begin
+  Result := FCaret;
+  if (ANode.Style = nil) or (FNode <> ANode) then
+    Exit;
+  content := ANode.ContentBox;
+  BuildTextAreaLines(FNode.Text, ANode.Style, content.Right - content.Left, FMeasure, lines);
+  if Length(lines) = 0 then
+    Exit(0);
+  lineH := LineHeightOf(ANode);
+  if lineH <= 0 then
+    Exit(FCaret);
+  idx := Trunc((AY - content.Top + ANode.ScrollTop) / lineH);
+  if idx < 0 then
+    idx := 0;
+  if idx > High(lines) then
+    idx := High(lines);
+  Result := TextAreaByteAtCount(FNode.Text, lines[idx],
+    TextAreaCountAtX(Copy(FNode.Text, lines[idx].StartByte + 1, lines[idx].Len),
+      ANode.Style, FMeasure, AX - content.Left + ANode.ScrollLeft));
+end;
+
+function TXuiTextAreaBehavior.HandleTextAreaKey(ANode: TXuiNode; AKey: Word;
+  AShift: TXuiShiftState): Boolean;
+var
+  lines: TTextAreaLineArray;
+  content: TRect;
+  idx, target, col: Integer;
+  caretX: Single;
+  prefix: string;
+  extend: Boolean;
+begin
+  Result := False;
+  if (ANode.Style = nil) or (FNode <> ANode) then
+    Exit;
+  content := ANode.ContentBox;
+  BuildTextAreaLines(FNode.Text, ANode.Style, content.Right - content.Left, FMeasure, lines);
+  if Length(lines) = 0 then
+    Exit;
+  extend := xssShift in AShift;
+  idx := TextAreaLineAtByte(lines, FCaret);
+  case AKey of
+    VK_RETURN:
+      if FSubmitOnEnter then
+      begin
+        // submit 策略：Enter 提交（交引擎派发 onenter），Shift+Enter 换行
+        if xssShift in AShift then
+        begin
+          InsertText(#10);
+          Result := True;
+        end;
+      end
+      else if xssCtrl in AShift then
+        Result := False // 默认策略：Ctrl+Enter 提交
+      else
+      begin
+        InsertText(#10);
+        Result := True;
+      end;
+    VK_UP, VK_DOWN:
+      begin
+        prefix := Copy(FNode.Text, lines[idx].StartByte + 1, FCaret - lines[idx].StartByte);
+        caretX := MeasureTextSimple(prefix, ANode.Style, FMeasure);
+        if AKey = VK_UP then
+          target := idx - 1
+        else
+          target := idx + 1;
+        if (target >= 0) and (target <= High(lines)) then
+        begin
+          col := TextAreaCountAtX(Copy(FNode.Text, lines[target].StartByte + 1, lines[target].Len),
+            ANode.Style, FMeasure, caretX);
+          SetCaret(TextAreaByteAtCount(FNode.Text, lines[target], col), extend);
+        end
+        else
+          SetCaret(FCaret, extend);
+        Result := True;
+      end;
+    VK_HOME:
+      begin
+        if xssCtrl in AShift then
+          SetCaret(0, extend)
+        else
+          SetCaret(lines[idx].StartByte, extend);
+        Result := True;
+      end;
+    VK_END:
+      begin
+        if xssCtrl in AShift then
+          SetCaret(Length(FNode.Text), extend)
+        else
+          SetCaret(lines[idx].StartByte + lines[idx].Len, extend);
+        Result := True;
+      end;
+  end;
+end;
+
+function TXuiTextAreaBehavior.HandleEvent(ANode: TXuiNode; const AEvent: TXuiEvent): Boolean;
+begin
+  Result := False;
+  if XuiIsDisabled(ANode) then
+    Exit;
+  case AEvent.Kind of
+    xevKeyDown:
+      begin
+        if HandleTextAreaKey(ANode, AEvent.Key, AEvent.Shift) then
+          Exit(True);
+        // 其余编辑键与文本输入复用单行输入实现（InsertText 已被覆盖）
+        Exit(inherited HandleEvent(ANode, AEvent));
+      end;
+    xevMouseDown:
+      begin
+        FDragging := True;
+        SetCaret(PosFromXY(ANode, AEvent.X, AEvent.Y), False);
+        Exit(True);
+      end;
+    xevMouseMove:
+      if FDragging then
+      begin
+        SetCaret(PosFromXY(ANode, AEvent.X, AEvent.Y), True);
+        Exit(True);
+      end;
+    xevMouseUp:
+      begin
+        FDragging := False;
+        Exit(False);
+      end;
+  end;
+  Result := inherited HandleEvent(ANode, AEvent);
+end;
+
+function TXuiTextAreaBehavior.RenderContent(ANode: TXuiNode; ARenderer: TXuiCustomRenderer;
+  AMeasure: TXuiMeasureFunc; ACaretVisible: Boolean): Boolean;
+var
+  style: TXuiStyle;
+  content: TRect;
+  lines: TTextAreaLineArray;
+  lineH, maxW, totalH, maxScroll, lineTop, x, y, x1, x2, prefixW: Single;
+  i, caretLine, aLo, aHi, lo, hi: Integer;
+  focused: Boolean;
+  selColor, savedColor: TXuiColor;
+  lineText, prefix: string;
+  caretX, caretY: Integer;
+begin
+  Result := False;
+  if (ANode = nil) or (ANode.Style = nil) or (FNode <> ANode) then
+    Exit;
+  Result := True;
+  style := ANode.Style;
+  FMeasure := AMeasure;
+  FCaret := XuiSnapIndex(FNode.Text, FCaret);
+  FAnchor := XuiSnapIndex(FNode.Text, FAnchor);
+  content := ANode.ContentBox;
+  focused := xpFocus in ANode.Pseudos;
+  lineH := LineHeightOf(ANode);
+  if lineH <= 0 then
+    Exit;
+
+  BuildTextAreaLines(FNode.Text, style, content.Right - content.Left, AMeasure, lines);
+  if Length(lines) = 0 then
+  begin
+    SetLength(lines, 1);
+    lines[0].StartByte := 0;
+    lines[0].Len := 0;
+    lines[0].Width := 0;
+  end;
+
+  totalH := Length(lines) * lineH;
+  maxW := 0;
+  for i := 0 to High(lines) do
+    maxW := Max(maxW, lines[i].Width);
+
+  // 上报滚动范围：引擎据此驱动滚轮、夹取与滚动条
+  ANode.ContentHeight := totalH;
+  ANode.ContentWidth := Max(content.Right - content.Left, maxW);
+  caretLine := TextAreaLineAtByte(lines, FCaret);
+
+  // 光标跟随：仅在光标变化时执行（否则滚轮/滚动条滚动会被每帧拉回光标处）
+  if focused and (FCaret <> FScrollCaret) then
+  begin
+    lineTop := caretLine * lineH;
+    if lineTop < ANode.ScrollTop then
+      ANode.ScrollTop := lineTop;
+    if lineTop + lineH > ANode.ScrollTop + (content.Bottom - content.Top) then
+      ANode.ScrollTop := lineTop + lineH - (content.Bottom - content.Top);
+  end;
+  FScrollCaret := FCaret;
+  maxScroll := Max(0, totalH - (content.Bottom - content.Top));
+  if ANode.ScrollTop > maxScroll then
+    ANode.ScrollTop := maxScroll;
+  if ANode.ScrollTop < 0 then
+    ANode.ScrollTop := 0;
+
+  selColor := XuiMixColor(style.TextColor, style.BgColor, 0.75);
+  aLo := SelLo;
+  aHi := SelHi;
+
+  ARenderer.PushClip(content);
+  try
+    if (FNode.Text = '') and (FPlaceholder <> '') then
+    begin
+      savedColor := style.TextColor;
+      style.TextColor := XuiMixColor(style.TextColor, style.BgColor, 0.55);
+      x := content.Left - ANode.ScrollLeft;
+      y := content.Top - ANode.ScrollTop;
+      ARenderer.DrawText(Rect(Round(x), Round(y),
+        Round(x + MeasureTextSimple(FPlaceholder, style, AMeasure)) + 4, Round(y + lineH)),
+        FPlaceholder, style);
+      style.TextColor := savedColor;
+    end
+    else
+    begin
+      for i := 0 to High(lines) do
+      begin
+        lineText := Copy(FNode.Text, lines[i].StartByte + 1, lines[i].Len);
+        x := content.Left - ANode.ScrollLeft;
+        y := content.Top - ANode.ScrollTop + i * lineH;
+        if focused and (aLo < aHi) then
+        begin
+          lo := Max(aLo, lines[i].StartByte);
+          hi := Min(aHi, lines[i].StartByte + lines[i].Len);
+          if lo < hi then
+          begin
+            x1 := x + MeasureTextSimple(Copy(lineText, 1, lo - lines[i].StartByte), style, AMeasure);
+            x2 := x + MeasureTextSimple(Copy(lineText, 1, hi - lines[i].StartByte), style, AMeasure);
+            ARenderer.FillRect(Rect(Round(x1), Round(y), Round(x2), Round(y + lineH)), selColor);
+          end;
+        end;
+        if lineText <> '' then
+          ARenderer.DrawText(Rect(Round(x), Round(y), Round(x + lines[i].Width) + 4,
+            Round(y + lineH)), lineText, style);
+      end;
+    end;
+
+    prefix := Copy(FNode.Text, lines[caretLine].StartByte + 1, FCaret - lines[caretLine].StartByte);
+    prefixW := MeasureTextSimple(prefix, style, AMeasure);
+    caretX := Round(content.Left - ANode.ScrollLeft + prefixW);
+    caretY := Round(content.Top - ANode.ScrollTop + caretLine * lineH);
+    if focused and ACaretVisible then
+      ARenderer.FillRect(Rect(caretX, caretY, caretX + XuiCaretWidth, caretY + Round(lineH)),
+        style.TextColor);
+    FCaretRect := Rect(caretX, caretY, caretX + XuiCaretWidth, caretY + Round(lineH));
+  finally
+    ARenderer.PopClip;
+  end;
 end;
 
 { TXuiInputBehavior }
@@ -596,5 +1104,6 @@ end;
 
 initialization
   RegisterBehavior('input', TXuiInputBehavior);
+  RegisterBehavior('textarea', TXuiTextAreaBehavior);
 
 end.

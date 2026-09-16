@@ -632,7 +632,6 @@ begin
   end
   else if ANode.Text <> '' then
   begin
-    ANode.ContentHeight := 0;
     if ANode.Tag = 'button' then
     begin
       SetLength(ANode.TextLines, 1);
@@ -641,12 +640,33 @@ begin
     end
     else
       contentH := WrapText(ANode.Text, style, contentW, ACtx.Measure, ANode.TextLines);
+
+    // R1：自绘内容（多行输入）由行为在 RenderContent 里上报真实的多行滚动范围；
+    // 布局不清零它，并在 auto 高度下沿用上一帧上报值（首帧退化为单行估算）。
+    if ANode.SelfScrolls then
+    begin
+      ANode.ContentHeight := Max(ANode.ContentHeight, contentH);
+      if style.Height.IsAuto then
+        contentH := ANode.ContentHeight;
+    end
+    else
+      ANode.ContentHeight := 0;
   end
   else
   begin
     SetLength(ANode.TextLines, 0);
-    ANode.ContentHeight := 0;
-    contentH := 0;
+    if ANode.SelfScrolls then
+    begin
+      if (style <> nil) and style.Height.IsAuto then
+        contentH := ANode.ContentHeight
+      else
+        contentH := 0;
+    end
+    else
+    begin
+      ANode.ContentHeight := 0;
+      contentH := 0;
+    end;
   end;
 
   if definiteH >= 0 then
@@ -719,7 +739,8 @@ begin
       ANode.ContentWidth := Max(boxW, extentR - content.Left);
     end
     else
-      ANode.ContentWidth := boxW;
+      // 只抬高：自绘内容（多行输入）在 RenderContent 里上报的自然宽必须保留
+      ANode.ContentWidth := Max(ANode.ContentWidth, boxW);
 
     maxTop := Max(0, ANode.ContentHeight - boxH);
     if ANode.ScrollTop > maxTop then

@@ -253,6 +253,15 @@ begin
     Result.Padding := SidesPx(6, 0, 6, 0);
     Result.Margin := SidesPx(0, 2, 0, 0);
   end
+  else if (ATag = 'textarea') then
+  begin
+    // R1：多行输入默认块级、白底带边框；高度由 CSS 决定（默认 72px ≈ 3 行）
+    Result.BgColor := XuiRGB(255, 255, 255);
+    Result.BorderWidth := 1;
+    Result.Height := XuiLengthPx(72);
+    Result.Padding := SidesPx(6, 4, 6, 4);
+    Result.Margin := SidesPx(0, 2, 0, 0);
+  end
   else if ATag = 'label' then
   begin
     Result.Margin := SidesPx(0, 2, 0, 0);

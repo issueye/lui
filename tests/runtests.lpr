@@ -1570,6 +1570,7 @@ end;
 {$I include_templates.inc}
 {$I script_helpers.inc}
 {$I scroll_model.inc}
+{$I textarea_model.inc}
 {$I script_core.inc}
 {$I script_async.inc}
 {$I script_timers.inc}
@@ -11726,6 +11727,24 @@ begin
 
 
     TestScrollLeftScriptBridge;
+
+
+    TestTextAreaBasics;
+
+
+    TestTextAreaEditAcrossLines;
+
+
+    TestTextAreaEnterPolicy;
+
+
+    TestTextAreaWrapAndNav;
+
+
+    TestTextAreaScroll;
+
+
+    TestTextAreaLongLine;
 
 
     TestRoundedAndOpacity;

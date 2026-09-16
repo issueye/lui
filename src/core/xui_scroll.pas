@@ -114,7 +114,8 @@ begin
   if (ANode = nil) or (ANode.Style = nil) or
      (ANode.Style.Display = xdispNone) or (not XuiDrawsScrollbars(ANode.Style)) then
     Exit;
-  if ANode.Count = 0 then
+  // 自绘内容（如多行输入）没有子节点，但有滚动范围，同样需要滚动条
+  if (ANode.ContentHeight <= 0) and (ANode.ContentWidth <= 0) then
     Exit;
 
   maxTop := XuiMaxScrollTop(ANode);
