@@ -138,9 +138,33 @@ begin
   Result := TXuiNode(FChildren[AIndex]);
 end;
 
+// 类名匹配：热点路径（每次样式重算逐节点 × 逐规则调用）。
+// ClassList.IndexOf 走的是 locale 相关的 AnsiCompareText，在中文环境下开销显著；
+// 这里先用逐字节的 CompareText（与 locale 比较对 ASCII 类名完全一致），
+// 仅当类名里出现非 ASCII 字节时才回退到 locale 比较，保证语义不变。
 function TXuiNode.HasClass(const AName: string): Boolean;
+var
+  i, j: Integer;
+  cls: string;
+  nonAscii: Boolean;
 begin
-  Result := (ClassList.IndexOf(AName) >= 0);
+  nonAscii := False;
+  for i := 0 to ClassList.Count - 1 do
+  begin
+    cls := ClassList[i];
+    if CompareText(cls, AName) = 0 then
+      Exit(True);
+    for j := 1 to Length(cls) do
+      if Byte(cls[j]) >= $80 then
+      begin
+        nonAscii := True;
+        Break;
+      end;
+  end;
+  if nonAscii then
+    Result := ClassList.IndexOf(AName) >= 0
+  else
+    Result := False;
 end;
 
 function TXuiNode.AttributeValue(const AName: string; const ADefault: string): string;

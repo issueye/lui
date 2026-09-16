@@ -55,6 +55,7 @@ bin/lui-render.exe demo/ui_gallery.xml
 - `docs/M9-独立渲染器设计方案.md` —— lui-render 渲染器
 - `docs/M10-AI-Agent设计方案.md` —— 对话式 AI Agent（工具调用 / 离线+在线双档）
 - `docs/M11-项目脚手架设计方案.md` —— 项目脚手架与开发/测试/打包/交付工具链
+- `docs/性能分析与优化.md` —— 两轮热点剖析与优化记录（含 `--bench` 用法与实测数据）
 
 ## 新建工程（`lui-render --init`）
 
