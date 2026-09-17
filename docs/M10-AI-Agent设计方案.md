@@ -1,6 +1,12 @@
 # lui M10 设计方案：对话式 AI Agent
 
-> 状态：已实现（2026-09-13）。基线：M9（runtests 633 项全绿）+ 单程序分发。
+> 状态：已实现（2026-09-13）。历史基线：M9（runtests 633 项全绿）+ 单程序分发。
+> 当前回归基线：M11（runtests 978 项全绿）。
+> R2/R3 滚动模型（overflow auto/scroll + 引擎滚动条 + 横向滚动）已于 2026-09-16 并入引擎。
+> R7：CSS 尺寸约束与表现力（`max-width/max-height`、`flex-shrink`、`flex-wrap`、
+> `letter-spacing`、`white-space`/`text-overflow:ellipsis`、`box-shadow`）也已并入引擎，
+> 见下表与 `docs/设计方案.md` 的 CSS 子集说明；仍不支持 `transform`、`align-self`、
+> 伪元素、column 方向的 flex wrap 与 `spread` 扩展。
 > 本文给出 `demo/agent` 的定位、Agent 循环结构、工具协议、在线/离线双档与验证结果。
 
 ---
@@ -133,7 +139,7 @@ XML 侧只用声明式绑定表达：`x-for` 渲染消息、`x-if` 分左右气�
 
 ## 6. 验证
 
-**自动化（runtests，647 项全绿 / 0 失败）**
+**自动化（runtests，当前 978 项全绿 / 0 失败）**
 
 agent 页 12 项：
 - 整页装配无脚本错误；首屏问候已渲染

@@ -37,7 +37,9 @@ type
   TXuiFlexDirection = (xfdRow, xfdColumn);
   TXuiJustify = (xjcStart, xjcCenter, xjcEnd, xjcSpaceBetween, xjcSpaceAround);
   TXuiAlign = (xaiStart, xaiCenter, xaiEnd, xaiStretch);
-  TXuiOverflow = (xovVisible, xovHidden);
+  // R2/R3：visible = 不裁剪不滚动；hidden = 裁剪 + 可编程滚动（无滚动条，保持 v1 语义）；
+  //        auto = 裁剪 + 滚动 + 按需显示滚动条；scroll = 裁剪 + 滚动 + 常显滚动条
+  TXuiOverflow = (xovVisible, xovHidden, xovAuto, xovScroll);
   TXuiVisibility = (xvisVisible, xvisHidden);
 
   // 伪类状态（M2 仅用于选择器匹配；M4 接入交互状态机）

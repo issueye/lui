@@ -10,7 +10,7 @@ interface
 
 uses
   Classes, SysUtils, Contnrs, Types, StrUtils,
-  xui_types, xui_style, xui_dom, xui_events, xui_render, xui_text, xui_svg;
+  xui_types, xui_style, xui_dom, xui_events, xui_render, xui_text, xui_svg, xui_appspec;
 
 type
   TXuiBehavior = class
@@ -43,6 +43,9 @@ type
     procedure SetDisabled(AValue: Boolean); virtual;
     // 是否抑制引擎对子节点的默认流式渲染（如 SVG 等复合自绘图元）
     function SuppressChildrenRendering: Boolean; virtual;
+    // 样式级联完成后回调：行为可在此重新应用“来自元素属性”的固有尺寸/状态
+    // （属性先于 CSS 解析，级联会把 Style 复位，需要在这里补回，否则布局与绘制不一致）
+    procedure AfterStyleComputed; virtual;
     property Node: TXuiNode read FNode;
   end;
 
@@ -67,10 +70,14 @@ type
     FDoc: TXuiSvgDoc;
     FSrc: string;
     FDirty: Boolean;
+    FDeclaredW: Single;   // width 属性声明的固有宽（0 = 未声明）
+    FDeclaredH: Single;   // height 属性声明的固有高
     procedure EnsureDoc;
+    procedure ApplyIntrinsicSize;
   public
     destructor Destroy; override;
     procedure HandleAttribute(const AName, AValue: string); override;
+    procedure AfterStyleComputed; override;
     function SetRuntimeAttr(const AName, AValue: string): Boolean; override;
     function RenderContent(ANode: TXuiNode; ARenderer: TXuiCustomRenderer;
       AMeasure: TXuiMeasureFunc; ACaretVisible: Boolean): Boolean; override;
@@ -174,6 +181,11 @@ begin
   Result := False;
 end;
 
+procedure TXuiBehavior.AfterStyleComputed;
+begin
+  // 默认无操作
+end;
+
 { TXuiLabelBehavior }
 
 procedure TXuiLabelBehavior.HandleAttribute(const AName, AValue: string);
@@ -224,39 +236,66 @@ end;
 procedure TXuiSvgBehavior.HandleAttribute(const AName, AValue: string);
 var
   v: Single;
+  src: string;
 begin
   inherited HandleAttribute(AName, AValue);
   if SameText(AName, 'src') then
   begin
     FSrc := AValue;
     EnsureDoc;
-    if FileExists(AValue) then
-      FDoc.LoadFromFile(AValue);
+    // 相对路径先按应用根解析（M12，ADR 49）：打包后的应用不再依赖当前工作目录
+    src := XuiAppResourcePath(AValue);
+    if FileExists(src) then
+      FDoc.LoadFromFile(src);
   end
   else if SameText(AName, 'width') then
   begin
     v := SvgParseFloat(AValue, 0);
-    if (v > 0) and (FNode <> nil) and (FNode.Style <> nil) and FNode.Style.Width.IsAuto then
-      FNode.Style.Width := XuiLengthPx(v);
+    if v > 0 then
+    begin
+      FDeclaredW := v;
+      ApplyIntrinsicSize;
+    end;
   end
   else if SameText(AName, 'height') then
   begin
     v := SvgParseFloat(AValue, 0);
-    if (v > 0) and (FNode <> nil) and (FNode.Style <> nil) and FNode.Style.Height.IsAuto then
-      FNode.Style.Height := XuiLengthPx(v);
+    if v > 0 then
+    begin
+      FDeclaredH := v;
+      ApplyIntrinsicSize;
+    end;
   end;
+end;
+
+// 把固有尺寸写回样式（仅在样式未由 CSS 显式指定尺寸时）
+procedure TXuiSvgBehavior.ApplyIntrinsicSize;
+begin
+  if (FNode = nil) or (FNode.Style = nil) then
+    Exit;
+  if (FDeclaredW > 0) and FNode.Style.Width.IsAuto then
+    FNode.Style.Width := XuiLengthPx(FDeclaredW);
+  if (FDeclaredH > 0) and FNode.Style.Height.IsAuto then
+    FNode.Style.Height := XuiLengthPx(FDeclaredH);
+end;
+
+procedure TXuiSvgBehavior.AfterStyleComputed;
+begin
+  ApplyIntrinsicSize;
 end;
 
 function TXuiSvgBehavior.SetRuntimeAttr(const AName, AValue: string): Boolean;
 var
   v: Single;
+  src: string;
 begin
   if SameText(AName, 'src') then
   begin
     FSrc := AValue;
     EnsureDoc;
-    if FileExists(AValue) then
-      FDoc.LoadFromFile(AValue)
+    src := XuiAppResourcePath(AValue);
+    if FileExists(src) then
+      FDoc.LoadFromFile(src)
     else
       FDoc.Clear;
     Result := True;

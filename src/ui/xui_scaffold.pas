@@ -13,8 +13,12 @@ unit xui_scaffold;
   组件库运行时取 scaffold/ 的同级 ui/ 目录，整树复制进新工程：生成即自带运行时，
   不依赖外部仓库（ADR 42）。
 
-  占位符：模板中的 @@KEY@@ 在写入时替换。@@RENDERER@@ 是原生路径（供 .cmd），
-  @@RENDERER_POSIX@@ 是正斜杠形式（供 .sh / .json / .md）。
+  占位符：模板中的 @@KEY@@ 在写入时替换。@@RUNTIME@@ 是运行时 exe 的原生路径
+  （供 .cmd），@@RUNTIME_POSIX@@ 是正斜杠形式（供 .sh / .md）。
+
+  M12 起模板以 lui.json 为标记文件（ADR 49）：清单不只是"这是不是 lui 工程"的记号，
+  运行时真的会读它——入口页、窗口尺寸、主题、组件库目录、构建输出全在里面，所以
+  .cmd 脚本不再需要记 <%ENTRY%>/<%THEME%>/<%WIDTH%> 这些要与模板同步的常量。
 
   写入策略：只写不改不删。目标目录已存在同名文件时默认跳过并保留；仅当显式 Force 才
   覆盖；任何情况下都不删除目标目录中的任何东西（ADR 43）。目标目录非空但不是 lui 工程
@@ -35,12 +39,13 @@ type
     Height: Integer;       // 视口高；<=0 = 560（起步页刚好放下，不留大片空白）
     Theme: string;         // light / dark / both；空 = light
     LuiVersion: string;    // 渲染器版本（写进清单与 README）
-    RendererPath: string;  // 写进脚本的渲染器路径；空 = ParamStr(0)
+    RuntimePath: string;   // 写进脚本的运行时路径；空 = ParamStr(0)
     Force: Boolean;        // 覆盖已存在文件（默认跳过并保留）
     Verbose: Boolean;
   end;
 
   TXuiScaffoldResult = record
+    Name: string;          // 最终采用的工程名（默认取目标目录名）
     Files: TStringList;    // 已写入（相对目标目录，'/' 分隔；调用方释放）
     Skipped: TStringList;  // 因已存在而保留（调用方释放）
     UiFiles: Integer;      // 复制的组件库运行时文件数
@@ -64,7 +69,7 @@ uses
   xui_embed;
 
 const
-  MarkerFile = 'lui-project.json';   // 模板目录的识别标记
+  MarkerFile = 'lui.json';   // 模板目录与应用目录的识别标记（M12，ADR 49）
 
 type
   TToken = record
@@ -339,6 +344,7 @@ var
   i, width, height: Integer;
 begin
   Result := False;
+  AResult.Name := '';
   AResult.Files := TStringList.Create;
   AResult.Skipped := TStringList.Create;
   AResult.UiFiles := 0;
@@ -348,8 +354,8 @@ begin
   tplRoot := XuiScaffoldDir;
   if tplRoot = '' then
   begin
-    AResult.Error := '未找到项目模板（scaffold/）。请使用单程序版 lui-render-single.exe，' +
-      '或在 lui 仓库目录内运行 --init。';
+    AResult.Error := '未找到项目模板（scaffold/）。请使用单程序版运行时（自带模板），' +
+      '或在 lui 仓库目录内运行 init。';
     Exit;
   end;
   AResult.TemplateRoot := tplRoot;
@@ -373,6 +379,8 @@ begin
   if name = '' then
     name := 'lui-app';
 
+  AResult.Name := name;
+
   width := AOpts.Width;
   if width <= 0 then
     width := 480;
@@ -386,7 +394,7 @@ begin
   if devTheme = 'both' then
     devTheme := 'light';   // 预览窗一次只显示一个主题，T 键切换
 
-  renderer := Trim(AOpts.RendererPath);
+  renderer := Trim(AOpts.RuntimePath);
   if renderer = '' then
     renderer := ExpandFileName(ParamStr(0));
   renderer := ExcludeTrailingPathDelimiter(renderer);
@@ -395,12 +403,13 @@ begin
   tokens[1].Key := 'PROJECT_VERSION'; tokens[1].Value := XuiScaffoldProjectVersion;
   tokens[2].Key := 'LUI_VERSION';     tokens[2].Value := AOpts.LuiVersion;
   tokens[3].Key := 'DATE';            tokens[3].Value := FormatDateTime('yyyy-mm-dd', Now);
-  tokens[4].Key := 'RENDERER';        tokens[4].Value := renderer;
-  tokens[5].Key := 'RENDERER_POSIX';  tokens[5].Value := ToSlash(renderer);
+  tokens[4].Key := 'RUNTIME';         tokens[4].Value := renderer;
+  tokens[5].Key := 'RUNTIME_POSIX';   tokens[5].Value := ToSlash(renderer);
   tokens[6].Key := 'WIDTH';           tokens[6].Value := IntToStr(width);
   tokens[7].Key := 'HEIGHT';          tokens[7].Value := IntToStr(height);
   tokens[8].Key := 'THEME';           tokens[8].Value := theme;
   tokens[9].Key := 'DEV_THEME';       tokens[9].Value := devTheme;
+  // 模板里没有 @@EXE_NAME@@：产物名一律写成 @@PROJECT_NAME@@.exe，少一个可漂移的变量
 
   tplFiles := TStringList.Create;
   uiFiles := TStringList.Create;

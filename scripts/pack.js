@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 /**
- * lui 打包脚本 (M9-P3+)：把 lui-render / demo1 与其运行时资源组装为可分发包。
+ * lui 打包脚本 (M9-P3+，M12 起随运行时改名)：把 lui 运行时 / demo1 与其资源组装为可分发包。
  *
  * 用法：
  *   node scripts/pack.js                # 构建渲染器 + demo1，组装 dist/lui/ 并压缩 zip
  *   node scripts/pack.js --no-zip      # 只组装目录，不压缩
- *   node scripts/pack.js --no-demo     # 不带 demo1.exe（仅 lui-render）
+ *   node scripts/pack.js --no-demo     # 不带 demo1.exe（仅 lui 运行时）
  *
  * 产物：
  *   dist/lui/                          可执行文件 + pages/（页面与 ui/ 运行时资源）
  *   dist/lui-<version>-win64.zip       上述目录的压缩包
  *
  * 布局说明：demo 页面放 pages/ 子目录（含 ui/ 运行时资源），
- * 用户 cd pages 后运行 ..\demo1.exe / ..\lui-render.exe 即可，
+ * 用户 cd pages 后运行 ..\demo1.exe / ..\lui.exe 即可，
  * 相对引用（../ui/index.ts、nav-*.css）与 FindFile 查找链均成立。
  */
 
@@ -68,13 +68,15 @@ function main() {
   fs.rmSync(stage, { recursive: true, force: true });
   fs.mkdirSync(pages, { recursive: true });
 
-  // 可执行文件
-  const rendererExe = path.join(root, 'bin', 'lui-render.exe');
-  if (!fs.existsSync(rendererExe)) {
-    console.error('[错误] 未找到 bin/lui-render.exe（构建失败？）');
+  // 可执行文件：M12 起运行时以 lui.exe 为规范名（bin/lui-render.exe 是同一份二进制的
+  // 兼容别名，只服务仓库内部脚本，不进发布包——只为留个旧名字多带 29 MB 不划算）。
+  let runtimeExe = path.join(root, 'bin', 'lui.exe');
+  if (!fs.existsSync(runtimeExe)) runtimeExe = path.join(root, 'bin', 'lui-render.exe');
+  if (!fs.existsSync(runtimeExe)) {
+    console.error('[错误] 未找到 bin/lui.exe（构建失败？）');
     process.exit(1);
   }
-  fs.copyFileSync(rendererExe, path.join(stage, 'lui-render.exe'));
+  fs.copyFileSync(runtimeExe, path.join(stage, 'lui.exe'));
   if (withDemo) {
     const demoExe = path.join(root, 'demo', 'demo1.exe');
     if (!fs.existsSync(demoExe)) {
@@ -90,7 +92,7 @@ function main() {
   copy(path.join('ui', 'templates'), stage);
   copy(path.join('ui', 'theme'), stage);
 
-  // scaffold/ 项目模板（M11）：`lui-render --init` 从它生成工程骨架，
+  // scaffold/ 应用模板（M11/M12）：`lui init` 从它生成应用骨架，
   // 与 ui/ 同级（脚手架把同级 ui/ 整树复制进新工程，故两者必须一起在包里）。
   copy(path.join('scaffold'), stage);
 
@@ -105,31 +107,35 @@ function main() {
 
   // 说明文件
   fs.writeFileSync(path.join(stage, 'README.txt'), [
-    'lui v' + version + ' — 轻量级声明式 UI 渲染引擎与组件库',
+    'lui v' + version + ' — 不写 Pascal 的声明式 GUI 应用框架',
     '',
     '内容：',
-    '  lui-render.exe  独立渲染器（CLI 出图 / GUI 预览）',
+    '  lui.exe         运行时（开发 / 运行 / 构建 / 交付：一个 exe 全包）',
     withDemo ? '  demo1.exe       演示应用（登录 / 列表 / Todo / 脚本 / 组件库 / 浮层）' : '',
     '  pages\\          演示页面与 ui/ 运行时资源（组件库 + 主题）',
-    '  ui\\             组件库运行时（新建工程时整树拷走）',
-    '  scaffold\\       项目模板：lui-render --init <目录> 用它生成工程骨架',
+    '  ui\\             组件库运行时（新建应用时整树拷走）',
+    '  scaffold\\       应用模板：lui init <目录> 用它生成应用骨架',
     '',
-    '用法（建议在 pages\\ 目录下运行，资源按相对路径解析）：',
+    '用法（页面按相对路径解析，建议在 pages\\ 目录下运行）：',
     '  cd pages',
     withDemo ? '  ..\\demo1.exe login            # 演示应用' : '',
-    '  ..\\lui-render.exe ui.xml -o ui.png -w 560 -H 980   # 页面出图',
-    '  ..\\lui-render.exe --help      # 完整选项',
+    '  ..\\lui.exe ui.xml -o ui.png -w 560 -H 980     # 页面出图',
+    '  ..\\lui.exe --help             # 完整选项',
     '',
-    '新建自己的工程：',
-    '  ..\\lui-render.exe --init myapp -w 480 -H 560',
-    '  cd myapp && run-dev.cmd       # 开发 / run-test.cmd 测试 / run-pack.cmd 交付',
+    '新建并交付一个应用（只写 XML / CSS / TS，不写 Pascal）：',
+    '  ..\\lui.exe init myapp -w 480 -H 560        # 生成应用骨架（含自带 ui/ 运行时）',
+    '  cd myapp',
+    '  run-dev.cmd        # lui dev .    开发预览 + 热重载',
+    '  run-test.cmd       # lui check .  逐页脚本自检 + 双主题出图',
+    '  run-build.cmd      # lui build .  单文件应用 dist\\myapp.exe（拷走双击即运行）',
+    '  run-pack.cmd       # lui pack .   交付目录 dist\\（exe + 预览图 + README）',
     ''
   ].filter(Boolean).join('\r\n') + '\r\n');
 
   // 3. 冒烟验证：在 pages/ 工作目录运行打包内的渲染器（证明 exe 旁 ui/ 解析成立）
   const tmp = fs.mkdtempSync(path.join(root, 'dist', 'smoke-'));
   const smoke = spawnSync(
-    path.join(stage, 'lui-render.exe'),
+    path.join(stage, 'lui.exe'),
     ['ui_gallery.xml', '-o', path.join(tmp, 'smoke.png'), '-w', '420', '-H', '300', '-t', 'light'],
     { cwd: pages, encoding: 'utf-8' }
   );
@@ -147,8 +153,8 @@ function main() {
   // 3b. 冒烟验证 --init：用打包内的模板生成工程，再渲染生成的起步页。
   //     这一步同时证明三件事：scaffold/ 随包分发、同级 ui/ 被整树复制、生成物能直接出图。
   const proj = path.join(tmp, 'myapp');
-  const init = spawnSync(path.join(stage, 'lui-render.exe'),
-    ['--init', proj, '-w', '420', '-H', '420'], { cwd: tmp, encoding: 'utf-8' });
+  const init = spawnSync(path.join(stage, 'lui.exe'),
+    ['init', proj, '-w', '420', '-H', '420'], { cwd: tmp, encoding: 'utf-8' });
   const genPage = path.join(proj, 'src', 'main.xml');
   const genCss = path.join(proj, 'src', 'main-light.css');
   const genUi = path.join(proj, 'ui', 'index.ts');
@@ -162,13 +168,13 @@ function main() {
   }
   // 生成的 run-*.cmd 里渲染器路径应指向包内 exe（不是构建机的仓库路径）
   const devCmd = fs.readFileSync(path.join(proj, 'run-dev.cmd'), 'utf-8');
-  if (!devCmd.includes(path.join(stage, 'lui-render.exe'))) {
-    console.error('[错误] 生成的 run-dev.cmd 未指向包内渲染器');
+  if (!devCmd.includes(path.join(stage, 'lui.exe'))) {
+    console.error('[错误] 生成的 run-dev.cmd 未指向包内运行时');
     fs.rmSync(tmp, { recursive: true, force: true });
     process.exit(1);
   }
   const genOut = path.join(proj, 'out', 'init.png');
-  const genRender = spawnSync(path.join(stage, 'lui-render.exe'),
+  const genRender = spawnSync(path.join(stage, 'lui.exe'),
     [genPage, '-o', genOut, '-w', '420', '-H', '420', '-t', 'light'],
     { cwd: proj, encoding: 'utf-8' });
   const genOk = genRender.status === 0 && fs.existsSync(genOut) && fs.statSync(genOut).size > 1000;
@@ -183,7 +189,7 @@ function main() {
 
   // 3c. --json 契约：stdout 必须只含可解析的 JSON（日志走 stderr）。
   //     这条约定是 ADR 32 的核心，一旦有人把日志写回 stdout，脚本化调用就会断。
-  const jsonRun = spawnSync(path.join(stage, 'lui-render.exe'),
+  const jsonRun = spawnSync(path.join(stage, 'lui.exe'),
     [genPage, '-O', path.join(proj, 'out'), '-t', 'both', '--json'],
     { cwd: proj, encoding: 'utf-8' });
   let jsonOk = false, jsonDetail = '';
@@ -204,7 +210,7 @@ function main() {
   }
 
   // 3d. 参数健壮性：`--init --force` 曾把 --force 当目录名，真的建出过叫 "--force" 的目录
-  const badArg = spawnSync(path.join(stage, 'lui-render.exe'), ['--init', '--force'],
+  const badArg = spawnSync(path.join(stage, 'lui.exe'), ['--init', '--force'],
     { cwd: tmp, encoding: 'utf-8' });
   const forceDir = path.join(tmp, '--force');
   const badArgOk = badArg.status === 2 && !fs.existsSync(forceDir);
@@ -215,6 +221,36 @@ function main() {
     fs.rmSync(tmp, { recursive: true, force: true });
     process.exit(1);
   }
+
+  // 3e. M12 核心冒烟：把生成的应用构建成单文件，然后**换一个工作目录**运行它。
+  //     这是本次改造的验收点——旧版 --pack 必须 cd 进 pages/ 才跑得起来，
+  //     自包含应用则应在任意目录下都能自检与出图（应用根锚定 + 尾部载荷挂载）。
+  const buildRun = spawnSync(path.join(stage, 'lui.exe'), ['build', proj],
+    { cwd: tmp, encoding: 'utf-8' });
+  const appExe = path.join(proj, 'dist', 'myapp.exe');
+  if (buildRun.status !== 0 || !fs.existsSync(appExe)) {
+    console.error('[错误] lui build 冒烟失败:\n' + (buildRun.stdout || '') + (buildRun.stderr || ''));
+    fs.rmSync(tmp, { recursive: true, force: true });
+    process.exit(1);
+  }
+  const elsewhere = fs.mkdtempSync(path.join(root, 'dist', 'foreign-'));
+  const appCheck = spawnSync(appExe, ['--check'], { cwd: elsewhere, encoding: 'utf-8' });
+  const appPng = path.join(elsewhere, 'app.png');
+  const appRender = spawnSync(appExe, ['-o', appPng, '-t', 'dark'],
+    { cwd: elsewhere, encoding: 'utf-8' });
+  const selfContainedOk = appCheck.status === 0 && appRender.status === 0 &&
+    fs.existsSync(appPng) && fs.statSync(appPng).size > 1000;
+  console.log(selfContainedOk
+    ? '[冒烟] 自包含应用：构建成功，且在工作目录之外 --check 与出图均通过'
+    : `[警告] 自包含应用冒烟失败（check=${appCheck.status}, render=${appRender.status}）`);
+  if (!selfContainedOk) {
+    console.error((appCheck.stdout || '') + (appCheck.stderr || '') +
+      (appRender.stdout || '') + (appRender.stderr || ''));
+    fs.rmSync(elsewhere, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true });
+    process.exit(1);
+  }
+  fs.rmSync(elsewhere, { recursive: true, force: true });
 
   fs.rmSync(tmp, { recursive: true, force: true });
 

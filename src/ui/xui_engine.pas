@@ -9,7 +9,7 @@ interface
 
 uses
   Classes, SysUtils, StrUtils, Types, Graphics, Contnrs, Math, LCLType,
-  xui_types, xui_style, xui_dom, xui_xml, xui_render, xui_layout, xui_widget,
+  xui_types, xui_style, xui_dom, xui_scroll, xui_xml, xui_render, xui_layout, xui_widget,
   xui_css_parser, xui_css_match, xui_text, xui_events, xui_input, xui_anim,
   xui_script, xui_js_runtime
   {$IFDEF WINDOWS}, xui_render_gdiplus{$ENDIF};
@@ -68,7 +68,11 @@ type
     function FocusWantsCaret: Boolean;
     function ScrollableAncestor(ANode: TXuiNode): TXuiNode;
     function MaxScrollTop(ANode: TXuiNode): Single;
+    function MaxScrollLeft(ANode: TXuiNode): Single;
+    procedure RenderScrollBars(ANode: TXuiNode);
     procedure RenderNode(ANode: TXuiNode; ACanvas: TCanvas; AOpacity: Single);
+    procedure RenderShadow(ANode: TXuiNode; AStyle: TXuiStyle);   // R7：box-shadow
+    procedure NotifyStylesComputed(ANode: TXuiNode);              // R7：级联后回调行为
     procedure RenderChildren(ANode: TXuiNode; ACanvas: TCanvas; AOpacity: Single);
     procedure RenderText(ANode: TXuiNode);
     // 记录 XML/include 依赖的时间戳（热重载监测）
@@ -99,7 +103,9 @@ type
     procedure HandleMouseDown(AX, AY: Integer);
     procedure HandleMouseUp(AX, AY: Integer);
     procedure HandleMouseLeave;
-    function HandleMouseWheel(AX, AY, ADelta: Integer): Boolean;
+    // 滚轮：无修饰键时纵向优先、纵向无余量再横向；Shift 强制横向（R3）
+    function HandleMouseWheel(AX, AY, ADelta: Integer): Boolean; overload;
+    function HandleMouseWheel(AX, AY, ADelta: Integer; AShift: TXuiShiftState): Boolean; overload;
     function HitTest(AX, AY: Integer): TXuiNode;
     // 键盘：返回 True 表示已消费（宿主据此把 Key 置 0）
     function HandleKeyDown(AKey: Word; AShift: TXuiShiftState): Boolean;
@@ -760,15 +766,16 @@ begin
 end;
 
 function TXuiEngine.MaxScrollTop(ANode: TXuiNode): Single;
-var
-  boxH: Single;
 begin
-  if ANode.Style = nil then
-    Exit(0);
-  boxH := ANode.ContentBox.Bottom - ANode.ContentBox.Top;
-  Result := Max(0, ANode.ContentHeight - boxH);
+  Result := XuiMaxScrollTop(ANode);
 end;
 
+function TXuiEngine.MaxScrollLeft(ANode: TXuiNode): Single;
+begin
+  Result := XuiMaxScrollLeft(ANode);
+end;
+
+// 最近的可滚祖先：任一轴有余量即视为可滚（hidden/auto/scroll 都算滚动容器）
 function TXuiEngine.ScrollableAncestor(ANode: TXuiNode): TXuiNode;
 var
   node: TXuiNode;
@@ -777,42 +784,82 @@ begin
   node := ANode;
   while node <> nil do
   begin
-    if (node.Style <> nil) and (node.Style.Overflow = xovHidden) and
-       (MaxScrollTop(node) > 0) then
+    if XuiIsScrollContainer(node.Style) and
+       ((MaxScrollTop(node) > 0) or (MaxScrollLeft(node) > 0)) then
       Exit(node);
     node := node.Parent;
   end;
 end;
 
+procedure TXuiEngine.RenderScrollBars(ANode: TXuiNode);
+var
+  bars: TXuiScrollBarLayout;
+begin
+  bars := XuiScrollBarLayout(ANode);
+  if bars.ShowV then
+  begin
+    FRenderer.FillRect(bars.VTrack, XuiScrollbarTrackColor);
+    FRenderer.FillRect(bars.VThumb, XuiScrollbarThumbColor);
+  end;
+  if bars.ShowH then
+  begin
+    FRenderer.FillRect(bars.HTrack, XuiScrollbarTrackColor);
+    FRenderer.FillRect(bars.HThumb, XuiScrollbarThumbColor);
+  end;
+end;
+
 function TXuiEngine.HandleMouseWheel(AX, AY, ADelta: Integer): Boolean;
+begin
+  Result := HandleMouseWheel(AX, AY, ADelta, []);
+end;
+
+function TXuiEngine.HandleMouseWheel(AX, AY, ADelta: Integer;
+  AShift: TXuiShiftState): Boolean;
 var
   hit, target: TXuiNode;
-  newTop: Single;
-  ev: TXuiEvent;
+  step, newTop, newLeft: Single;
 begin
   Result := False;
   if FPointer.Root = nil then
     Exit;
   hit := HitTest(AX, AY);
-  ev := Default(TXuiEvent);
-  ev.Kind := xevWheel;
-  ev.X := AX;
-  ev.Y := AY;
-  ev.Delta := ADelta;
-  if DispatchEvent(hit, ev) then
+  if DispatchEvent(hit, XuiWheelEvent(AX, AY, ADelta, AShift)) then
     Exit(True); // 绑定或行为已处理
   target := ScrollableAncestor(hit);
   if target = nil then
     Exit;
-  newTop := Min(MaxScrollTop(target),
-    Max(0, target.ScrollTop - ADelta / 120 * XuiWheelStep));
-  if newTop <> target.ScrollTop then
+  step := ADelta / 120 * XuiWheelStep;
+
+  // 轴选择：Shift 强制横向；否则纵向优先，纵向无余量时降级为横向
+  if xssShift in AShift then
   begin
+    if MaxScrollLeft(target) <= 0 then
+      Exit;
+    newLeft := Min(MaxScrollLeft(target), Max(0, target.ScrollLeft - step));
+    if newLeft = target.ScrollLeft then
+      Exit;
+    target.ScrollLeft := newLeft;
+  end
+  else if MaxScrollTop(target) > 0 then
+  begin
+    newTop := Min(MaxScrollTop(target), Max(0, target.ScrollTop - step));
+    if newTop = target.ScrollTop then
+      Exit;
     target.ScrollTop := newTop;
-    FNeedsLayout := True;
-    DoChange;
-    Result := True;
-  end;
+  end
+  else if MaxScrollLeft(target) > 0 then
+  begin
+    newLeft := Min(MaxScrollLeft(target), Max(0, target.ScrollLeft - step));
+    if newLeft = target.ScrollLeft then
+      Exit;
+    target.ScrollLeft := newLeft;
+  end
+  else
+    Exit;
+
+  FNeedsLayout := True;
+  DoChange;
+  Result := True;
 end;
 
 function TXuiEngine.HitTest(AX, AY: Integer): TXuiNode;
@@ -1167,6 +1214,8 @@ begin
   if FDocumentDirty and (FDocument <> nil) and (FDocument.Root <> nil) then
   begin
     ComputeDocumentStyles(FDocument, FStyleSheets);
+    // R7：级联会复位 Style，行为在此补回来自元素属性的固有尺寸（如 SVG 图标宽高）
+    NotifyStylesComputed(FDocument.Root);
     FDocumentDirty := False;
   end;
 end;
@@ -1437,6 +1486,8 @@ begin
     // 过渡：重算前记录显示值 → 重算 → diff 启动/重启 → 立即写回插值
     FTransitions.Capture(FDocument);
     ComputeDocumentStyles(FDocument, FStyleSheets);
+    // R7：级联会复位 Style，行为在此补回来自元素属性的固有尺寸（如 SVG 图标宽高）
+    NotifyStylesComputed(FDocument.Root);
     if FClock = 0 then
       FClock := XuiNowMs; // 宿主尚未提供时间（未 Tick）：用系统时钟兜底
     FTransitions.Resolve(FDocument, FClock);
@@ -1451,6 +1502,49 @@ begin
   end;
 
   RenderNode(FDocument.Root, ACanvas, 1);
+end;
+
+// R7：样式级联会复位 Style，来自元素属性的固有尺寸需要在级联后由行为补回，
+// 否则 SVG 图标在布局中被当作 0×0（绘制却按自身尺寸出图），表现为图标压字/换行。
+procedure TXuiEngine.NotifyStylesComputed(ANode: TXuiNode);
+var
+  i: Integer;
+begin
+  if ANode = nil then
+    Exit;
+  if ANode.Behavior is TXuiBehavior then
+    TXuiBehavior(ANode.Behavior).AfterStyleComputed;
+  for i := 0 to ANode.Count - 1 do
+    NotifyStylesComputed(ANode[i]);
+end;
+
+// R7：box-shadow —— 用多层递减 alpha 的（圆角）矩形近似高斯阴影。
+// 先画最大的一层，再向内叠加，越靠近盒子越不透明；不引入新的渲染后端能力。
+procedure TXuiEngine.RenderShadow(ANode: TXuiNode; AStyle: TXuiStyle);
+var
+  steps, k: Integer;
+  grow, radius: Single;
+  r: TRect;
+  c: TXuiColor;
+begin
+  if AStyle.BoxShadowColor.A = 0 then
+    Exit;
+  steps := 6;
+  radius := AStyle.BorderRadius;
+  for k := steps downto 1 do
+  begin
+    grow := AStyle.BoxShadowBlur * k / (2 * steps);
+    r := ANode.BoxRect;
+    OffsetRect(r, Round(AStyle.BoxShadowX), Round(AStyle.BoxShadowY));
+    r := Rect(Round(r.Left - grow), Round(r.Top - grow),
+      Round(r.Right + grow), Round(r.Bottom + grow));
+    c := AStyle.BoxShadowColor;
+    c.A := Byte(Max(1, AStyle.BoxShadowColor.A div steps));
+    if radius > 0 then
+      FRenderer.FillRoundRect(r, radius + grow, c)
+    else
+      FRenderer.FillRect(r, c);
+  end;
 end;
 
 procedure TXuiEngine.RenderNode(ANode: TXuiNode; ACanvas: TCanvas; AOpacity: Single);
@@ -1469,6 +1563,8 @@ begin
   // visibility:hidden 不绘制自身，但子级可覆盖回 visible（继承语义）
   if style.Visibility = xvisVisible then
   begin
+    // 阴影先于自身背景绘制（CSS 中 box-shadow 位于盒子之下）
+    RenderShadow(ANode, style);
     if style.BgColor.A > 0 then
     begin
       if style.BorderRadius > 0 then
@@ -1496,11 +1592,13 @@ begin
   if (ANode.Count > 0) and
      not ((ANode.Behavior is TXuiBehavior) and TXuiBehavior(ANode.Behavior).SuppressChildrenRendering) then
   begin
-    if style.Overflow = xovHidden then
-      FRenderer.PushClip(ANode.PaddingBox);
+    if XuiIsScrollContainer(style) then
+      FRenderer.PushClip(XuiScrollContentClip(ANode, ANode.PaddingBox));
     RenderChildren(ANode, ACanvas, op);
-    if style.Overflow = xovHidden then
+    if XuiIsScrollContainer(style) then
       FRenderer.PopClip;
+    // 滚动条最后绘制：覆盖在 padding box 内侧，不被内容遮挡
+    RenderScrollBars(ANode);
   end;
 end;
 

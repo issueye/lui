@@ -13,7 +13,7 @@ unit xui_text;
 interface
 
 uses
-  SysUtils, Types, Math,
+  SysUtils, Classes, Types, Math,
   xui_types, xui_style;
 
 type
@@ -44,6 +44,9 @@ function WrapText(const AText: string; AStyle: TXuiStyle; AMaxWidth: Single;
 // 断行后的尺寸：宽 = 最长行宽，高 = 总高
 function MeasureWrapped(const AText: string; AStyle: TXuiStyle;
   AMaxWidth: Single; AMeasure: TXuiMeasureFunc): TSize;
+
+// R8：断行结果缓存失效（文本/样式/宽度已在缓存键里；热重载或更换测量器时可显式清空）
+procedure InvalidateWrapCache;
 
 implementation
 
@@ -200,13 +203,81 @@ begin
     Result := 0;
 end;
 
+// R7：按可用宽度把一行截断并追加省略号（逐码点收缩，保证不切多字节字符）
+function EllipsizeLine(const AText: string; AStyle: TXuiStyle;
+  AMaxWidth: Single; AMeasure: TXuiMeasureFunc): string;
+var
+  i, len: Integer;
+  prefix: string;
+begin
+  Result := '…';
+  if UnitWidth(Result, AStyle, AMeasure) > AMaxWidth then
+  begin
+    Result := '';
+    Exit;
+  end;
+  i := 1;
+  while i <= Length(AText) do
+  begin
+    Utf8CodeAt(AText, i, len);
+    Inc(i, len);
+    prefix := Copy(AText, 1, i - 1);
+    if UnitWidth(prefix + '…', AStyle, AMeasure) > AMaxWidth then
+      Break;
+    Result := prefix + '…';
+  end;
+end;
+
+// R8：断行缓存。
+// 实测：长列表页每帧都会对每个静态文本重新断行（SplitUnits + 逐单元测量），
+// 是「布局」阶段的主要成本；文本/字体/宽度不变时结果完全可复用。
+// 缓存键包含全部影响断行的输入（含测量器身份与显式 epoch），键不匹配即回退到真实计算，
+// 因此不会出现「改了样式却用了旧断行」的静默错误。
+type
+  // 只缓存断行结果；高度由调用方按当前 line-height 推导，
+  // 避免「改了 line-height 却命中旧高度」这类看不见的错值。
+  TWrapCacheEntry = class
+    Lines: TXuiLineArray;
+  end;
+
+var
+  WrapCache: TStringList = nil;
+  WrapCacheEpoch: Integer = 0;
+  WrapCacheCap: Integer = 768;
+
+procedure InvalidateWrapCache;
+begin
+  if WrapCache <> nil then
+    WrapCache.Clear;
+  Inc(WrapCacheEpoch);
+end;
+
+function WrapCacheKey(const AText: string; AStyle: TXuiStyle; AMaxWidth: Single;
+  AMeasure: TXuiMeasureFunc): string;
+var
+  measTag: PtrUInt;
+begin
+  measTag := 0;
+  if Assigned(AMeasure) then
+    // 方法代码 + 对象实例：不同测量器实例（不同画布/字体实现）不可共用缓存
+    measTag := PtrUInt(TMethod(AMeasure).Code) xor (PtrUInt(TMethod(AMeasure).Data) shl 4);
+  Result := IntToStr(WrapCacheEpoch) + '|' + IntToStr(measTag) + '|' +
+    AStyle.FontFamily + '|' + IntToStr(Round(AStyle.FontSize * 10)) + '|' +
+    IntToStr(Ord(AStyle.FontBold)) + '|' + IntToStr(Round(AStyle.LetterSpacing * 10)) + '|' +
+    IntToStr(Ord(AStyle.WhiteSpace)) + '|' + IntToStr(Ord(AStyle.TextOverflow)) + '|' +
+    IntToStr(Round(AMaxWidth * 2)) + '|' + AText;
+end;
+
 function WrapText(const AText: string; AStyle: TXuiStyle; AMaxWidth: Single;
   AMeasure: TXuiMeasureFunc; out ALines: TXuiLineArray): Single;
 var
   units: TBreakUnitArray;
   i, count: Integer;
   cur: string;
-  curW, w: Single;
+  curW, w, spacing: Single;
+  cacheKey: string;
+  cacheIdx: Integer;
+  entry: TWrapCacheEntry;
 
   procedure AddLine(const ALine: string);
   begin
@@ -218,7 +289,45 @@ var
     Inc(count);
   end;
 
+  procedure StoreCache(const AKey: string; const ALines: TXuiLineArray);
+  var
+    entry: TWrapCacheEntry;
+    k: Integer;
+  begin
+    if WrapCache = nil then
+    begin
+      WrapCache := TStringList.Create;
+      WrapCache.Sorted := True;             // 二分查找：每帧每节点一次键查询
+      WrapCache.CaseSensitive := True;      // 键含原文，必须精确比较（否则 A/a 会串命中）
+      WrapCache.Duplicates := dupIgnore;    // 命中已存在键时替换对象，不追加重复键
+    end;
+    if WrapCache.Count >= WrapCacheCap then
+      WrapCache.Clear;
+    entry := TWrapCacheEntry.Create;
+    entry.Lines := Copy(ALines, 0, Length(ALines));
+    k := WrapCache.IndexOf(AKey);
+    if k >= 0 then
+    begin
+      WrapCache.Objects[k].Free;
+      WrapCache.Objects[k] := entry;
+    end
+    else
+      WrapCache.AddObject(AKey, entry);
+  end;
+
 begin
+  cacheKey := WrapCacheKey(AText, AStyle, AMaxWidth, AMeasure);
+  if WrapCache <> nil then
+  begin
+    cacheIdx := WrapCache.IndexOf(cacheKey);
+    if cacheIdx >= 0 then
+    begin
+      entry := TWrapCacheEntry(WrapCache.Objects[cacheIdx]);
+      ALines := Copy(entry.Lines, 0, Length(entry.Lines));
+      Exit(Length(ALines) * LineHeightPx(AStyle));
+    end;
+  end;
+
   count := 0;
   SetLength(ALines, 0);
   if (AText = '') or (AMaxWidth <= 0) then
@@ -229,6 +338,40 @@ begin
       ALines[0] := AText;
       Exit(LineHeightPx(AStyle));
     end;
+    Exit(0);
+  end;
+
+  // R7：white-space:nowrap 不做软换行，整段作为一行，溢出交给 text-overflow / clip
+  if AStyle.WhiteSpace = xwsNoWrap then
+  begin
+    SetLength(ALines, 1);
+    ALines[0] := TrimRight(AText);
+    if (AStyle.TextOverflow = xtoEllipsis) and
+       (UnitWidth(ALines[0], AStyle, AMeasure) > AMaxWidth) then
+      ALines[0] := EllipsizeLine(ALines[0], AStyle, AMaxWidth, AMeasure);
+    StoreCache(cacheKey, ALines);
+    Exit(LineHeightPx(AStyle));
+  end;
+
+  // R8：逐单元累加时必须计入单元之间的字距（渲染器逐字推进字距），
+  // 否则 letter-spacing 下断行会低估行宽，文本溢出容器。
+  spacing := 0;
+  if AStyle.LetterSpacing > 0 then
+    spacing := AStyle.LetterSpacing;
+
+  // R8：可用宽度由「整串测量」决定（flex 主轴尺寸、块级内容盒都按 max-content 测量），
+  // 而逐单元累加会因逐段测量/字距取整而略大于整串值，导致文本明明放得下却被折行。
+  // 因此先做与分配口径一致的整串判断：放得下就是不折行的单行。
+  if UnitWidth(AText, AStyle, AMeasure) <= AMaxWidth then
+  begin
+    SetLength(ALines, 1);
+    ALines[0] := TrimRight(AText);
+    if ALines[0] <> '' then
+    begin
+      StoreCache(cacheKey, ALines);
+      Exit(LineHeightPx(AStyle));
+    end;
+    SetLength(ALines, 0);
     Exit(0);
   end;
 
@@ -246,10 +389,10 @@ begin
       curW := w;
       Continue;
     end;
-    if curW + w <= AMaxWidth then
+    if Round(curW + spacing + w) <= Round(AMaxWidth) then
     begin
       cur := cur + units[i].Text;
-      curW := curW + w;
+      curW := curW + spacing + w;
       Continue;
     end;
     AddLine(TrimRight(cur));
@@ -267,7 +410,15 @@ begin
   AddLine(TrimRight(cur));
 
   SetLength(ALines, count);
+
+  // R7：text-overflow:ellipsis —— 任何仍超宽的行（含不可断长串）截断并加省略号
+  if AStyle.TextOverflow = xtoEllipsis then
+    for i := 0 to count - 1 do
+      if UnitWidth(ALines[i], AStyle, AMeasure) > AMaxWidth then
+        ALines[i] := EllipsizeLine(ALines[i], AStyle, AMaxWidth, AMeasure);
+
   Result := count * LineHeightPx(AStyle);
+  StoreCache(cacheKey, ALines);
 end;
 
 function MeasureWrapped(const AText: string; AStyle: TXuiStyle;
@@ -283,5 +434,17 @@ begin
     Result.cx := Round(Max(Single(Result.cx), UnitWidth(lines[i], AStyle, AMeasure)));
   Result.cy := Round(h);
 end;
+
+finalization
+  if WrapCache <> nil then
+  begin
+    while WrapCache.Count > 0 do
+    begin
+      WrapCache.Objects[0].Free;
+      WrapCache.Delete(0);
+    end;
+    WrapCache.Free;
+    WrapCache := nil;
+  end;
 
 end.

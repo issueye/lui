@@ -3,7 +3,8 @@ unit xui_events;
 {$mode objfpc}{$H+}
 
 { 交互基础（M4）。纯逻辑、不依赖 LCL，便于单元测试：
-  - 命中测试：逆绘制序递归，尊重 display:none 与 overflow:hidden 裁剪
+  - 命中测试：逆绘制序递归，尊重 display:none 与滚动容器（hidden/auto/scroll）裁剪；
+    R2/R3：滚动容器还要扣除已显示的滚动条条带（与绘制几何同源，见 xui_scroll）
   - 指针状态机：hover 链 / active / 按下节点（click = 按下与抬起的最近公共祖先）
   - 事件绑定：XML 的 on* 属性 → 宿主 published 方法，按名字解析（MethodAddress，
     与 RTL 的 DFM 事件绑定同一机制，见 classes/reader.inc: TReader.FindMethod） }
@@ -12,7 +13,7 @@ interface
 
 uses
   Classes, SysUtils, Types, Contnrs, Math,
-  xui_types, xui_dom;
+  xui_types, xui_style, xui_dom, xui_scroll;
 
 type
   // 修饰键集合（引擎自有的轻量表示，不依赖 LCL 的 TShiftState）
@@ -56,6 +57,9 @@ const
 
 function XuiEventAttrKind(const AName: string; out AKind: TXuiEventKind): Boolean;
 function XuiEventAttrOf(AKind: TXuiEventKind): string;
+
+// 构造滚轮事件载荷（R3：携带修饰键，供 Shift+滚轮横向滚动与脚本侧读取）
+function XuiWheelEvent(AX, AY, ADelta: Integer; AShift: TXuiShiftState): TXuiEvent;
 
 // 解析宿主 published 方法（AOwner = nil 或方法不存在时返回 False）
 function XuiResolveMethod(AOwner: TObject; const AName: string;
@@ -121,6 +125,17 @@ end;
 function XuiEventAttrOf(AKind: TXuiEventKind): string;
 begin
   Result := TXuiEventAttrs[AKind];
+end;
+
+// 构造滚轮事件载荷（R3）
+function XuiWheelEvent(AX, AY, ADelta: Integer; AShift: TXuiShiftState): TXuiEvent;
+begin
+  Result := Default(TXuiEvent);
+  Result.Kind := xevWheel;
+  Result.X := AX;
+  Result.Y := AY;
+  Result.Delta := ADelta;
+  Result.Shift := AShift;
 end;
 
 function XuiResolveMethod(AOwner: TObject; const AName: string;
@@ -196,13 +211,9 @@ begin
   if (ANode.Style = nil) or (ANode.Style.Display = xdispNone) then
     Exit;
 
-  // 子节点的裁剪区：overflow:hidden 时收紧到 padding box
-  if ANode.Style.Overflow = xovHidden then
-  begin
-    clip := ANode.PaddingBox;
-    clip := Types.Rect(Max(clip.Left, AClip.Left), Max(clip.Top, AClip.Top),
-      Min(clip.Right, AClip.Right), Min(clip.Bottom, AClip.Bottom));
-  end
+  // 子节点的裁剪区：滚动容器收紧到 padding box，并扣除已显示的滚动条条带
+  if XuiIsScrollContainer(ANode.Style) then
+    clip := XuiScrollContentClip(ANode, AClip)
   else
     clip := AClip;
 

@@ -1,0 +1,31 @@
+{
+  "name": "@@PROJECT_NAME@@",
+  "displayName": "@@PROJECT_NAME@@",
+  "version": "@@PROJECT_VERSION@@",
+  "luiVersion": "@@LUI_VERSION@@",
+  "createdAt": "@@DATE@@",
+
+  "main": "src/main.xml",
+  "ui": "ui",
+
+  "window": {
+    "width": @@WIDTH@@,
+    "height": @@HEIGHT@@,
+    "theme": "@@DEV_THEME@@",
+    "title": "",
+    "resizable": true,
+    "center": true
+  },
+
+  "styles": [],
+
+  "dev": {
+    "watch": true
+  },
+
+  "build": {
+    "out": "dist",
+    "exclude": ["out", "dist", ".git", "node_modules"],
+    "assets": []
+  }
+}

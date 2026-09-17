@@ -347,6 +347,8 @@ type
       const AArgs: TXuiJsValueArray): TXuiJsValue;
     function NativeObjectStatics(AFn: TXuiJsFunction; AThis: TXuiJsValue;
       const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function NativeStringStatic(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
     function NativeStringProto(AFn: TXuiJsFunction; AThis: TXuiJsValue;
       const AArgs: TXuiJsValueArray): TXuiJsValue;
     function NativeArrayProto(AFn: TXuiJsFunction; AThis: TXuiJsValue;
@@ -839,6 +841,63 @@ begin
   end;
   Result := '';
 end;
+// 第 AIndex 个码点的码点值（越界返回 0）。
+// 与 charAt 同一套下标规则：本引擎的字符串下标是**码点**，不是 UTF-16 code unit。
+function JsStrCharCodeAt(const S: string; AIndex: Integer): Integer;
+var
+  i, n: Integer;
+  b, b1, b2, b3: Byte;
+begin
+  Result := 0;
+  if AIndex < 0 then
+    Exit;
+  i := 1;
+  n := 0;
+  while i <= System.Length(S) do
+  begin
+    if n = AIndex then
+    begin
+      b := Byte(S[i]);
+      if b < $80 then
+        Exit(b);
+      if (b and $E0) = $C0 then
+      begin
+        b1 := Byte(S[i + 1]);
+        Exit(((b and $1F) shl 6) or (b1 and $3F));
+      end;
+      if (b and $F0) = $E0 then
+      begin
+        b1 := Byte(S[i + 1]);
+        b2 := Byte(S[i + 2]);
+        Exit(((b and $0F) shl 12) or ((b1 and $3F) shl 6) or (b2 and $3F));
+      end;
+      b1 := Byte(S[i + 1]);
+      b2 := Byte(S[i + 2]);
+      b3 := Byte(S[i + 3]);
+      Exit(((b and $07) shl 18) or ((b1 and $3F) shl 12) or ((b2 and $3F) shl 6) or (b3 and $3F));
+    end;
+    System.Inc(i, Utf8SeqLen(Byte(S[i])));
+    System.Inc(n);
+  end;
+end;
+
+// 码点 → UTF-8 字节串（String.fromCharCode 用）
+function JsStrFromCodePoint(ACode: Integer): string;
+begin
+  if ACode < 0 then
+    Exit('')
+  else if ACode < $80 then
+    Result := Chr(ACode)
+  else if ACode < $800 then
+    Result := Chr($C0 or (ACode shr 6)) + Chr($80 or (ACode and $3F))
+  else if ACode < $10000 then
+    Result := Chr($E0 or (ACode shr 12)) + Chr($80 or ((ACode shr 6) and $3F)) +
+      Chr($80 or (ACode and $3F))
+  else
+    Result := Chr($F0 or (ACode shr 18)) + Chr($80 or ((ACode shr 12) and $3F)) +
+      Chr($80 or ((ACode shr 6) and $3F)) + Chr($80 or (ACode and $3F));
+end;
+
 // 码点切片 [AStart, AEnd) ；负数按 JS 语义从尾部计
 procedure JsStrSliceRange(const S: string; AStart, AEnd: Integer;
   out ALo, AHi: Integer);
@@ -3686,6 +3745,7 @@ var
     uiObj: TXuiJsObject;
   promiseCtor: TXuiJsFunction;
   fn: TXuiJsFunction;
+  strVal: TXuiJsValue;
 begin
   FObjectProto := TXuiJsObject.Create;
   FAllObjects.Add(FObjectProto);
@@ -3712,6 +3772,10 @@ begin
   DefineNative(FGlobal, 'isNaN', @NativeGlobalFn);
   DefineNative(FGlobal, 'isFinite', @NativeGlobalFn);
   DefineNative(FGlobal, 'String', @NativeGlobalFn);
+  strVal := FGlobal.GetOwn('String');
+  if (strVal.Kind = jvObject) and (strVal.Obj <> nil) then
+    strVal.Obj.SetOwn('fromCharCode',
+      CreateHostFunction('fromCharCode', @NativeStringStatic));
   DefineNative(FGlobal, 'Number', @NativeGlobalFn);
   DefineNative(FGlobal, 'Boolean', @NativeGlobalFn);
   DefineNative(FGlobal, 'Array', @NativeGlobalFn);
@@ -3795,6 +3859,7 @@ begin
   DefineNative(FGlobal, 'onMount', @NativeVue);
   // 原型方法（按名分派）
   DefineNative(FStringProto, 'charAt', @NativeStringProto);
+  DefineNative(FStringProto, 'charCodeAt', @NativeStringProto);
   DefineNative(FStringProto, 'indexOf', @NativeStringProto);
   DefineNative(FStringProto, 'lastIndexOf', @NativeStringProto);
   DefineNative(FStringProto, 'slice', @NativeStringProto);
@@ -3825,6 +3890,13 @@ begin
   DefineNative(FArrayProto, 'reverse', @NativeArrayProto);
   DefineNative(FArrayProto, 'concat', @NativeArrayProto);
   DefineNative(FArrayProto, 'splice', @NativeArrayProto);
+  // M13：查找与排序。移植真实应用（a_da 的 Agent 工具/会话/设置）时，缺这几个方法
+  // 会把"挑出第一个满足条件的元素"写成手写 for 循环，散落在各处且易错。
+  DefineNative(FArrayProto, 'find', @NativeArrayProto);
+  DefineNative(FArrayProto, 'findIndex', @NativeArrayProto);
+  DefineNative(FArrayProto, 'some', @NativeArrayProto);
+  DefineNative(FArrayProto, 'every', @NativeArrayProto);
+  DefineNative(FArrayProto, 'sort', @NativeArrayProto);
   DefineNative(FNumberProto, 'toFixed', @NativeNumberProto);
   DefineNative(FNumberProto, 'toString', @NativeNumberProto);
   DefineNative(FFunctionProto, 'call', @NativeFunctionProto);
@@ -4315,6 +4387,20 @@ begin
   end;
   Result := MakeUndefined;
 end;
+// String.fromCharCode(...)：把码点拼成字符串（引擎里 String 本身就是函数对象，
+// 所以静态方法直接挂成它的自有属性）
+function TXuiJsInterp.NativeStringStatic(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+var
+  i: Integer;
+  out: string;
+begin
+  out := '';
+  for i := 0 to System.Length(AArgs) - 1 do
+    out := out + JsStrFromCodePoint(ToInt32Value(AArgs[i]));
+  Result := MakeString(out);
+end;
+
 function TXuiJsInterp.NativeStringProto(AFn: TXuiJsFunction; AThis: TXuiJsValue;
   const AArgs: TXuiJsValueArray): TXuiJsValue;
 var
@@ -4326,6 +4412,8 @@ begin
   if AFn.Name = 'toString' then Exit(MakeString(s));
   if AFn.Name = 'charAt' then
     Exit(MakeString(JsStrCharAt(s, ArgInt(AArgs, 0))));
+  if AFn.Name = 'charCodeAt' then
+    Exit(MakeNumber(JsStrCharCodeAt(s, ArgInt(AArgs, 0))));
   if AFn.Name = 'indexOf' then
     Exit(MakeNumber(JsStrIndexOf(s, ToStringValue(ArgAt(AArgs, 0)),
       ArgInt(AArgs, 1))));
@@ -4440,9 +4528,10 @@ function TXuiJsInterp.NativeArrayProto(AFn: TXuiJsFunction; AThis: TXuiJsValue;
   const AArgs: TXuiJsValueArray): TXuiJsValue;
 var
   arr: TXuiJsArray;
-  i, n, lo, hi: Integer;
+  i, j, n, lo, hi: Integer;
   outArr: TXuiJsArray;
-  acc: TXuiJsValue;
+  acc, cur: TXuiJsValue;
+  hasCmp, less, hit: Boolean;
 begin
   if (AThis.Kind <> jvObject) or (not (AThis.Obj is TXuiJsArray)) then
     raise EXuiJsRuntime.Create('数组方法调用者不是数组');
@@ -4667,6 +4756,71 @@ begin
       Inc(i);
     end;
     Exit(acc);
+  end;
+  if AFn.Name = 'find' then
+  begin
+    if not IsCallable(ArgAt(AArgs, 0)) then
+      raise EXuiJsRuntime.Create('find 需要函数参数');
+    for i := 0 to arr.Length - 1 do
+      if IsTruthy(CallFunction(AArgs[0], MakeUndefined,
+        [arr.Items[i], MakeNumber(i), AThis])) then
+        Exit(arr.Items[i]);
+    Exit(MakeUndefined);
+  end;
+  if AFn.Name = 'findIndex' then
+  begin
+    if not IsCallable(ArgAt(AArgs, 0)) then
+      raise EXuiJsRuntime.Create('findIndex 需要函数参数');
+    for i := 0 to arr.Length - 1 do
+      if IsTruthy(CallFunction(AArgs[0], MakeUndefined,
+        [arr.Items[i], MakeNumber(i), AThis])) then
+        Exit(MakeNumber(i));
+    Exit(MakeNumber(-1));
+  end;
+  if (AFn.Name = 'some') or (AFn.Name = 'every') then
+  begin
+    if not IsCallable(ArgAt(AArgs, 0)) then
+      raise EXuiJsRuntime.Create(AFn.Name + ' 需要函数参数');
+    for i := 0 to arr.Length - 1 do
+    begin
+      hit := IsTruthy(CallFunction(AArgs[0], MakeUndefined,
+        [arr.Items[i], MakeNumber(i), AThis]));
+      // some：命中即真；every：不命中即假。空数组上 some=false / every=true（与 JS 一致）
+      if (AFn.Name = 'some') and hit then
+        Exit(MakeBool(True));
+      if (AFn.Name = 'every') and (not hit) then
+        Exit(MakeBool(False));
+    end;
+    Exit(MakeBool(AFn.Name = 'every'));
+  end;
+  if AFn.Name = 'sort' then
+  begin
+    // 原地排序（与 JS 一致）。无比较函数时按字符串比较——JS 的默认行为就是这样，
+    // 所以 [10,9].sort() 得 [10,9]；要数值序必须传比较函数。
+    // 用插入排序：稳定、无额外分配、代码短；UI 规模的数据（几十到几千）足够。
+    hasCmp := System.Length(AArgs) >= 1;
+    if hasCmp and (not IsCallable(ArgAt(AArgs, 0))) then
+      raise EXuiJsRuntime.Create('sort 的比较参数必须是函数');
+    for i := 1 to arr.Length - 1 do
+    begin
+      cur := arr.Items[i];
+      j := i - 1;
+      while j >= 0 do
+      begin
+        if hasCmp then
+          less := ToNumberValue(CallFunction(AArgs[0], MakeUndefined,
+            [cur, arr.Items[j]])) < 0
+        else
+          less := ToStringValue(cur) < ToStringValue(arr.Items[j]);
+        if not less then
+          Break;
+        arr.Items[j + 1] := arr.Items[j];
+        Dec(j);
+      end;
+      arr.Items[j + 1] := cur;
+    end;
+    NotifyArrayWrite(arr);
+    Exit(AThis);
   end;
   Result := MakeUndefined;
 end;

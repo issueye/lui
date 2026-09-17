@@ -16,6 +16,13 @@ type
     Left, Top, Right, Bottom: TXuiLength;
   end;
 
+  // ---- flex 换行策略（R7）----
+  TXuiFlexWrap = (xfwNoWrap, xfwWrap);
+
+  // ---- 文本溢出与空白处理（R7）----
+  TXuiTextOverflow = (xtoClip, xtoEllipsis);
+  TXuiWhiteSpace = (xwsNormal, xwsNoWrap);
+
   // ---- 过渡动画（M5）：可动画属性白名单 + 时间函数 ----
   TXuiAnimProp = (xapOpacity, xapBgColor, xapTextColor, xapBorderColor, xapBorderRadius);
   TXuiAnimPropSet = set of TXuiAnimProp;
@@ -39,6 +46,13 @@ type
     Position: TXuiPosition;
     Width, Height: TXuiLength;
     MinWidth, MinHeight: TXuiLength;
+    MaxWidth, MaxHeight: TXuiLength;   // R7：尺寸上界（auto = 不限制）
+    LetterSpacing: Single;             // R7：字距（px，0 = 无额外字距）
+    BoxShadowX, BoxShadowY: Single;    // R7：阴影偏移（px）
+    BoxShadowBlur: Single;             // R7：模糊半径（px，0 = 硬边）
+    BoxShadowColor: TXuiColor;         // R7：A=0 表示无阴影
+    TextOverflow: TXuiTextOverflow;    // R7：单行溢出策略
+    WhiteSpace: TXuiWhiteSpace;        // R7：是否允许软换行
     Inset: TXuiSides;            // top/right/bottom/left；auto 表示未指定
     Margin: TXuiSides;
     Padding: TXuiSides;
@@ -56,6 +70,8 @@ type
     JustifyContent: TXuiJustify;
     AlignItems: TXuiAlign;
     FlexGrow: Single;
+    FlexShrink: Single;                // R7：主轴空间不足时的收缩权重（CSS 默认 1）
+    FlexWrap: TXuiFlexWrap;            // R7：主轴是否换行（row 主轴已实现，见布局单元头注释）
     FlexBasis: TXuiLength;
     RowGap, ColumnGap: TXuiLength;
     Overflow: TXuiOverflow;
@@ -192,6 +208,15 @@ begin
   AStyle.Height := XuiLengthAuto;
   AStyle.MinWidth := XuiLengthAuto;
   AStyle.MinHeight := XuiLengthAuto;
+  AStyle.MaxWidth := XuiLengthAuto;
+  AStyle.MaxHeight := XuiLengthAuto;
+  AStyle.LetterSpacing := 0;
+  AStyle.BoxShadowX := 0;
+  AStyle.BoxShadowY := 0;
+  AStyle.BoxShadowBlur := 0;
+  AStyle.BoxShadowColor := XuiRGBA(0, 0, 0, 0);
+  AStyle.TextOverflow := xtoClip;
+  AStyle.WhiteSpace := xwsNormal;
   AStyle.Inset := SidesAuto;
   AStyle.Margin := SidesPx(0, 0, 0, 0);
   AStyle.Padding := SidesPx(0, 0, 0, 0);
@@ -208,6 +233,8 @@ begin
   AStyle.JustifyContent := xjcStart;
   AStyle.AlignItems := xaiStretch;
   AStyle.FlexGrow := 0;
+  AStyle.FlexShrink := 1;
+  AStyle.FlexWrap := xfwNoWrap;
   AStyle.FlexBasis := XuiLengthAuto;
   AStyle.RowGap := XuiLengthPx(0);
   AStyle.ColumnGap := XuiLengthPx(0);
@@ -253,6 +280,15 @@ begin
     Result.Padding := SidesPx(6, 0, 6, 0);
     Result.Margin := SidesPx(0, 2, 0, 0);
   end
+  else if (ATag = 'textarea') then
+  begin
+    // R1：多行输入默认块级、白底带边框；高度由 CSS 决定（默认 72px ≈ 3 行）
+    Result.BgColor := XuiRGB(255, 255, 255);
+    Result.BorderWidth := 1;
+    Result.Height := XuiLengthPx(72);
+    Result.Padding := SidesPx(6, 4, 6, 4);
+    Result.Margin := SidesPx(0, 2, 0, 0);
+  end
   else if ATag = 'label' then
   begin
     Result.Margin := SidesPx(0, 2, 0, 0);
@@ -290,6 +326,15 @@ begin
   Height := ASource.Height;
   MinWidth := ASource.MinWidth;
   MinHeight := ASource.MinHeight;
+  MaxWidth := ASource.MaxWidth;
+  MaxHeight := ASource.MaxHeight;
+  LetterSpacing := ASource.LetterSpacing;
+  BoxShadowX := ASource.BoxShadowX;
+  BoxShadowY := ASource.BoxShadowY;
+  BoxShadowBlur := ASource.BoxShadowBlur;
+  BoxShadowColor := ASource.BoxShadowColor;
+  TextOverflow := ASource.TextOverflow;
+  WhiteSpace := ASource.WhiteSpace;
   Inset := ASource.Inset;
   Margin := ASource.Margin;
   Padding := ASource.Padding;
@@ -306,6 +351,8 @@ begin
   JustifyContent := ASource.JustifyContent;
   AlignItems := ASource.AlignItems;
   FlexGrow := ASource.FlexGrow;
+  FlexShrink := ASource.FlexShrink;
+  FlexWrap := ASource.FlexWrap;
   FlexBasis := ASource.FlexBasis;
   RowGap := ASource.RowGap;
   ColumnGap := ASource.ColumnGap;
@@ -324,6 +371,14 @@ end;
 procedure TXuiStyle.InheritFrom(ASource: TXuiStyle);
 begin
   if ASource = nil then Exit;
+  // R7：letter-spacing / white-space / text-overflow 在 CSS 中属于继承属性
+  LetterSpacing := ASource.LetterSpacing;
+  BoxShadowX := ASource.BoxShadowX;
+  BoxShadowY := ASource.BoxShadowY;
+  BoxShadowBlur := ASource.BoxShadowBlur;
+  BoxShadowColor := ASource.BoxShadowColor;
+  WhiteSpace := ASource.WhiteSpace;
+  TextOverflow := ASource.TextOverflow;
   TextColor := ASource.TextColor;
   FontFamily := ASource.FontFamily;
   FontSize := ASource.FontSize;

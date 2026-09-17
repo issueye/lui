@@ -369,8 +369,10 @@ function TXuiHost.DoMouseWheel(Shift: TShiftState; WheelDelta: Integer;
   MousePos: TPoint): Boolean;
 begin
   Result := False;
+  // R3：Shift+滚轮横向滚动；修饰键与键盘路径共用同一转换
   if FEngine <> nil then
-    Result := FEngine.HandleMouseWheel(MousePos.X, MousePos.Y, WheelDelta);
+    Result := FEngine.HandleMouseWheel(MousePos.X, MousePos.Y, WheelDelta,
+      XuiShiftStateOf(Shift));
   if not Result then
     Result := inherited DoMouseWheel(Shift, WheelDelta, MousePos);
 end;

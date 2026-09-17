@@ -8,7 +8,7 @@ unit xui_render;
 interface
 
 uses
-  Classes, SysUtils, Types, Graphics, LCLType, LCLIntf, Math,
+  Classes, SysUtils, Types, Graphics, LCLType, LCLIntf, Math, LazUTF8,
   xui_types, xui_style;
 
 type
@@ -214,7 +214,8 @@ end;
 procedure TGdiRenderer.DrawText(const R: TRect; const AText: string; AStyle: TXuiStyle);
 var
   sz: TSize;
-  x, y: Integer;
+  x, y, cx, i: Integer;
+  ch: string;
   alignX: Integer;
 begin
   if FOpacity <= 0.01 then
@@ -235,14 +236,37 @@ begin
 
   FCanvas.Font.Color := XuiColorToTColor(AStyle.TextColor);
   FCanvas.Brush.Style := bsClear;
-  FCanvas.TextOut(x, y, AText);
+
+  // R7：letter-spacing —— GDI 没有可移植的字距开关，这里逐字绘制并自己推进字距，
+  // 与 MeasureText 的“宽度 + 字距×(字数-1)”保持同一口径。
+  if (AStyle.LetterSpacing <> 0) and (AText <> '') then
+  begin
+    cx := x;
+    for i := 1 to UTF8Length(AText) do
+    begin
+      ch := UTF8Copy(AText, i, 1);
+      FCanvas.TextOut(cx, y, ch);
+      cx := cx + FCanvas.TextWidth(ch) + Round(AStyle.LetterSpacing);
+    end;
+  end
+  else
+    FCanvas.TextOut(x, y, AText);
 end;
 
 function TGdiRenderer.MeasureText(const AText: string; AStyle: TXuiStyle): TSize;
+var
+  n: Integer;
 begin
   ApplyFont(AStyle);
   Result.cx := FCanvas.TextWidth(AText);
   Result.cy := FCanvas.TextHeight(AText);
+  if (AStyle <> nil) and (AStyle.LetterSpacing <> 0) and (AText <> '') then
+  begin
+    n := UTF8Length(AText);
+    if n > 1 then
+      // 两套后端统一口径：字距 × (字数-1) 后取整（与断行累加保持同量级）
+      Result.cx := Result.cx + Round(AStyle.LetterSpacing * (n - 1));
+  end;
 end;
 
 procedure TGdiRenderer.PushClip(const R: TRect);
