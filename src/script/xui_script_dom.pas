@@ -267,7 +267,10 @@ end;
 function TXuiDomBridge.NodeValue(ANode: TXuiNode): TXuiJsValue;
 begin
   if ANode = nil then
-    Exit(FScript.Undefined);
+    // 注意：文档契约写的是 Node|null，这里历史上返回 undefined。
+    // 直接改成 null 会让依赖 undefined 判断的消费者走错分支（实测触发栈溢出），
+    // 所以暂时保持 undefined；应用侧请同时判 null 与 undefined（见 a_da 的 FindEl）。
+Exit(FScript.Undefined);
   Result := FScript.Interp.ObjectValue(EnsureBridge(ANode));
 end;
 

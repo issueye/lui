@@ -1521,25 +1521,44 @@ end;
 // R7：box-shadow —— 用多层递减 alpha 的（圆角）矩形近似高斯阴影。
 // 先画最大的一层，再向内叠加，越靠近盒子越不透明；不引入新的渲染后端能力。
 procedure TXuiEngine.RenderShadow(ANode: TXuiNode; AStyle: TXuiStyle);
+const
+  // 层数越多越平滑；14 层在 1x 下已看不出色带，代价是每个阴影多几次圆角填充
+  ShadowSteps = 14;
 var
   steps, k: Integer;
-  grow, radius: Single;
+  grow, radius, anorm, cprev, ccur, layA: Single;
   r: TRect;
   c: TXuiColor;
 begin
   if AStyle.BoxShadowColor.A = 0 then
     Exit;
-  steps := 6;
   radius := AStyle.BorderRadius;
-  for k := steps downto 1 do
+  // 逐层累计不透明度按 (1-t)^2 平滑上升（t=层距外缘的归一化距离），逼近高斯衰减。
+  // 旧实现是"每层都画 A/6"，累计出来是线性斜坡 + 6 条可见色带——放大后能直接看出
+  // 一圈圈的同心带，这正是它和浏览器 box-shadow 观感差距的主因。
+  // 每层用 A_k = (C_k - C_{k-1}) / (1 - C_{k-1}) 反解 alpha 合成公式，保证累计值恰好落在曲线上。
+  anorm := AStyle.BoxShadowColor.A / 255.0;
+  for k := ShadowSteps downto 1 do
   begin
-    grow := AStyle.BoxShadowBlur * k / (2 * steps);
+    ccur := anorm * Sqr(1.0 - k / ShadowSteps);
+    if k >= ShadowSteps then
+      cprev := 0.0
+    else
+      cprev := anorm * Sqr(1.0 - (k + 1) / ShadowSteps);
+    if (ccur - cprev) <= 0 then
+      Continue;
+    if cprev >= 0.999 then
+      Continue;
+    layA := (ccur - cprev) / (1.0 - cprev);
+    if layA <= 0 then
+      Continue;
+    grow := AStyle.BoxShadowBlur * k / (2 * ShadowSteps);
     r := ANode.BoxRect;
     OffsetRect(r, Round(AStyle.BoxShadowX), Round(AStyle.BoxShadowY));
     r := Rect(Round(r.Left - grow), Round(r.Top - grow),
       Round(r.Right + grow), Round(r.Bottom + grow));
     c := AStyle.BoxShadowColor;
-    c.A := Byte(Max(1, AStyle.BoxShadowColor.A div steps));
+    c.A := Byte(Max(1, Min(255, Round(255.0 * layA))));
     if radius > 0 then
       FRenderer.FillRoundRect(r, radius + grow, c)
     else

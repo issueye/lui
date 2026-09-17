@@ -29,8 +29,10 @@ begin
       'box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); }');
     renderer.Clear;
     engine.Draw(nil, Rect(0, 0, 300, 200));
-    Check(renderer.CountOf('roundfill') = 7,
-      Format('有 box-shadow 时为 6 层阴影 + 1 次背景 [实际 %d]',
+    // 阴影是"多层半透明圆角矩形叠加"的近似高斯（层数见 xui_engine 的 ShadowSteps）。
+    // 这里断言"多层 + 恰好一次背景"，不锁死具体层数——层数是可调的实现细节。
+    Check((renderer.CountOf('roundfill') >= 8) and (renderer.CountOf('roundfill') <= 20),
+      Format('有 box-shadow 时为多层阴影 + 1 次背景 [实际 %d]',
         [renderer.CountOf('roundfill')]));
 
     n := engine.Document.FindElementById('card');
@@ -48,8 +50,8 @@ begin
       'box-shadow: 2px 2px 6px #888888; }');
     renderer.Clear;
     engine.Draw(nil, Rect(0, 0, 300, 200));
-    Check(renderer.CountOf('fill') = 8,
-      Format('直角盒子：window 背景 1 + 阴影 6 层 + 自身背景 1 [实际 %d]',
+    Check((renderer.CountOf('fill') >= 9) and (renderer.CountOf('fill') <= 20),
+      Format('直角盒子：window 背景 1 + 多层阴影 + 自身背景 1 [实际 %d]',
         [renderer.CountOf('fill')]));
     n := engine.Document.FindElementById('card');
     Check((Round(n.Style.BoxShadowX) = 2) and (Round(n.Style.BoxShadowBlur) = 6),
@@ -73,7 +75,8 @@ begin
       'background-color:#ffffff; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);"/></window>');
     renderer.Clear;
     engine.Draw(nil, Rect(0, 0, 300, 200));
-    Check(renderer.CountOf('roundfill') = 7, '内联 box-shadow 同样绘制阴影层');
+    Check((renderer.CountOf('roundfill') >= 8) and (renderer.CountOf('roundfill') <= 20),
+      '内联 box-shadow 同样绘制阴影层');
   finally
     engine.Free;
   end;
