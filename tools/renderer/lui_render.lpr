@@ -29,7 +29,7 @@ uses
   xui_input, xui_svg, xui_script, xui_script_dom, xui_script_bind, xui_app,
   xui_scaffold, xui_console, xui_js_runtime,
   {$IFDEF WINDOWS}xui_render_gdiplus,{$ENDIF}
-  xui_host, xui_embed, xui_appspec, xui_bundle
+  xui_host, xui_embed, xui_appspec, xui_bundle, xui_window
   // 单程序版（-dLUI_EMBED）额外链接构建期生成的内嵌资源单元；
   // 该单元在 initialization 中把资源清单注册给 xui_embed
   {$IFDEF LUI_EMBED}, xui_embed_assets{$ENDIF}
@@ -1749,9 +1749,12 @@ begin
     Halt(3);   // 批量部分失败（ADR 32 退出码 3）
 end;
 
-{ GUI 模式交互查看窗体 }
+{ GUI 模式交互查看窗体
+
+  继承 TXuiFramelessForm：清单声明 frameless 时，窗口最外圈仍可拖拽缩放
+  （WS_THICKFRAME + WM_NCHITTEST，见 src/ui/xui_window.pas）。 }
 type
-  TRenderViewerForm = class(TForm)
+  TRenderViewerForm = class(TXuiFramelessForm)
   private
     FHost: TXuiHost;
     FApp: TXuiApp;
@@ -1814,7 +1817,14 @@ begin
   else
     Position := poScreenCenter;
   if (ASpec <> nil) and ASpec.Frameless then
-    BorderStyle := bsNone
+  begin
+    BorderStyle := bsNone;
+    // 无边框 ⇒ 系统边框为零，窗口最外圈没有命中区，鼠标拖边无法缩放。
+    // 交给 TXuiFramelessForm 用 Windows 标准非客户区机制把缩放能力还回来；
+    // 是否可缩放仍以清单的 window.resizable 为准。
+    Frameless := True;
+    FramelessResize := ASpec.Resizable;
+  end
   else if (ASpec <> nil) and (not ASpec.Resizable) then
     BorderStyle := bsSingle;
   KeyPreview := True;
@@ -1936,14 +1946,46 @@ begin
     Result := FHost.Script.Undefined;
 end;
 
+{ ui.window.startResize(edge?)
+  edge ∈ left/right/top/bottom/topleft/topright/bottomleft/bottomright，
+  缺省 bottomright（右下角缩放手柄的语义）。
+
+  注意：这条路径依赖窗口带 WS_THICKFRAME——User32 的 WM_SYSCOMMAND/SC_SIZE 分支
+  会丢弃无该样式窗口的缩放请求，这正是无边框窗口过去"拖了没反应"的根因，
+  样式补写见 src/ui/xui_window.pas。 }
 function TRenderViewerForm.NativeWindowStartResize(AFn: TXuiJsFunction; AThis: TXuiJsValue;
   const AArgs: TXuiJsValueArray): TXuiJsValue;
 const
-  HTBOTTOMRIGHT = 17;
+  RHTLEFT = 10;
+  RHTRIGHT = 11;
+  RHTTOP = 12;
+  RHTTOPLEFT = 13;
+  RHTTOPRIGHT = 14;
+  RHTBOTTOM = 15;
+  RHTBOTTOMLEFT = 16;
+  RHTBOTTOMRIGHT = 17;
+var
+  Edge: string;
+  Hit: PtrInt;
 begin
   {$IFDEF WINDOWS}
+  Hit := RHTBOTTOMRIGHT;
+  if (System.Length(AArgs) >= 1) and (AArgs[0].Kind = jvString) then
+  begin
+    Edge := LowerCase(Trim(AArgs[0].Str));
+    case Edge of
+      'left': Hit := RHTLEFT;
+      'right': Hit := RHTRIGHT;
+      'top': Hit := RHTTOP;
+      'bottom': Hit := RHTBOTTOM;
+      'topleft': Hit := RHTTOPLEFT;
+      'topright': Hit := RHTTOPRIGHT;
+      'bottomleft': Hit := RHTBOTTOMLEFT;
+      'bottomright': Hit := RHTBOTTOMRIGHT;
+    end;
+  end;
   WinReleaseCapture;
-  WinSendMessage(Handle, WM_NCLBUTTONDOWN, HTBOTTOMRIGHT, 0);
+  WinSendMessage(Handle, WM_NCLBUTTONDOWN, Hit, 0);
   {$ENDIF}
   if FHost <> nil then
     Result := FHost.Script.Undefined;

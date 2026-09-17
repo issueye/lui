@@ -34,6 +34,7 @@
    - 页面热重载时必须彻底清空上一版本的脚本全局状态、事件绑定与动态 DOM，根治内存泄漏与状态串扰。
 3. **无边框与系统消息规范**：
    - 无边框窗口（`frameless: true`）的拖动与边缘缩放采用 Windows 标准非客户区消息分发机制（`WM_NCLBUTTONDOWN` + `HTCAPTION` / `HTBOTTOMRIGHT`）；
+   - 边缘缩放的原生命中区统一由 `src/ui/xui_window.pas`（`TXuiFramelessForm`）提供：补 `WS_THICKFRAME` + `WM_NCCALCSIZE` 返回 0（客户区仍覆盖整窗）+ `WM_NCHITTEST` 在最外圈给命中码，并修正最大化工作区与 LCL 的系统边框尺寸换算。应用侧不要在窗体上自行改这几个消息；
    - 在向系统交出鼠标捕获前，必须先行调用 `ReleaseCapture`，严禁产生鼠标事件捕获悬挂。
 
 ---

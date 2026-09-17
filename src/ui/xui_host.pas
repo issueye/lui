@@ -47,6 +47,8 @@ type
     procedure Loaded; override;
     procedure DoEnter; override;
     procedure DoExit; override;
+    // 无边框窗口的边缘缩放：命中缩放边框时把鼠标消息让给顶层窗口（见实现）
+    procedure WndProc(var TheMessage: TLMessage); override;
     // 输入转发（M4 鼠标 / M5 键盘）
     procedure MouseMove(Shift: TShiftState; X, Y: Integer); override;
     procedure MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Integer); override;
@@ -95,10 +97,11 @@ type
 
 implementation
 
-{$IFDEF WINDOWS}
 uses
-  Windows;
+  {$IFDEF WINDOWS}Windows, {$ENDIF}
+  xui_window;   // 无边框窗口的边缘缩放基类（TXuiFramelessForm）
 
+{$IFDEF WINDOWS}
 const
   CFS_POINT = $0002;         // 组合窗定位方式：锚点
   GCS_COMPSTR = $0008;       // 组合中字符串变更
@@ -333,6 +336,35 @@ begin
 end;
 
 { 输入转发：先给引擎，再走 LCL 的常规事件（用户的 OnMouseXxx / OnKeyXxx 仍可用） }
+
+{ 鼠标消息里高低位打包的屏幕坐标（需符号扩展：多显示器下存在负坐标） }
+function XuiScreenPointOf(APacked: LPARAM): TPoint;
+begin
+  Result.X := SmallInt(APacked and $FFFF);
+  Result.Y := SmallInt((APacked shr 16) and $FFFF);
+end;
+
+{ 无边框窗口的边缘缩放在顶层窗口判定，但自绘画布 alClient 覆盖整个客户区，
+  系统问到的只会是画布本身（默认 HTCLIENT），窗口最外圈因此永远拿不到缩放命中。
+  这里在命中缩放边框时回答 HTTRANSPARENT——按 Windows 的命中测试规则，消息会继续
+  在同线程内询问下层窗口，最终由顶层窗口给出 HTLEFT / HTBOTTOMRIGHT 等非客户区命中码，
+  交给 DefWindowProc 进入原生缩放循环。 }
+procedure TXuiHost.WndProc(var TheMessage: TLMessage);
+var
+  Form: TCustomForm;
+begin
+  if TheMessage.Msg = LM_NCHITTEST then
+  begin
+    Form := GetParentForm(Self);
+    if (Form is TXuiFramelessForm) and
+       (TXuiFramelessForm(Form).FramelessHitTest(XuiScreenPointOf(TheMessage.LParam)) <> HTCLIENT) then
+    begin
+      TheMessage.Result := HTTRANSPARENT;
+      Exit;
+    end;
+  end;
+  inherited WndProc(TheMessage);
+end;
 
 procedure TXuiHost.MouseMove(Shift: TShiftState; X, Y: Integer);
 begin
