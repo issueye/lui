@@ -359,6 +359,22 @@ begin
   if AStyle.LetterSpacing > 0 then
     spacing := AStyle.LetterSpacing;
 
+  // R8：可用宽度由「整串测量」决定（flex 主轴尺寸、块级内容盒都按 max-content 测量），
+  // 而逐单元累加会因逐段测量/字距取整而略大于整串值，导致文本明明放得下却被折行。
+  // 因此先做与分配口径一致的整串判断：放得下就是不折行的单行。
+  if UnitWidth(AText, AStyle, AMeasure) <= AMaxWidth then
+  begin
+    SetLength(ALines, 1);
+    ALines[0] := TrimRight(AText);
+    if ALines[0] <> '' then
+    begin
+      StoreCache(cacheKey, ALines);
+      Exit(LineHeightPx(AStyle));
+    end;
+    SetLength(ALines, 0);
+    Exit(0);
+  end;
+
   SplitUnits(AText, units);
   cur := '';
   curW := 0;
@@ -373,7 +389,7 @@ begin
       curW := w;
       Continue;
     end;
-    if curW + spacing + w <= AMaxWidth then
+    if Round(curW + spacing + w) <= Round(AMaxWidth) then
     begin
       cur := cur + units[i].Text;
       curW := curW + spacing + w;

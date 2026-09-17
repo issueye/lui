@@ -264,7 +264,8 @@ begin
   begin
     n := UTF8Length(AText);
     if n > 1 then
-      Result.cx := Result.cx + Round(AStyle.LetterSpacing) * (n - 1);
+      // 两套后端统一口径：字距 × (字数-1) 后取整（与断行累加保持同量级）
+      Result.cx := Result.cx + Round(AStyle.LetterSpacing * (n - 1));
   end;
 end;
 

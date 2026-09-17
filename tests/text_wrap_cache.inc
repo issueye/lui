@@ -13,12 +13,33 @@ begin
   Result.cy := 20;
 end;
 
+type
+  // 模拟真实字体的字距收紧（kerning）：整串测量略小于逐字之和，
+  // 用于锁定「可用宽度按整串测量分配，放得下就不许折行」这一不变量。
+  TKerningMeasurer = class
+  public
+    function Measure(const AText: string; AStyle: TXuiStyle): TSize;
+  end;
+
+function TKerningMeasurer.Measure(const AText: string; AStyle: TXuiStyle): TSize;
+var
+  n: Integer;
+begin
+  n := Utf8CharCount(AText);
+  if n <= 1 then
+    Result.cx := n * 8      // 单字符：8px
+  else
+    Result.cx := n * 7;     // 多字符：每字符 7px（模拟 kerning）
+  Result.cy := 20;
+end;
+
 procedure TestWrapCache;
 var
   style: TXuiStyle;
   lines: TXuiLineArray;
   h1, h2: Single;
   wide: TWideMeasurer;
+  kerning: TKerningMeasurer;
 begin
   WriteLn('--- R8：断行缓存 ---');
 
@@ -90,6 +111,30 @@ begin
     WrapText('中文中文中文', style, 40, @Measurer.Measure, lines);
     Check((Length(lines) = 1) and (lines[0] = '中文中文…'),
       Format('nowrap + ellipsis 为 1 行并截断 [实际 %s]', [lines[0]]));
+    // 分配口径（整串测量）与逐单元累加不一致时，必须以整串为准：
+    // 盒子宽度就是按整串 max-content 分配的，放得下就不该折行。
+    InvalidateWrapCache;
+    kerning := TKerningMeasurer.Create;
+    try
+      // 复位上一条用例留下的 nowrap/ellipsis，避免误走截断分支
+      style.WhiteSpace := xwsNormal;
+      style.TextOverflow := xtoClip;
+      style.LetterSpacing := 0;
+      // 整串 5×7=35px、逐单元之和 14+8+14=36px：宽度 35 时按整串算放得下 → 必须单行
+      WrapText('ab cd', style, 35, @kerning.Measure, lines);
+      Check((Length(lines) = 1) and (lines[0] = 'ab cd'),
+        Format('整串测量放得下时不得折行（逐单元之和更宽）[实际 %d 行 / [%s]]',
+          [Length(lines), lines[0]]));
+      WrapText('ab cd', style, 20, @kerning.Measure, lines);
+      Check((Length(lines) = 2) and (lines[0] = 'ab'),
+        Format('真正放不下时才按单元折行 [实际 %d 行]', [Length(lines)]));
+      // 不可断长词保持溢出而不是硬切（既有契约）
+      WrapText('abcd', style, 20, @kerning.Measure, lines);
+      Check((Length(lines) = 1) and (lines[0] = 'abcd'),
+        Format('不可断长词不硬切 [实际 %d 行 / [%s]]', [Length(lines), lines[0]]));
+    finally
+      kerning.Free;
+    end;
   finally
     wide.Free;
     style.Free;

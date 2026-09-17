@@ -13,7 +13,7 @@ unit xui_render_gdiplus;
 interface
 
 uses
-  Windows, Classes, SysUtils, Types, Graphics, LCLType, Math, IniFiles,
+  Windows, Classes, SysUtils, Types, Graphics, LCLType, Math, IniFiles, LazUTF8,
   xui_types, xui_style, xui_render;
 
 type
@@ -564,9 +564,11 @@ var
   brush: PGpBrush;
   layout: TGpRectF;
   bounds: TGpRectF;
-  wide: UnicodeString;
-  textW: Single;
+  wide, ch: UnicodeString;
+  textW, cursor: Single;
   dy: Single;
+  one: TGpRectF;
+  i: Integer;
 begin
   if (FGraphics = nil) or (AText = '') or (FOpacity <= 0.001) then
     Exit;
@@ -615,8 +617,24 @@ begin
     layout.Y := layout.Y + dy;
   end;
 
-  GdipDrawString(FGraphics, PWideChar(wide), Length(wide), font, layout,
-    format, brush);
+  // R7/R8：letter-spacing —— GDI+ 没有字距开关，逐字推进字距；
+  // 与 MeasureText 的口径一致（宽度 + 字距×(字数-1)），保证断行与绘制对齐。
+  if AStyle.LetterSpacing <> 0 then
+  begin
+    cursor := layout.X;
+    for i := 1 to UTF8Length(AText) do
+    begin
+      ch := UnicodeString(UTF8Copy(AText, i, 1));
+      one := layout;
+      one.X := cursor;
+      one.Width := MeasureText(ch, AStyle).cx + 32;
+      GdipDrawString(FGraphics, PWideChar(ch), Length(ch), font, one, format, brush);
+      cursor := cursor + MeasureText(ch, AStyle).cx + AStyle.LetterSpacing;
+    end;
+  end
+  else
+    GdipDrawString(FGraphics, PWideChar(wide), Length(wide), font, layout,
+      format, brush);
   GdipDeleteBrush(brush);
 end;
 
@@ -630,7 +648,7 @@ var
   resolvedName: string;
   weight: Integer;
   key: string;
-  idx: Integer;
+  idx, n: Integer;
   packed2: Int64;
 begin
   // GDI+ 的 GdipMeasureString 会额外计入两侧内边距（比实际字宽大 5-7px），
@@ -654,7 +672,7 @@ begin
     weight := 400;
   resolvedName := ResolveFontFamilyName(AStyle.FontFamily);
   key := resolvedName + '|' + IntToStr(Round(AStyle.FontSize)) + '|' +
-    IntToStr(weight) + '|' + AText;
+    IntToStr(weight) + '|' + IntToStr(Round(AStyle.LetterSpacing * 10)) + '|' + AText;
   if FMeasureCache = nil then
     FMeasureCache := THashedStringList.Create;
   idx := FMeasureCache.IndexOf(key);
@@ -678,6 +696,14 @@ begin
   begin
     Result.cx := size.cx;
     Result.cy := size.cy;
+  end;
+  // R7/R8：letter-spacing —— 与 GDI 后端同一口径（字距 × (字数-1)），
+  // 使断行、测量与实际绘制三者一致（此前 GDI+ 完全忽略字距）。
+  if (AStyle <> nil) and (AStyle.LetterSpacing <> 0) and (AText <> '') then
+  begin
+    n := UTF8Length(AText);
+    if n > 1 then
+      Result.cx := Result.cx + Round(AStyle.LetterSpacing * (n - 1));
   end;
   SelectObject(FMeasureDC, oldFont);
   DeleteObject(font);
