@@ -576,6 +576,19 @@ begin
       '(empty.find(function () { return true; }) === undefined));');
     CheckLog('Array find/findIndex/some/every/sort（含空数组语义与默认字符串排序）',
       'Fb-1truetruefalse|abc|cab|falsetruetrue', src);
+    // ---- 9. 字符串码点工具（移植真实应用时必备）----
+    src := RunAndPump(
+      'const s = "a" + String.fromCharCode(13) + String.fromCharCode(10) + "中";' + #10 +
+      'console.log("CC" + s.length + ":" + s.charCodeAt(0) + ":" + ' +
+      's.charCodeAt(1) + ":" + s.charCodeAt(2) + ":" + s.charCodeAt(3) + ' +
+      '":" + s.charCodeAt(9));');
+    CheckLog('String.fromCharCode / charCodeAt（码点下标，越界给 0）',
+      'CC4:97:13:10:20013:0', src);
+
+    src := RunAndPump(
+      'console.log("CP" + String.fromCharCode(65, 66) + ":" + ' +
+      'String.fromCharCode(20013).length);');
+    CheckLog('String.fromCharCode 多参拼接与多字节码点长度', 'CPAB:1', src);
   finally
     script.Free;
     sink.Free;

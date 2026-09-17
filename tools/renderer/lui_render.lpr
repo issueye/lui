@@ -381,6 +381,29 @@ begin
     注入进去——用户在命令行上给的主题/尺寸/输出等参数仍然排在后面，覆盖清单默认值。 }
   if GBundleRoot <> '' then
   begin
+    // 自包含应用 exe 也可能被当工具用：`app.exe render <页面>` / `app.exe check ...`。
+    // 命令名必须优先于"无输入就注入应用入口"的判断，否则 render 会被当成页面文件名，
+    // 报出 "输入文件不存在: render"（实测）。
+    if ParamCount > 0 then
+    begin
+      cmd := LowerCase(ParamStr(1));
+      if (cmd = 'render') or (cmd = 'export') then
+      begin
+        EmitTail(2);
+        Exit;
+      end;
+      if (cmd = 'check') or (cmd = 'dev') or (cmd = 'start') or (cmd = 'run') then
+      begin
+        if XuiAppSpecAuto(GBundleRoot, spec) then
+        begin
+          FreeAndNil(GSpec);
+          GSpec := spec;
+          EmitRunArgs(cmd);
+        end;
+        EmitTail(2);
+        Exit;
+      end;
+    end;
     if not HasExplicitInput then
     begin
       if XuiAppSpecAuto(GBundleRoot, spec) then

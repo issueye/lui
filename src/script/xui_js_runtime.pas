@@ -347,6 +347,8 @@ type
       const AArgs: TXuiJsValueArray): TXuiJsValue;
     function NativeObjectStatics(AFn: TXuiJsFunction; AThis: TXuiJsValue;
       const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function NativeStringStatic(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
     function NativeStringProto(AFn: TXuiJsFunction; AThis: TXuiJsValue;
       const AArgs: TXuiJsValueArray): TXuiJsValue;
     function NativeArrayProto(AFn: TXuiJsFunction; AThis: TXuiJsValue;
@@ -839,6 +841,63 @@ begin
   end;
   Result := '';
 end;
+// 第 AIndex 个码点的码点值（越界返回 0）。
+// 与 charAt 同一套下标规则：本引擎的字符串下标是**码点**，不是 UTF-16 code unit。
+function JsStrCharCodeAt(const S: string; AIndex: Integer): Integer;
+var
+  i, n: Integer;
+  b, b1, b2, b3: Byte;
+begin
+  Result := 0;
+  if AIndex < 0 then
+    Exit;
+  i := 1;
+  n := 0;
+  while i <= System.Length(S) do
+  begin
+    if n = AIndex then
+    begin
+      b := Byte(S[i]);
+      if b < $80 then
+        Exit(b);
+      if (b and $E0) = $C0 then
+      begin
+        b1 := Byte(S[i + 1]);
+        Exit(((b and $1F) shl 6) or (b1 and $3F));
+      end;
+      if (b and $F0) = $E0 then
+      begin
+        b1 := Byte(S[i + 1]);
+        b2 := Byte(S[i + 2]);
+        Exit(((b and $0F) shl 12) or ((b1 and $3F) shl 6) or (b2 and $3F));
+      end;
+      b1 := Byte(S[i + 1]);
+      b2 := Byte(S[i + 2]);
+      b3 := Byte(S[i + 3]);
+      Exit(((b and $07) shl 18) or ((b1 and $3F) shl 12) or ((b2 and $3F) shl 6) or (b3 and $3F));
+    end;
+    System.Inc(i, Utf8SeqLen(Byte(S[i])));
+    System.Inc(n);
+  end;
+end;
+
+// 码点 → UTF-8 字节串（String.fromCharCode 用）
+function JsStrFromCodePoint(ACode: Integer): string;
+begin
+  if ACode < 0 then
+    Exit('')
+  else if ACode < $80 then
+    Result := Chr(ACode)
+  else if ACode < $800 then
+    Result := Chr($C0 or (ACode shr 6)) + Chr($80 or (ACode and $3F))
+  else if ACode < $10000 then
+    Result := Chr($E0 or (ACode shr 12)) + Chr($80 or ((ACode shr 6) and $3F)) +
+      Chr($80 or (ACode and $3F))
+  else
+    Result := Chr($F0 or (ACode shr 18)) + Chr($80 or ((ACode shr 12) and $3F)) +
+      Chr($80 or ((ACode shr 6) and $3F)) + Chr($80 or (ACode and $3F));
+end;
+
 // 码点切片 [AStart, AEnd) ；负数按 JS 语义从尾部计
 procedure JsStrSliceRange(const S: string; AStart, AEnd: Integer;
   out ALo, AHi: Integer);
@@ -3686,6 +3745,7 @@ var
     uiObj: TXuiJsObject;
   promiseCtor: TXuiJsFunction;
   fn: TXuiJsFunction;
+  strVal: TXuiJsValue;
 begin
   FObjectProto := TXuiJsObject.Create;
   FAllObjects.Add(FObjectProto);
@@ -3712,6 +3772,10 @@ begin
   DefineNative(FGlobal, 'isNaN', @NativeGlobalFn);
   DefineNative(FGlobal, 'isFinite', @NativeGlobalFn);
   DefineNative(FGlobal, 'String', @NativeGlobalFn);
+  strVal := FGlobal.GetOwn('String');
+  if (strVal.Kind = jvObject) and (strVal.Obj <> nil) then
+    strVal.Obj.SetOwn('fromCharCode',
+      CreateHostFunction('fromCharCode', @NativeStringStatic));
   DefineNative(FGlobal, 'Number', @NativeGlobalFn);
   DefineNative(FGlobal, 'Boolean', @NativeGlobalFn);
   DefineNative(FGlobal, 'Array', @NativeGlobalFn);
@@ -3795,6 +3859,7 @@ begin
   DefineNative(FGlobal, 'onMount', @NativeVue);
   // 原型方法（按名分派）
   DefineNative(FStringProto, 'charAt', @NativeStringProto);
+  DefineNative(FStringProto, 'charCodeAt', @NativeStringProto);
   DefineNative(FStringProto, 'indexOf', @NativeStringProto);
   DefineNative(FStringProto, 'lastIndexOf', @NativeStringProto);
   DefineNative(FStringProto, 'slice', @NativeStringProto);
@@ -4322,6 +4387,20 @@ begin
   end;
   Result := MakeUndefined;
 end;
+// String.fromCharCode(...)：把码点拼成字符串（引擎里 String 本身就是函数对象，
+// 所以静态方法直接挂成它的自有属性）
+function TXuiJsInterp.NativeStringStatic(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+var
+  i: Integer;
+  out: string;
+begin
+  out := '';
+  for i := 0 to System.Length(AArgs) - 1 do
+    out := out + JsStrFromCodePoint(ToInt32Value(AArgs[i]));
+  Result := MakeString(out);
+end;
+
 function TXuiJsInterp.NativeStringProto(AFn: TXuiJsFunction; AThis: TXuiJsValue;
   const AArgs: TXuiJsValueArray): TXuiJsValue;
 var
@@ -4333,6 +4412,8 @@ begin
   if AFn.Name = 'toString' then Exit(MakeString(s));
   if AFn.Name = 'charAt' then
     Exit(MakeString(JsStrCharAt(s, ArgInt(AArgs, 0))));
+  if AFn.Name = 'charCodeAt' then
+    Exit(MakeNumber(JsStrCharCodeAt(s, ArgInt(AArgs, 0))));
   if AFn.Name = 'indexOf' then
     Exit(MakeNumber(JsStrIndexOf(s, ToStringValue(ArgAt(AArgs, 0)),
       ArgInt(AArgs, 1))));

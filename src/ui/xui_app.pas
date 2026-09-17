@@ -170,6 +170,16 @@ begin
   FTheme := LowerCase(ATheme);
   dark := (FTheme = 'dark');
 
+  // 把当前主题暴露给脚本（ui.theme）：页面自己做"主题类切换"时必须知道运行时用的是哪一档，
+  // 否则 CLI 的 -t dark / 清单里的 window.theme 会和页面自己的初始值各说一套（两份真相）。
+  if FScript <> nil then
+  begin
+    if dark then
+      FScript.RegisterValue('ui.theme', FScript.Str('dark'))
+    else
+      FScript.RegisterValue('ui.theme', FScript.Str('light'));
+  end;
+
   // 复位：修复重复装配时样式表累积（M9-P2 修复项）
   FEngine.ClearStyleSheets;
 

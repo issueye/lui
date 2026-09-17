@@ -12,7 +12,7 @@ Lazarus/FPC，也不会碰到一行 Pascal**。
 ```bash
 # 拿到运行时：构建它（需要 Lazarus/lazbuild；可用 LAZBUILD 环境变量指定路径）
 npm run build:renderer      # → bin/lui.exe（别名 bin/lui-render.exe，同一份二进制）
-npm test                    # 单元测试（976 项）
+npm test                    # 单元测试（978 项）
 
 # 回归基线校验（复用已编译测试程序，并核对文档里声明的测试数量）
 npm run verify:baseline
@@ -89,7 +89,7 @@ npm run single                                                      # 单程序�
 | `scaffold/` | 应用模板：`lui init` 用它生成骨架（`lui.json` + 页面 + 自带 `ui/` 运行时 + `run-*.cmd`） |
 | `demo/` | 演示页面（login / list / todo / script / m7 / ui / uildg / uidisp / uinav / **agent**） |
 | `tools/renderer` | 运行时主程序（命令面 + GUI + 项目工具链 + 自包含构建）与单程序版工程 |
-| `tests/` | 单元测试（`npm test` 运行，当前 976 项）；按主题拆成 `tests/*.inc`，M12/M13 的新增项在 `tests/m12_m13.inc` |
+| `tests/` | 单元测试（`npm test` 运行，当前 978 项）；按主题拆成 `tests/*.inc`，M12/M13 的新增项在 `tests/m12_m13.inc` |
 
 ## 文档
 
