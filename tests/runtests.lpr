@@ -1577,6 +1577,7 @@ end;
 {$I text_overflow.inc}
 {$I box_shadow.inc}
 {$I svg_intrinsic_size.inc}
+{$I text_wrap_cache.inc}
 {$I layout_text_position.inc}
 {$I layout_css_props.inc}
 {$I layout_engine_rendering.inc}
@@ -11700,6 +11701,7 @@ begin
     TestWhiteSpaceAndOverflow;
     TestBoxShadow;
     TestSvgIntrinsicSize;
+    TestWrapCache;
 
 
     TestFlexAlign;
