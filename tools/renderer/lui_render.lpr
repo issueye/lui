@@ -54,6 +54,7 @@ type
     Watch: Boolean;
     Verbose: Boolean;
     Bench: Integer;          // --bench N：渲染后重复 N 次完整重排（性能基准）
+    BenchMode: string;       // --bench-mode full|layout|paint：基准的失效级别（默认 full）
     JsonOut: Boolean;        // --json：结果以 JSON 输出到 stdout
     ListEmbedded: Boolean;   // --list-embedded：列出内嵌资源后退出
     AddPage: string;         // --add-page <xml>：输出该页面的资源清单（供打包脚本内嵌）
@@ -117,6 +118,7 @@ begin
   LogLn('  -c, --css <样式文件>      附加加载的自定义 CSS 样式文件');
   LogLn('  --watch                   监听输入与其依赖变更并自动重跑');
   LogLn('  --bench <次数>            渲染后重复 N 次完整重排并输出耗时（性能基准）');
+  LogLn('  --bench-mode <级别>       full(默认)=级联+布局+绘制 / layout=仅布局+绘制 / paint=仅绘制');
   LogLn('  --json                    结果以 JSON 输出到 stdout（日志走 stderr）');
   LogLn;
   LogLn('项目工具链 (M11):');
@@ -429,6 +431,14 @@ begin
       if Opt.Bench <= 0 then
         ParamError('基准次数必须是正整数: ' + arg);
     end
+    else if arg = '--bench-mode' then
+    begin
+      NeedValue('--bench-mode', Opt.BenchMode);
+      Opt.BenchMode := LowerCase(Opt.BenchMode);
+      if (Opt.BenchMode <> 'full') and (Opt.BenchMode <> 'layout') and
+         (Opt.BenchMode <> 'paint') then
+        ParamError('--bench-mode 只支持 full|layout|paint: ' + Opt.BenchMode);
+    end
     else if arg = '--json' then
       Opt.JsonOut := True
     else if arg = '--list-embedded' then
@@ -560,13 +570,18 @@ begin
       for i := 1 to Opt.Bench do
       begin
         t0 := GetTickCount64;
-        app.Engine.InvalidateStyles;
+        // 失效级别可分离：full=整树样式重算+布局+绘制（最坏情况）；
+        // layout=仅布局+绘制（新增节点/尺寸变化）；paint=仅绘制（纯重绘）
+        if (Opt.BenchMode = '') or (Opt.BenchMode = 'full') then
+          app.Engine.InvalidateStyles
+        else if Opt.BenchMode = 'layout' then
+          app.Engine.InvalidateLayout;
         app.Engine.Draw(bmp.Canvas, viewRect);
         t1 := GetTickCount64;
         total := total + (t1 - t0);
       end;
-      LogLn(Format('[基准] %d 次完整重排: %d ms（平均 %.2f ms/次）',
-        [Opt.Bench, total, total / Opt.Bench]));
+      LogLn(Format('[基准] %d 次重排(mode=%s): %d ms（平均 %.2f ms/次）',
+        [Opt.Bench, IfThen(Opt.BenchMode = '', 'full', Opt.BenchMode), total, total / Opt.Bench]));
     end;
 
     png.Assign(bmp);

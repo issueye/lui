@@ -17,6 +17,7 @@
     "pack": "node scripts/pack.js",
     "init": "node scripts/init.js",
     "scaffold": "node scripts/init.js --self-test",
+    "bench:timeline": "node scripts/bench-timeline.js",
     "verify:baseline": "node scripts/verify-baseline.js",
     "clean": "node -e \"const fs = require('fs'); ['bin', 'tools/renderer/lib', 'tools/renderer/lib-single', 'tools/renderer/embedded', 'tests/lib', 'demo/lib'].forEach(d => { if (fs.existsSync(d)) fs.rmSync(d, { recursive: true, force: true }); }); console.log('清理完毕');\""
   },
