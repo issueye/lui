@@ -509,7 +509,8 @@ procedure ArrangeOneAbsolute(child: TXuiNode; const ACtx: TLayoutContext);
 var
   cb: TXuiNode;
   cbRect: TRect;
-  cbW, cbH, mL, mR, mT, mB, w, h, x, dy: Single;
+  cbW, cbH, mL, mR, mT, mB, w, h, x, dy, forcedH: Single;
+  hasL, hasR, hasT, hasB: Boolean;
 begin
   cb := ContainingBlockOf(child);
   if cb = nil then
@@ -522,26 +523,45 @@ begin
   mT := child.Style.Margin.Top.Resolve(cbW);
   mB := child.Style.Margin.Bottom.Resolve(cbW);
 
+  // R6：left+right 同时给出且宽度 auto 时，宽度由包含块驱动（浏览器语义），
+  // 否则维持 shrink-to-fit（内容宽，上限为包含块宽）。
+  hasL := not child.Style.Inset.Left.IsAuto;
+  hasR := not child.Style.Inset.Right.IsAuto;
+  hasT := not child.Style.Inset.Top.IsAuto;
+  hasB := not child.Style.Inset.Bottom.IsAuto;
+
   if not child.Style.Width.IsAuto then
     w := ClampMin(child.Style.Width.Resolve(cbW), child.Style.MinWidth, cbW)
+  else if hasL and hasR then
+  begin
+    w := Max(0, cbW - child.Style.Inset.Left.Resolve(cbW) -
+      child.Style.Inset.Right.Resolve(cbW) - mL - mR);
+    w := ClampMin(w, child.Style.MinWidth, cbW);
+  end
   else
   begin
     w := Min(MeasureNode(child, ACtx).cx, Max(0, cbW - mL - mR));
     w := ClampMin(w, child.Style.MinWidth, cbW);
   end;
 
-  if not child.Style.Inset.Left.IsAuto then
+  if hasL then
     x := cbRect.Left + child.Style.Inset.Left.Resolve(cbW) + mL
-  else if not child.Style.Inset.Right.IsAuto then
+  else if hasR then
     x := cbRect.Right - child.Style.Inset.Right.Resolve(cbW) - w - mR
   else
     x := cbRect.Left + mL;
 
-  h := ArrangeNode(child, x, cbRect.Top + mT, w, ACtx, cbH, -1);
+  // R6：top+bottom 同时给出且高度 auto 时，高度由包含块驱动
+  forcedH := -1;
+  if child.Style.Height.IsAuto and hasT and hasB then
+    forcedH := Max(0, cbH - child.Style.Inset.Top.Resolve(cbH) -
+      child.Style.Inset.Bottom.Resolve(cbH) - mT - mB);
 
-  if not child.Style.Inset.Top.IsAuto then
+  h := ArrangeNode(child, x, cbRect.Top + mT, w, ACtx, cbH, forcedH);
+
+  if hasT then
     dy := child.Style.Inset.Top.Resolve(cbH) + mT
-  else if not child.Style.Inset.Bottom.IsAuto then
+  else if hasB then
     dy := cbH - child.Style.Inset.Bottom.Resolve(cbH) - h - mB
   else
     dy := mT;

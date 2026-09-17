@@ -11688,6 +11688,9 @@ begin
     TestPositioning;
 
 
+    TestAbsoluteInsetSizing;
+
+
     TestM3CssProps;
 
     TestLayoutContract;

@@ -141,3 +141,51 @@ begin
     doc.Free;
   end;
 end;
+
+{ R6：绝对定位的 inset 驱动尺寸（Shell 类整屏区域依赖它随窗口自适应） }
+procedure TestAbsoluteInsetSizing;
+var
+  doc: TXuiDocument;
+  bar, main, boxed, rightOnly: TXuiNode;
+begin
+  WriteLn('--- R6 绝对定位：left/right/top/bottom 驱动尺寸 ---');
+  doc := PrepareDoc(
+    '<window>' +
+    '  <panel id="bar"/>' +
+    '  <panel id="main"><panel id="inner"/></panel>' +
+    '  <panel id="boxed"/>' +
+    '  <panel id="rightonly"/>' +
+    '</window>',
+    '#bar { position:absolute; left:0; right:0; top:0; height:48px; } ' +
+    '#main { position:absolute; left:0; right:0; top:48px; bottom:30px; } ' +
+    '#inner { height:20px; } ' +
+    '#boxed { position:absolute; left:10px; top:10px; width:50px; height:20px; } ' +
+    '#rightonly { position:absolute; right:20px; bottom:10px; width:30px; height:10px; }',
+    400, 300);
+  try
+    bar := doc.FindElementById('bar');
+    main := doc.FindElementById('main');
+    boxed := doc.FindElementById('boxed');
+    rightOnly := doc.FindElementById('rightonly');
+
+    CheckRect(bar.BoxRect, 0, 0, 400, 48, 'left+right 驱动宽度（贴满视口）');
+    CheckRect(main.BoxRect, 0, 48, 400, 270, 'top+bottom 驱动高度（夹在栏与状态栏之间）');
+    CheckRect(boxed.BoxRect, 10, 10, 60, 30, '显式宽高不受影响（回归）');
+    CheckRect(rightOnly.BoxRect, 350, 280, 380, 290, 'right+bottom 定位仍以显式尺寸为准');
+    Check(doc.FindElementById('inner') <> nil, '绝对定位区域内的子节点存在');
+  finally
+    doc.Free;
+  end;
+
+  // 只给 left（宽度 auto）→ 维持 shrink-to-fit（R6 之前的语义）
+  doc := PrepareDoc(
+    '<window><panel id="auto"><label text="abc"/></panel></window>',
+    '#auto { position:absolute; left:8px; top:8px; }',
+    400, 300);
+  try
+    Check(doc.FindElementById('auto').BoxRect.Right < 400,
+      '只给 left 时仍为 shrink-to-fit（不撑满）');
+  finally
+    doc.Free;
+  end;
+end;
