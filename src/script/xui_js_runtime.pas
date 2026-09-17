@@ -3825,6 +3825,13 @@ begin
   DefineNative(FArrayProto, 'reverse', @NativeArrayProto);
   DefineNative(FArrayProto, 'concat', @NativeArrayProto);
   DefineNative(FArrayProto, 'splice', @NativeArrayProto);
+  // M13：查找与排序。移植真实应用（a_da 的 Agent 工具/会话/设置）时，缺这几个方法
+  // 会把"挑出第一个满足条件的元素"写成手写 for 循环，散落在各处且易错。
+  DefineNative(FArrayProto, 'find', @NativeArrayProto);
+  DefineNative(FArrayProto, 'findIndex', @NativeArrayProto);
+  DefineNative(FArrayProto, 'some', @NativeArrayProto);
+  DefineNative(FArrayProto, 'every', @NativeArrayProto);
+  DefineNative(FArrayProto, 'sort', @NativeArrayProto);
   DefineNative(FNumberProto, 'toFixed', @NativeNumberProto);
   DefineNative(FNumberProto, 'toString', @NativeNumberProto);
   DefineNative(FFunctionProto, 'call', @NativeFunctionProto);
@@ -4440,9 +4447,10 @@ function TXuiJsInterp.NativeArrayProto(AFn: TXuiJsFunction; AThis: TXuiJsValue;
   const AArgs: TXuiJsValueArray): TXuiJsValue;
 var
   arr: TXuiJsArray;
-  i, n, lo, hi: Integer;
+  i, j, n, lo, hi: Integer;
   outArr: TXuiJsArray;
-  acc: TXuiJsValue;
+  acc, cur: TXuiJsValue;
+  hasCmp, less, hit: Boolean;
 begin
   if (AThis.Kind <> jvObject) or (not (AThis.Obj is TXuiJsArray)) then
     raise EXuiJsRuntime.Create('数组方法调用者不是数组');
@@ -4667,6 +4675,71 @@ begin
       Inc(i);
     end;
     Exit(acc);
+  end;
+  if AFn.Name = 'find' then
+  begin
+    if not IsCallable(ArgAt(AArgs, 0)) then
+      raise EXuiJsRuntime.Create('find 需要函数参数');
+    for i := 0 to arr.Length - 1 do
+      if IsTruthy(CallFunction(AArgs[0], MakeUndefined,
+        [arr.Items[i], MakeNumber(i), AThis])) then
+        Exit(arr.Items[i]);
+    Exit(MakeUndefined);
+  end;
+  if AFn.Name = 'findIndex' then
+  begin
+    if not IsCallable(ArgAt(AArgs, 0)) then
+      raise EXuiJsRuntime.Create('findIndex 需要函数参数');
+    for i := 0 to arr.Length - 1 do
+      if IsTruthy(CallFunction(AArgs[0], MakeUndefined,
+        [arr.Items[i], MakeNumber(i), AThis])) then
+        Exit(MakeNumber(i));
+    Exit(MakeNumber(-1));
+  end;
+  if (AFn.Name = 'some') or (AFn.Name = 'every') then
+  begin
+    if not IsCallable(ArgAt(AArgs, 0)) then
+      raise EXuiJsRuntime.Create(AFn.Name + ' 需要函数参数');
+    for i := 0 to arr.Length - 1 do
+    begin
+      hit := IsTruthy(CallFunction(AArgs[0], MakeUndefined,
+        [arr.Items[i], MakeNumber(i), AThis]));
+      // some：命中即真；every：不命中即假。空数组上 some=false / every=true（与 JS 一致）
+      if (AFn.Name = 'some') and hit then
+        Exit(MakeBool(True));
+      if (AFn.Name = 'every') and (not hit) then
+        Exit(MakeBool(False));
+    end;
+    Exit(MakeBool(AFn.Name = 'every'));
+  end;
+  if AFn.Name = 'sort' then
+  begin
+    // 原地排序（与 JS 一致）。无比较函数时按字符串比较——JS 的默认行为就是这样，
+    // 所以 [10,9].sort() 得 [10,9]；要数值序必须传比较函数。
+    // 用插入排序：稳定、无额外分配、代码短；UI 规模的数据（几十到几千）足够。
+    hasCmp := System.Length(AArgs) >= 1;
+    if hasCmp and (not IsCallable(ArgAt(AArgs, 0))) then
+      raise EXuiJsRuntime.Create('sort 的比较参数必须是函数');
+    for i := 1 to arr.Length - 1 do
+    begin
+      cur := arr.Items[i];
+      j := i - 1;
+      while j >= 0 do
+      begin
+        if hasCmp then
+          less := ToNumberValue(CallFunction(AArgs[0], MakeUndefined,
+            [cur, arr.Items[j]])) < 0
+        else
+          less := ToStringValue(cur) < ToStringValue(arr.Items[j]);
+        if not less then
+          Break;
+        arr.Items[j + 1] := arr.Items[j];
+        Dec(j);
+      end;
+      arr.Items[j + 1] := cur;
+    end;
+    NotifyArrayWrite(arr);
+    Exit(AThis);
   end;
   Result := MakeUndefined;
 end;

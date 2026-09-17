@@ -50,6 +50,22 @@ if (target === 'single') {
   process.exit(res.status || 0);
 }
 
+// M12：运行时同时以 lui.exe 的形式出现（`lui init` / `lui build` 这些命令面叫 lui，
+// 文件名也叫 lui 更顺）。lui-render.exe 保留为兼容别名——仓库脚本与既有工程都按老名字
+// 引用它，改名会让它们一起断。两个名字指向同一份二进制，不是两套实现。
+function aliasRuntime() {
+  const exeDir = path.resolve(__dirname, '..', 'bin');
+  const src = path.join(exeDir, process.platform === 'win32' ? 'lui-render.exe' : 'lui-render');
+  const dst = path.join(exeDir, process.platform === 'win32' ? 'lui.exe' : 'lui');
+  if (!fs.existsSync(src)) return;
+  try {
+    fs.copyFileSync(src, dst);
+    console.log(`[别名] lui 运行时 → ${path.relative(path.resolve(__dirname, '..'), dst)}`);
+  } catch (e) {
+    console.warn(`[警告] 未能创建运行时别名: ${e.message}`);
+  }
+}
+
 function buildTarget(key) {
   const p = projects[key];
   if (!p) {
@@ -82,8 +98,10 @@ function buildTarget(key) {
 
 if (target === 'all') {
   buildTarget('renderer');
+  aliasRuntime();
   buildTarget('test');
   buildTarget('demo');
 } else {
   buildTarget(target);
+  if (target === 'renderer') aliasRuntime();
 }

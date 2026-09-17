@@ -53,7 +53,7 @@ var
     o.Height := 560;
     o.Theme := 'light';
     o.LuiVersion := '0.10.0';
-    o.RendererPath := 'C:\fake\lui-render.exe';
+    o.RuntimePath := 'C:\fake\lui-runtime.exe';
     o.Force := AForce;
     Result := XuiScaffoldCreate(o, r);
     if not Result then
@@ -89,10 +89,11 @@ begin
     Check(FileExists(scriptPath), '生成页面逻辑 src/main.ts');
     Check(FileExists(cssLightPath), '生成浅色样式 src/main-light.css');
     Check(FileExists(cssDarkPath), '生成深色样式 src/main-dark.css');
-    Check(FileExists(proj + PathDelim + 'lui-project.json'), '生成工程清单 lui-project.json');
+    Check(FileExists(proj + PathDelim + 'lui.json'), '生成应用清单 lui.json（M12：运行时读的就是它）');
     Check(FileExists(proj + PathDelim + 'run-dev.cmd'), '生成 run-dev.cmd（开发）');
     Check(FileExists(proj + PathDelim + 'run-test.cmd'), '生成 run-test.cmd（测试）');
-    Check(FileExists(proj + PathDelim + 'run-pack.cmd'), '生成 run-pack.cmd（打包交付）');
+    Check(FileExists(proj + PathDelim + 'run-pack.cmd'), '生成 run-pack.cmd（交付目录）');
+    Check(FileExists(proj + PathDelim + 'run-build.cmd'), '生成 run-build.cmd（构建单文件应用）');
     Check(FileExists(proj + PathDelim + 'README.md'), '生成 README.md');
     Check(FileExists(proj + PathDelim + '.gitignore'),
       'gitignore 模板还原为 .gitignore（模板名不能以点开头，否则会被 git 当忽略规则）');
@@ -101,16 +102,20 @@ begin
     Check(FileExists(proj + PathDelim + 'ui' + PathDelim + 'theme' + PathDelim + 'lui-light.css'),
       '自带组件库主题 ui/theme/lui-light.css');
 
-    jsonText := ReadText(proj + PathDelim + 'lui-project.json');
+    jsonText := ReadText(proj + PathDelim + 'lui.json');
     Check(Pos('"name": "myapp"', jsonText) > 0, '清单里回填工程名（默认取目录名）');
-    Check(Pos('"width": "480"', jsonText) > 0, '清单里回填视口宽（--init -w）');
-    Check(Pos('"height": "560"', jsonText) > 0, '清单里回填视口高（--init -H）');
-    Check(Pos('C:/fake/lui-render.exe', jsonText) > 0,
-      '清单里渲染器路径用正斜杠（JSON/跨工具友好）');
+    Check(Pos('"width": 480', jsonText) > 0, '清单里回填视口宽（--init -w）');
+    Check(Pos('"height": 560', jsonText) > 0, '清单里回填视口高（--init -H）');
+    Check(Pos('"main": "src/main.xml"', jsonText) > 0, '清单里声明入口页面');
+    Check(Pos('"ui": "ui"', jsonText) > 0, '清单里声明组件库目录');
     Check(Pos('@@', jsonText) = 0, '清单里占位符已全部替换');
     cmdText := ReadText(proj + PathDelim + 'run-dev.cmd');
-    Check(Pos('C:\fake\lui-render.exe', cmdText) > 0,
-      '.cmd 里渲染器路径用原生分隔符（cmd.exe 语义正确）');
+    Check(Pos('C:\fake\lui-runtime.exe', cmdText) > 0,
+      '.cmd 里运行时路径用原生分隔符（cmd.exe 语义正确）');
+    Check(Pos('dev .', cmdText) > 0,
+      'run-dev.cmd 走新命令面（lui dev .，不再硬编码入口与主题）');
+    Check(Pos('C:/fake/lui-runtime.exe', ReadText(proj + PathDelim + 'README.md')) > 0,
+      'README.md 给出运行时路径（正斜杠形式，供工具消费）');
     Check(Pos('@@', cmdText) = 0, '.cmd 里占位符已全部替换');
     Check(Pos(#13#10, cmdText) > 0, '.cmd 用 CRLF 换行（cmd 对 LF-only 的标签解析不可靠）');
     Check(Pos(#$EF#$BB#$BF, cmdText) = 0, '生成文件不写 BOM');
@@ -119,6 +124,8 @@ begin
       '.cmd 保持纯 ASCII（run-test.cmd）');
     Check(not HasNonAscii(ReadText(proj + PathDelim + 'run-pack.cmd')),
       '.cmd 保持纯 ASCII（run-pack.cmd）');
+    Check(not HasNonAscii(ReadText(proj + PathDelim + 'run-build.cmd')),
+      '.cmd 保持纯 ASCII（run-build.cmd）');
 
     lines := TStringList.Create;
     try

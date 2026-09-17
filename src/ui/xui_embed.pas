@@ -12,7 +12,12 @@ unit xui_embed;
   200KB 的解包（带就绪标记，后续运行只做一次存在性校验）。
 
   单程序 exe 仍是超集：命令行给出的文件若在磁盘上存在则直接用磁盘文件，
-  内嵌资源只在磁盘上找不到时才参与解析。 }
+  内嵌资源只在磁盘上找不到时才参与解析。
+
+  M12 追加：资源来源有两档——构建期编进 exe 的 Base64 常量（单程序版），以及挂在
+  exe 尾部的应用载荷（`lui build` 产物，见 xui_bundle）。后者按偏移从文件流读取，
+  不把整个载荷读进内存。两档共用同一套"解包到临时目录 + 指纹就绪标记"的挂载实现
+  （MountIsReady/DoMount），所以缓存复用与失败原子性只有一份实现、一处修复。 }
 
 interface
 
@@ -25,6 +30,15 @@ uses
   ASizes   每项的字节数
   ACacheKey 内容指纹：用于临时目录命名与解包复用判定 }
 procedure XuiEmbedInstall(const AChunks: array of string; const ANames: array of string;
+  const ASizes: array of Integer; const ACacheKey: string);
+
+{ M12：资源来自某个文件的载荷段（自包含应用 exe 的尾部载荷）。
+  AFile 容器文件；ABaseOffset 载荷在文件中的绝对起始偏移；AOffsets 每项相对
+  ABaseOffset 的偏移；其余语义同 XuiEmbedInstall。
+  后调用者覆盖先调用者，所以同一个 exe 既能是单程序版（内嵌常量）又能是某个应用
+  （尾部载荷），二者不互相干扰。 }
+procedure XuiEmbedInstallFromFile(const AFile: string; ABaseOffset: Int64;
+  const ANames: array of string; const AOffsets: array of Int64;
   const ASizes: array of Integer; const ACacheKey: string);
 
 function XuiEmbedAvailable: Boolean;
@@ -40,17 +54,58 @@ implementation
 type
   TEmbedAsset = record
     Name: string;      // 相对路径，统一 '/' 分隔
-    Offset: Integer;   // 在数据块中的偏移（字节）
+    Offset: Int64;     // 在数据块/载荷中的偏移（字节）
     Size: Integer;
   end;
 
+  { 资源来源：内存块（Base64 常量）或容器文件的载荷段 }
+  TEmbedKind = (ekNone, ekMemory, ekFile);
+
 var
   GInstalled: Boolean = False;
+  GKind: TEmbedKind = ekNone;
   GAssets: array of TEmbedAsset;
   GBlob: TBytes;
+  GFile: string = '';
+  GFileBase: Int64 = 0;
   GCacheKey: string = '';
   GRoot: string = '';
   GMountTried: Boolean = False;
+
+{ 按资源序号取字节：内存块直接切片，文件档按需 seek+read }
+function ReadAsset(AIndex: Integer; out AData: TBytes): Boolean;
+var
+  fs: TFileStream;
+begin
+  Result := False;
+  SetLength(AData, 0);
+  if (AIndex < 0) or (AIndex > High(GAssets)) then
+    Exit;
+  SetLength(AData, GAssets[AIndex].Size);
+  if GAssets[AIndex].Size = 0 then
+    Exit(True);
+  if GKind = ekMemory then
+  begin
+    if GAssets[AIndex].Offset + GAssets[AIndex].Size > Length(GBlob) then
+      Exit;
+    Move(GBlob[GAssets[AIndex].Offset], AData[0], GAssets[AIndex].Size);
+    Exit(True);
+  end;
+  if GKind <> ekFile then
+    Exit;
+  try
+    fs := TFileStream.Create(GFile, fmOpenRead or fmShareDenyNone);
+    try
+      fs.Seek(GFileBase + GAssets[AIndex].Offset, soBeginning);
+      fs.ReadBuffer(AData[0], GAssets[AIndex].Size);
+    finally
+      fs.Free;
+    end;
+  except
+    Exit;
+  end;
+  Result := True;
+end;
 
 function B64Value(AChar: Char): Integer;
 begin
@@ -159,8 +214,47 @@ begin
     Exit;
   end;
   GBlob := blob;
+  GFile := '';
+  GFileBase := 0;
+  GKind := ekMemory;
   GCacheKey := ACacheKey;
   GInstalled := True;
+  GMountTried := False;
+  GRoot := '';
+end;
+
+procedure XuiEmbedInstallFromFile(const AFile: string; ABaseOffset: Int64;
+  const ANames: array of string; const AOffsets: array of Int64;
+  const ASizes: array of Integer; const ACacheKey: string);
+var
+  i: Integer;
+begin
+  if (Length(ANames) = 0) or (Length(ANames) <> Length(ASizes)) or
+     (Length(ANames) <> Length(AOffsets)) then
+    Exit;
+  if (ABaseOffset < 0) or (not FileExists(AFile)) then
+    Exit;
+
+  SetLength(GAssets, Length(ANames));
+  for i := 0 to High(ANames) do
+  begin
+    if (ASizes[i] < 0) or (AOffsets[i] < 0) then
+    begin
+      SetLength(GAssets, 0);
+      Exit;
+    end;
+    GAssets[i].Name := NormalizeName(ANames[i]);
+    GAssets[i].Offset := AOffsets[i];
+    GAssets[i].Size := ASizes[i];
+  end;
+  SetLength(GBlob, 0);
+  GFile := ExpandFileName(AFile);
+  GFileBase := ABaseOffset;
+  GKind := ekFile;
+  GCacheKey := ACacheKey;
+  GInstalled := True;
+  GMountTried := False;
+  GRoot := '';
 end;
 
 function XuiEmbedAvailable: Boolean;
@@ -198,16 +292,19 @@ begin
     Move(buf[0], Result[1], Length(buf));
 end;
 
-function WriteBlobFile(const AFile: string; AOffset, ASize: Integer): Boolean;
+function WriteBlobFile(const AFile: string; AIndex: Integer): Boolean;
 var
   fs: TFileStream;
+  data: TBytes;
 begin
   Result := False;
+  if not ReadAsset(AIndex, data) then
+    Exit;
   try
     fs := TFileStream.Create(AFile, fmCreate);
     try
-      if ASize > 0 then
-        fs.WriteBuffer(GBlob[AOffset], ASize);
+      if Length(data) > 0 then
+        fs.WriteBuffer(data[0], Length(data));
     finally
       fs.Free;
     end;
@@ -247,6 +344,8 @@ var
   fs: TFileStream;
 begin
   Result := '';
+  { 解包目标目录：LUI_EMBED_DIR 优先（测试与调试用），否则 %TEMP%\lui-embed-<指纹>。
+    单程序版与自包含应用共用同一命名空间，指纹不同即互不干扰。 }
   dir := Trim(GetEnvironmentVariable('LUI_EMBED_DIR'));
   if dir = '' then
     dir := IncludeTrailingPathDelimiter(GetTempDir) + 'lui-embed-' + GCacheKey;
@@ -262,7 +361,7 @@ begin
     dest := dir + PathDelim + StringReplace(GAssets[i].Name, '/', PathDelim, [rfReplaceAll]);
     if not ForceDirectories(ExtractFileDir(dest)) then
       Exit('');
-    if not WriteBlobFile(dest, GAssets[i].Offset, GAssets[i].Size) then
+    if not WriteBlobFile(dest, i) then
       Exit('');
   end;
 

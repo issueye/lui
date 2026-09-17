@@ -1,7 +1,7 @@
 {
   "name": "lui",
-  "version": "0.10.0",
-  "description": "lui — 轻量级声明式现代化 Free Pascal UI 渲染引擎与组件库",
+  "version": "0.12.0",
+  "description": "lui — 不写 Pascal 的声明式 GUI 应用框架（XML + CSS + TS，单二进制运行时：开发/运行/构建/交付）",
   "main": "ui/index.ts",
   "scripts": {
     "build": "node scripts/build.js all",
@@ -9,6 +9,9 @@
     "build:test": "node scripts/build.js test",
     "build:demo": "node scripts/build.js demo",
     "test": "node scripts/build.js test && node scripts/build.js renderer && node scripts/verify-baseline.js",
+    "verify:baseline": "node scripts/verify-baseline.js",
+    "smoke:app": "node scripts/smoke-app.js",
+    "lui": "bin\\lui.exe",
     "render": "bin\\lui-render.exe",
     "render:svg": "bin\\lui-render.exe demo/svg_demo.xml -o bin/svg_demo_preview.png -w 800 -H 500 -t light -v",
     "render:gallery": "bin\\lui-render.exe demo/ui_gallery.xml -o bin/gallery_light.png -w 560 -H 980 -t light && bin\\lui-render.exe demo/ui_gallery.xml -o bin/gallery_dark.png -w 560 -H 980 -t dark",
@@ -18,7 +21,6 @@
     "init": "node scripts/init.js",
     "scaffold": "node scripts/init.js --self-test",
     "bench:timeline": "node scripts/bench-timeline.js",
-    "verify:baseline": "node scripts/verify-baseline.js",
     "clean": "node -e \"const fs = require('fs'); ['bin', 'tools/renderer/lib', 'tools/renderer/lib-single', 'tools/renderer/embedded', 'tests/lib', 'demo/lib'].forEach(d => { if (fs.existsSync(d)) fs.rmSync(d, { recursive: true, force: true }); }); console.log('清理完毕');\""
   },
   "keywords": [

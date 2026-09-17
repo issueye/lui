@@ -29,14 +29,14 @@ uses
   xui_input, xui_svg, xui_script, xui_script_dom, xui_script_bind, xui_app,
   xui_scaffold, xui_console,
   {$IFDEF WINDOWS}xui_render_gdiplus,{$ENDIF}
-  xui_host, xui_embed
+  xui_host, xui_embed, xui_appspec, xui_bundle
   // 单程序版（-dLUI_EMBED）额外链接构建期生成的内嵌资源单元；
   // 该单元在 initialization 中把资源清单注册给 xui_embed
   {$IFDEF LUI_EMBED}, xui_embed_assets{$ENDIF}
   ;
 
 const
-  AppVersion = '0.10.0';
+  AppVersion = '0.12.0';
 
 type
   { CLI / GUI 运行时配置参数 }
@@ -63,7 +63,14 @@ type
     InitName: string;        // --name <工程名>
     Force: Boolean;          // --force：--init 覆盖已存在文件（默认跳过保留）
     Check: Boolean;          // --check：离屏渲染并收集脚本错误（有错退出码 1）
-    PackDir: string;         // --pack <目录>：组装交付目录后退出
+    PackDir: string;         // --pack <目录>：组装交付目录后退出（M11 旧形态）
+    // ---- M12：清单驱动的应用生命周期 ----
+    AppRoot: string;         // --app-root <目录>：应用根（子命令自动填充）
+    BuildDir: string;        // --build <应用目录>：构建自包含应用后退出
+    BuildOut: string;        // --out <目录>：构建输出目录（默认取清单 build.out）
+    BuildExe: string;        // --exe <名字>：产物名（默认取清单 name）
+    PackApp: Boolean;        // --pack-app：交付形态打包（自包含 exe + 预览 + 说明）
+    ListBundle: string;      // --list-bundle <exe>：列出自包含应用的内嵌文件
     IsCliMode: Boolean;
   end;
 
@@ -76,6 +83,17 @@ type
 
 var
   Opt: TRenderOptions;
+  { 有效参数表。子命令（lui dev / lui build ...）在 NormalizeArgv 里翻译成等价的
+    选项序列，ParseCommandLine 只认这一张表——于是"新命令面"与"旧参数"共用同一套
+    解析与执行路径，不存在两条实现漂移的可能。 }
+  GArgs: TStringList;
+  { 子命令阶段已装配的应用清单（RunBuild/RunPackApp 复用，避免二次定位与二次读盘） }
+  GSpec: TXuiAppSpec;
+  { 自包含应用的挂载根（非空 = 本 exe 带着一个应用） }
+  GBundleRoot: string;
+
+{ 载荷构建过程的日志桥：xui_bundle 是引擎侧单元，不认识 CLI 的 LogLn }
+procedure BundleLogLine(const AText: string); forward;
 
 { 人读日志：--json 时一律走 stderr。
   ADR 32 约定"stdout 只含 JSON、日志走 stderr"，否则 `lui-render ... --json | jq` 会被
@@ -101,44 +119,65 @@ begin
   Result := LogLn(Format(AFmt, AArgs));
 end;
 
+procedure BundleLogLine(const AText: string);
+begin
+  LogLn(AText);
+end;
+
 procedure PrintUsage;
 begin
-  LogLn('lui 渲染器程序 (lui-render) v' + AppVersion);
-  LogLn('用法: lui-render <输入.xml|svg> [更多输入...] [选项]');
-  LogLn('      lui-render --init <目录> [选项]     生成项目骨架');
-  LogLn('      lui-render --check <输入...>        脚本自检（CI 用）');
-  LogLn('      lui-render --pack <目录> <输入...>  组装交付目录');
+  LogLn('lui 运行时 v' + AppVersion + ' — 只写 XML / CSS / TS 的声明式 GUI 应用框架');
   LogLn;
-  LogLn('渲染选项:');
-  LogLn('  -o, --output <文件.png>   单文件输出（CLI 模式；目录不存在会自动创建）');
-  LogLn('  -O, --outdir <目录>       批量输出目录（与多个输入搭配使用）');
-  LogLn('  -w, --width <像素>        视口宽度 (默认 800)');
-  LogLn('  -H, --height <像素>       视口高度 (默认 600)');
-  LogLn('  -t, --theme <light|dark|both>  主题（both = 双主题各出一张）');
-  LogLn('  -c, --css <样式文件>      附加加载的自定义 CSS 样式文件');
+  LogLn('用法:');
+  LogLn('  lui <命令> [选项]           应用生命周期（由应用根下的 lui.json 描述）');
+  LogLn('  lui <页面.xml> [选项]       直接渲染 / 预览某个页面（不依赖清单）');
+  LogLn('  lui                         自包含应用 exe：无参数即运行应用本身');
+  LogLn;
+  LogLn('命令:');
+  LogLn('  init [目录]        生成应用骨架（页面/脚本/样式 + ui/ 运行时 + lui.json）');
+  LogLn('  dev [目录]         开发：窗口预览 + 热重载（F5 刷新 / T 切主题 / Esc 退出）');
+  LogLn('  start [目录]       运行应用（同 dev，但不自动监听文件变更）');
+  LogLn('  build [目录]       打包成单文件应用（dist\<name>.exe，自包含、免 Pascal）');
+  LogLn('  pack [目录]        交付目录：应用 exe + 预览图 + README.txt');
+  LogLn('  check [目录]       逐页自检（任一页脚本报错 → 退出码 1，可做 CI 门禁）');
+  LogLn('  render <页面...>   无头出图（PNG）；不写命令时给 xml 路径也是这个行为');
+  LogLn('  version | help     版本 / 本帮助');
+  LogLn;
+  LogLn('应用选项（命令后可跟，覆盖清单里的值）:');
+  LogLn('  --app-root <目录>      指定应用根（默认从命令给出的目录向上找 lui.json）');
+  LogLn('  -w, --width <像素>     -H, --height <像素>      视口尺寸');
+  LogLn('  -t, --theme <light|dark|both>                  主题');
+  LogLn('  --out <目录>           build/pack 输出目录（默认取清单 build.out 或 dist）');
+  LogLn('  --exe <名字>           产物名（默认取清单 name）');
+  LogLn('  --json                 结果以 JSON 输出到 stdout（日志走 stderr）');
+  LogLn('  -v, --verbose          详细日志');
+  LogLn;
+  LogLn('渲染 / 导出选项:');
+  LogLn('  -o, --output <文件.png>   单文件输出（目录不存在会自动创建）');
+  LogLn('  -O, --outdir <目录>       批量输出目录');
+  LogLn('  -c, --css <样式文件>      附加加载的自定义 CSS');
   LogLn('  --watch                   监听输入与其依赖变更并自动重跑');
-  LogLn('  --bench <次数>            渲染后重复 N 次完整重排并输出耗时（性能基准）');
+  LogLn('  --bench <次数>            渲染后重复 N 次重排并输出耗时（性能基准）');
   LogLn('  --bench-mode <级别>       full(默认)=级联+布局+绘制 / layout=仅布局+绘制 / paint=仅绘制');
-  LogLn('  --json                    结果以 JSON 输出到 stdout（日志走 stderr）');
-  LogLn;
-  LogLn('项目工具链 (M11):');
-  LogLn('  --init <目录>             生成工程骨架（页面/脚本/样式 + ui/ 运行时 +脚本）');
-  LogLn('  --name <工程名>           --init 的工程名（默认取目录名）');
-  LogLn('  --check                   离屏渲染并收集脚本错误；有错退出码 1（CI 门禁）');
-  LogLn('  --pack <目录>             组装交付目录（渲染器 + ui/ + 页面 + 预览图 + 说明）');
-  LogLn('  --force                   --init 覆盖已存在文件；--pack 清空非空的目标目录');
   LogLn;
   LogLn('其它:');
+  LogLn('  --list-bundle <exe>       列出自包含应用内嵌的文件');
   LogLn('  --list-embedded           列出 exe 内嵌的资源（单程序版；普通版为空）');
-  LogLn('  --add-page <页面.xml>     输出该页面的资源清单（供 npm run embed 打包内嵌）');
-  LogLn('  -v, --verbose             输出详细过程日志');
+  LogLn('  --add-page <页面.xml>     输出该页面的资源清单（供构建期内嵌）');
   LogLn('  -V, --version             输出版本号');
   LogLn('  -?, --help                显示此帮助说明');
   LogLn;
-  LogLn('生成的项目里:');
-  LogLn('  run-dev.cmd               开发：GUI 预览（F5 刷新 / T 切主题 / Esc 退出，改文件自动重载）');
-  LogLn('  run-test.cmd              测试：--check 自检 + 双主题出图到 out\\');
-  LogLn('  run-pack.cmd              打包：组装 dist\\ 交付目录');
+  LogLn('兼容（M11 旧参数，功能等价于上面的命令）:');
+  LogLn('  --init <目录> [--name 名] [--force]     = init');
+  LogLn('  --check <输入...>                       = check');
+  LogLn('  --pack <目录> <页面...>                 = pack（旧形态：目录 + pages/）');
+  LogLn;
+  LogLn('生成的应用目录:');
+  LogLn('  lui.json          应用清单（入口 / 窗口 / 主题 / 组件库 / 构建）');
+  LogLn('  src/              页面 xml + 逻辑 ts + 双主题 css');
+  LogLn('  ui/               组件库运行时（随应用一起分发）');
+  LogLn('  run-dev.cmd       开发预览        run-build.cmd  出单文件应用');
+  LogLn('  run-test.cmd      自检 + 出图     run-pack.cmd   交付目录');
 end;
 
 // 参数错误：退出码 2（区别于渲染失败的 1）
@@ -164,6 +203,294 @@ begin
   names := XuiEmbedNames;
   try
     LogLn(Format('内嵌资源 %d 项:', [names.Count]));
+    for i := 0 to names.Count - 1 do
+      LogLn('  ' + names[i]);
+  finally
+    names.Free;
+  end;
+end;
+
+{ ---- M12：命令面归一化 ----
+
+  把 `lui <命令> ...` 翻译成等价的选项序列写进 GArgs。翻译放在这里而不是
+  ParseCommandLine 内部，是为了让"新命令"与"M11 旧参数"走同一条执行路径：
+  命令只负责定位应用根、把清单里的默认值回填成选项，其余全是已有选项。
+  一条实现 = 一套行为，不存在两份解析漂移的可能。
+
+  两个容易踩的点：
+  ① 命令名可能与文件名撞车（目录里真有个 render 或 check.xml）。所以第一个参数
+     若在磁盘上存在，一律按旧语义当输入文件处理，命令解析让路。
+  ② 自包含应用 exe 无参数启动 = 运行这个应用（等价 `lui start`），双击即用。 }
+
+const
+  XuiCommands: array[0..9] of string = ('init', 'dev', 'start', 'run', 'build',
+    'pack', 'check', 'render', 'export', 'help');
+
+function IsCommandName(const S: string): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  for i := Low(XuiCommands) to High(XuiCommands) do
+    if SameText(S, XuiCommands[i]) then
+      Exit(True);
+end;
+
+{ 参数里有没有"用户显式指定的页面文件"。只认 .xml/.svg 且磁盘上存在的裸参数，
+  并且跳过取值的选项（否则 `-c extra.css` 的 extra.css 会被误判成输入页）。
+  为什么需要这个判断：自包含应用 exe 无输入时要跑自己的页面，但一旦用户明确给了
+  别的页面，就该渲染那个页面（超集语义，与 xui_embed 的"磁盘优先"一致）。 }
+function HasExplicitInput: Boolean;
+const
+  ValueOpts: array[0..21] of string = ('-o', '--output', '-O', '--outdir', '-w', '--width',
+    '-H', '--height', '-t', '--theme', '-c', '--css', '--bench', '--app-root', '--out',
+    '--exe', '--add-page', '--pack', '--build', '--init', '--name', '--list-bundle');
+var
+  i, k: Integer;
+  a: string;
+  takesValue: Boolean;
+begin
+  Result := False;
+  i := 1;
+  while i <= ParamCount do
+  begin
+    a := ParamStr(i);
+    takesValue := False;
+    for k := Low(ValueOpts) to High(ValueOpts) do
+      if SameText(a, ValueOpts[k]) then
+        takesValue := True;
+    if takesValue then
+      Inc(i, 2)
+    else
+    begin
+      if (Copy(a, 1, 1) <> '-') and FileExists(a) then
+      begin
+        a := LowerCase(ExtractFileExt(a));
+        if (a = '.xml') or (a = '.svg') then
+          Exit(True);
+      end;
+      Inc(i);
+    end;
+  end;
+end;
+
+procedure NormalizeArgv;
+var
+  cmd, dir: string;
+  next: Integer;
+  spec: TXuiAppSpec;
+
+  procedure EmitTail(AFrom: Integer);
+  var
+    k: Integer;
+  begin
+    for k := AFrom to ParamCount do
+      GArgs.Add(ParamStr(k));
+  end;
+
+  { 命令后的第一个参数是目录就取它，否则用当前目录。ANext 指向"剩下的参数"起点。 }
+  function TakeDir(AIndex: Integer; out ANext: Integer): string;
+  begin
+    if (AIndex <= ParamCount) and (ParamStr(AIndex) <> '') and
+       (Copy(ParamStr(AIndex), 1, 1) <> '-') then
+    begin
+      Result := ParamStr(AIndex);
+      ANext := AIndex + 1;
+    end
+    else
+    begin
+      Result := GetCurrentDir;
+      ANext := AIndex;
+    end;
+  end;
+
+  { 定位应用根并读清单；失败即参数错误（退出码 2）。 }
+  procedure LoadApp(const AWhat: string; const ADir: string);
+  begin
+    if not XuiAppSpecAuto(ADir, spec) then
+    begin
+      LogLn(Format('错误: %s 未找到应用清单 %s', [AWhat, XuiManifestName]));
+      LogLn('      在应用根放一个 lui.json（或旧名 lui-project.json），或用 `lui init <目录>` 生成。');
+      Halt(2);
+    end;
+    FreeAndNil(GSpec);
+    GSpec := spec;
+  end;
+
+  { 应用类命令的公共参数：应用根 → 主题与视口。放在用户附加参数之前，
+    这样用户显式给的值能覆盖清单里的默认值。 }
+  procedure EmitAppDefaults;
+  begin
+    GArgs.Add('--app-root');
+    GArgs.Add(GSpec.Root);
+    GArgs.Add('-t');
+    GArgs.Add(GSpec.DefaultTheme);
+    GArgs.Add('-w');
+    GArgs.Add(IntToStr(GSpec.WindowWidth));
+    GArgs.Add('-H');
+    GArgs.Add(IntToStr(GSpec.WindowHeight));
+  end;
+
+  { 运行类命令的参数：选页面（check 走全部页）→ 公共参数 }
+  procedure EmitRunArgs(const ACmd: string);
+  var
+    pages: TStringList;
+    i: Integer;
+  begin
+    LogLn(Format('[应用] %s（根 %s，清单 %s）', [GSpec.Title, GSpec.Root, GSpec.Kind]));
+    for i := 0 to GSpec.Warnings.Count - 1 do
+      LogLn('       ' + GSpec.Warnings[i]);
+    if ACmd = 'check' then
+    begin
+      pages := GSpec.Pages;
+      try
+        for i := 0 to pages.Count - 1 do
+          GArgs.Add(pages[i]);
+      finally
+        pages.Free;
+      end;
+      GArgs.Add('--check');
+    end
+    else
+    begin
+      GArgs.Add(GSpec.Entry);
+      if (ACmd = 'dev') and GSpec.Watch then
+        GArgs.Add('--watch');
+    end;
+    EmitAppDefaults;
+  end;
+
+begin
+  GArgs.Clear;
+
+  // 自包含应用 exe：无参数即运行自己带的应用
+  if ParamCount = 0 then
+  begin
+    if (XuiAppRootOverride = '') or (not XuiAppSpecAuto(XuiAppRootOverride, spec)) then
+      Exit;
+    FreeAndNil(GSpec);
+    GSpec := spec;
+    EmitRunArgs('start');
+    Exit;
+  end;
+
+  cmd := LowerCase(ParamStr(1));
+
+  { 自包含应用 exe：除了"运行自己"，它同时也是个完整 CLI（-o 出图 / --check 自检 /
+    --list-bundle 看内容）。所以只要没显式给别的页面文件，就把应用自己的入口当成输入
+    注入进去——用户在命令行上给的主题/尺寸/输出等参数仍然排在后面，覆盖清单默认值。 }
+  if GBundleRoot <> '' then
+  begin
+    if not HasExplicitInput then
+    begin
+      if XuiAppSpecAuto(GBundleRoot, spec) then
+      begin
+        FreeAndNil(GSpec);
+        GSpec := spec;
+        EmitRunArgs('start');
+      end;
+    end;
+    EmitTail(1);
+    Exit;
+  end;
+
+  // 第一个参数落在磁盘上，或本身就是选项 → 旧语义，不做命令翻译
+  if FileExists(ParamStr(1)) or
+     ((Copy(ParamStr(1), 1, 1) = '-') and (ParamStr(1) <> '-')) then
+  begin
+    EmitTail(1);
+    Exit;
+  end;
+
+  // `lui .` / `lui myapp`：给一个目录就跑里面的应用
+  if DirectoryExists(ParamStr(1)) then
+  begin
+    LoadApp('运行应用:', ParamStr(1));
+    EmitRunArgs('start');
+    EmitTail(2);
+    Exit;
+  end;
+
+  if (not IsCommandName(cmd)) and (cmd <> 'version') then
+  begin
+    EmitTail(1);   // 不认识的词：交给旧解析器报"输入文件不存在"，措辞更贴切
+    Exit;
+  end;
+
+  if (cmd = 'help') or (cmd = 'version') then
+  begin
+    GArgs.Add('--' + cmd);
+    Exit;
+  end;
+
+  if (cmd = 'render') or (cmd = 'export') then
+  begin
+    EmitTail(2);
+    Exit;
+  end;
+
+  if cmd = 'init' then
+  begin
+    GArgs.Add('--init');
+    GArgs.Add(TakeDir(2, next));
+    EmitTail(next);
+    Exit;
+  end;
+
+  dir := TakeDir(2, next);
+
+  { build / pack 也要装配清单：GSpec 供 RunBuild/RunPackApp 复用，预览图与产物
+    的默认主题/视口也来自清单（否则 pack 出来的预览图会退回 800x600 的通用默认值）。 }
+  if cmd = 'build' then
+  begin
+    LoadApp('build:', dir);
+    GArgs.Add('--build');
+    GArgs.Add(dir);
+    EmitAppDefaults;
+    EmitTail(next);
+    Exit;
+  end;
+
+  if cmd = 'pack' then
+  begin
+    LoadApp('pack:', dir);
+    GArgs.Add('--pack-app');
+    GArgs.Add(dir);
+    EmitAppDefaults;
+    EmitTail(next);
+    Exit;
+  end;
+
+  // dev / start / run / check：入口与视口取自清单
+  LoadApp(cmd + ':', dir);
+  EmitRunArgs(cmd);
+  EmitTail(next);
+end;
+
+{ --list-bundle：列出某个自包含应用 exe 内嵌的文件（诊断"我打的包里到底有什么"）。
+  不是自包含应用时给出尾部探测的失败原因，便于区分"没打包"和"包坏了"。 }
+procedure ListBundleAssets(const AExeFile: string);
+var
+  info: TXuiBundleInfo;
+  names: TStringList;
+  i: Integer;
+begin
+  if not FileExists(AExeFile) then
+  begin
+    LogLn('[错误] 文件不存在: ' + AExeFile);
+    Halt(1);
+  end;
+  if not XuiBundleProbe(AExeFile, info) then
+  begin
+    LogLn(Format('%s 不是自包含应用（%s）', [AExeFile, info.Error]));
+    LogLn('提示: 用 `lui build <应用目录>` 生成自包含应用。');
+    Halt(1);
+  end;
+  names := XuiBundleList(AExeFile);
+  try
+    LogLn(Format('自包含应用: %s', [ExpandFileName(AExeFile)]));
+    LogLn(Format('  载荷 %.1f KB，指纹 %s，共 %d 个文件',
+      [info.PayloadSize / 1024, IntToHex(info.Fingerprint, 8), names.Count]));
     for i := 0 to names.Count - 1 do
       LogLn('  ' + names[i]);
   finally
@@ -322,9 +649,9 @@ var
   procedure NeedValue(const AOpt: string; out AVal: string);
   begin
     Inc(i);
-    if i > ParamCount then
+    if i > GArgs.Count then
       ParamError('选项 ' + AOpt + ' 缺少参数值');
-    AVal := ParamStr(i);
+    AVal := GArgs[i - 1];
     if (Length(AVal) > 1) and (AVal[1] = '-') then
       ParamError('选项 ' + AOpt + ' 缺少参数值（后面跟的是选项 ' + AVal + '）');
   end;
@@ -376,12 +703,18 @@ begin
   Opt.Force := False;
   Opt.Check := False;
   Opt.PackDir := '';
+  Opt.AppRoot := '';
+  Opt.BuildDir := '';
+  Opt.BuildOut := '';
+  Opt.BuildExe := '';
+  Opt.PackApp := False;
+  Opt.ListBundle := '';
   Opt.IsCliMode := False;
 
   i := 1;
-  while i <= ParamCount do
+  while i <= GArgs.Count do
   begin
-    arg := ParamStr(i);
+    arg := GArgs[i - 1];
     if (arg = '-?') or (arg = '-h') or (arg = '--help') then
     begin
       PrintUsage;
@@ -445,6 +778,27 @@ begin
       Opt.ListEmbedded := True
     else if arg = '--add-page' then
       NeedValue('--add-page', Opt.AddPage)
+    else if arg = '--app-root' then
+      NeedValue('--app-root', Opt.AppRoot)
+    else if arg = '--build' then
+      NeedValue('--build', Opt.BuildDir)
+    else if arg = '--pack-app' then
+    begin
+      Opt.PackApp := True;
+      NeedValue('--pack-app', Opt.BuildDir)
+    end
+    else if arg = '--out' then
+      NeedValue('--out', Opt.BuildOut)
+    else if arg = '--exe' then
+      NeedValue('--exe', Opt.BuildExe)
+    else if arg = '--list-bundle' then
+    begin
+      // 值可省略：省略即"看我自己的载荷"（自包含应用 exe 的常用问法）
+      if (i = GArgs.Count) or (Copy(GArgs[i], 1, 1) = '-') then
+        Opt.ListBundle := ParamStr(0)
+      else
+        NeedValue('--list-bundle', Opt.ListBundle);
+    end
     else if arg = '--init' then
       NeedValue('--init', Opt.InitDir)
     else if arg = '--name' then
@@ -472,6 +826,12 @@ begin
     Halt(0);
   end;
 
+  if Opt.ListBundle <> '' then
+  begin
+    ListBundleAssets(Opt.ListBundle);
+    Halt(0);
+  end;
+
   // --add-page：仅输出资源清单（供打包脚本内嵌），不渲染
   if Opt.AddPage <> '' then
   begin
@@ -479,8 +839,12 @@ begin
     Halt(0);
   end;
 
-  if (Opt.InitDir <> '') or (Opt.PackDir <> '') then
-    Exit(True);   // 交给主流程；这两者不需要页面输入（--pack 由主流程校验）
+  // 应用根：自包含 exe 的挂载根优先，其次才是命令行给的 --app-root
+  if Opt.AppRoot <> '' then
+    XuiAppRootOverride := ExpandFileName(Opt.AppRoot);
+
+  if (Opt.InitDir <> '') or (Opt.PackDir <> '') or (Opt.BuildDir <> '') then
+    Exit(True);   // 交给主流程；这些模式不需要页面输入（--pack 由主流程校验）
 
   if Opt.Inputs.Count = 0 then
   begin
@@ -773,7 +1137,7 @@ begin
   if Opt.ThemeGiven then
     opts.Theme := Opt.Theme;
   opts.LuiVersion := AppVersion;
-  opts.RendererPath := '';      // 由脚手架取 ParamStr(0)
+  opts.RuntimePath := '';      // 由脚手架取 ParamStr(0)
   opts.Force := Opt.Force;
   opts.Verbose := Opt.Verbose;
 
@@ -804,12 +1168,275 @@ begin
     LogLn('下一步:');
     LogLn('  cd ' + Opt.InitDir);
     LogLn('  run-dev.cmd      开发预览（F5 刷新 / T 切主题 / Esc 退出）');
-    LogLn('  run-test.cmd     自检 + 双主题出图到 out\\');
-    LogLn('  run-pack.cmd     打包成 dist\\ 交付目录');
+    LogLn('  run-test.cmd     自检 + 双主题出图到 out\');
+    LogLn('  run-build.cmd    构建单文件应用 dist\' + res.Name + '.exe');
+    LogLn('  run-pack.cmd     交付目录（应用 exe + 预览图 + 说明）');
+    LogLn;
+    LogLn('开发只改 src\ 下的 xml / ts / css；入口页面与窗口尺寸在清单 lui.json 里。');
   end;
 
   res.Files.Free;
   res.Skipped.Free;
+end;
+
+{ ---- M12：自包含应用构建（build / pack）---- }
+
+{ 递归收集目录下的文件（应用根相对、'/' 分隔；ARelPrefix 是挂到应用根的相对前缀）。
+  排除规则：
+    · 清单 build.exclude 列出的名字（默认 out/dist/.git/node_modules）——按“顶层名或
+      全路径”匹配，写 "dist" 就排除任意层级的 dist/
+    · 点开头的目录（.git/.vscode 等）
+    · *.lui-tmp（构建中途产物）与 *.exe（载荷里放可执行文件既无意义又占体积）
+
+  为什么是“整树拷贝 + 排除”而不是“按引用精确收集”：后者要在打包期重现引擎的全部引用
+  规则（include / script src / 同名 css / svg src / 脚本里 ui.fs 拼出来的路径），漏一条
+  就是交付后才发现的运行时缺图缺文件；前者与用户对“应用目录”的直觉一致，页面新加
+  data.json、fonts/ 也会自动进包。代价是包略大（本项目在 100KB 量级）。 }
+procedure CollectTree(const ABase, ARelPrefix: string; AExclude: TStrings;
+  AFiles: TStringList);
+  function Excluded(const ARel: string): Boolean;
+  var
+    k: Integer;
+    cand, pat, top: string;
+  begin
+    Result := False;
+    cand := ARel;
+    while (Length(cand) > 0) and (cand[Length(cand)] = '/') do
+      Delete(cand, Length(cand), 1);
+    if (cand = '') or (AExclude = nil) then
+      Exit;
+    top := cand;
+    k := Pos('/', top);
+    if k > 0 then
+      top := Copy(top, 1, k - 1);
+    for k := 0 to AExclude.Count - 1 do
+    begin
+      pat := Trim(AExclude[k]);
+      while (Length(pat) > 0) and (pat[Length(pat)] = '/') do
+        Delete(pat, Length(pat), 1);
+      if (pat <> '') and (SameText(pat, cand) or SameText(pat, top)) then
+        Exit(True);
+    end;
+  end;
+
+  procedure Walk(const ADir, ARel: string);
+  var
+    sr: TSearchRec;
+    rel: string;
+  begin
+    if FindFirst(IncludeTrailingPathDelimiter(ADir) + '*', faAnyFile, sr) <> 0 then
+      Exit;
+    try
+      repeat
+        if (sr.Name = '') or (sr.Name = '.') or (sr.Name = '..') then
+          Continue;
+        rel := ARel + sr.Name;
+        if (sr.Attr and faDirectory) <> 0 then
+        begin
+          if sr.Name[1] = '.' then
+            Continue;
+          if Excluded(rel) then
+            Continue;
+          Walk(IncludeTrailingPathDelimiter(ADir) + sr.Name, rel + '/');
+        end
+        else
+        begin
+          if Excluded(rel) then
+            Continue;
+          if SameText(ExtractFileExt(sr.Name), '.lui-tmp') then
+            Continue;
+          if SameText(ExtractFileExt(sr.Name), '.exe') then
+            Continue;
+          if AFiles.IndexOf(rel) < 0 then
+            AFiles.Add(rel);
+        end;
+      until FindNext(sr) <> 0;
+    finally
+      FindClose(sr);
+    end;
+  end;
+
+begin
+  if DirectoryExists(ABase) then
+    Walk(IncludeTrailingPathDelimiter(ABase), ARelPrefix);
+end;
+
+{ 组装自包含应用：成功时返回输出文件绝对路径（AOutExe），失败时打印原因并返回 False。 }
+function BuildSelfContainedApp(out AOutExe: string): Boolean;
+var
+  spec: TXuiAppSpec;
+  owned: Boolean;
+  files, none: TStringList;
+  n: Integer;
+  added: string;
+  err: string;
+begin
+  Result := False;
+  AOutExe := '';
+  spec := nil;
+  owned := False;
+
+  if GSpec <> nil then
+    spec := GSpec
+  else
+  begin
+    if not XuiAppSpecAuto(Opt.BuildDir, spec) then
+    begin
+      LogLn('[错误] 未找到应用清单（' + XuiManifestName + '）: ' + ExpandFileName(Opt.BuildDir));
+      Exit;
+    end;
+    owned := True;
+  end;
+
+  try
+    XuiAppRootOverride := spec.Root;
+    LogLn(Format('[构建] 应用 %s（根 %s，清单 %s）', [spec.Title, spec.Root, spec.Kind]));
+    if not FileExists(spec.Entry) then
+    begin
+      LogLn('[错误] 入口页面不存在: ' + spec.Entry);
+      Exit;
+    end;
+    if not FileExists(spec.UiIndex) then
+    begin
+      LogLn('[错误] 组件库入口不存在: ' + spec.UiIndex);
+      LogLn('       应用需要自带 ui/ 运行时：用 lui init 生成，或把 ui/ 整树拷进应用根。');
+      Exit;
+    end;
+
+    if Opt.BuildOut <> '' then
+      AOutExe := IncludeTrailingPathDelimiter(spec.PathOf(Opt.BuildOut))
+    else
+      AOutExe := IncludeTrailingPathDelimiter(spec.PathOf(spec.BuildOut));
+    AOutExe := AOutExe + IIf(Opt.BuildExe <> '', Opt.BuildExe, spec.Name) + '.exe';
+    if not EnsureOutputDir(AOutExe) then
+      Exit;
+
+    files := TStringList.Create;
+    none := TStringList.Create;
+    try
+      CollectTree(spec.Root, '', spec.Exclude, files);
+
+      { 清单 build.assets 点名的文件无条件带上（哪怕撞上了上面的排除规则） }
+      for n := 0 to spec.Assets.Count - 1 do
+      begin
+        added := StringReplace(Trim(spec.Assets[n]), '\', '/', [rfReplaceAll]);
+        if (added = '') or (Pos('/', added) > 0) then
+          Continue;
+        if (not FileExists(spec.PathOf(added))) or (files.IndexOf(added) >= 0) then
+          Continue;
+        files.Add(added);
+      end;
+
+      { 清单文件本身必须在载荷里：应用 exe 靠它认入口、窗口尺寸、组件库目录 }
+      if FileExists(spec.ManifestFile) then
+      begin
+        added := ExtractFileName(spec.ManifestFile);
+        if files.IndexOf(added) < 0 then
+          files.Add(added);
+      end;
+      if files.Count = 0 then
+      begin
+        LogLn('[错误] 应用目录里没有可打包的文件: ' + spec.Root);
+        Exit;
+      end;
+
+      XuiBundleLog := @BundleLogLine;
+      try
+        if not XuiBundleBuild(ExpandFileName(ParamStr(0)), AOutExe, spec.Root, files, n, err) then
+        begin
+          LogLn('[错误] ' + err);
+          Exit;
+        end;
+      finally
+        XuiBundleLog := nil;
+      end;
+
+      LogLn(Format('[完成] 自包含应用: %s', [AOutExe]));
+      LogLn(Format('       内嵌 %d 个文件；不依赖 Pascal 与任何外部文件，拷走双击即运行', [n]));
+      LogLn(Format('       出图 / 自检: "%s" -o out.png -t light  |  --check', [AOutExe]));
+      Result := True;
+    finally
+      files.Free;
+      none.Free;
+    end;
+  finally
+    if owned then
+      spec.Free;
+  end;
+end;
+
+{ build 命令：只出应用 exe }
+procedure RunBuild;
+var
+  exe: string;
+begin
+  if not BuildSelfContainedApp(exe) then
+    Halt(1);
+end;
+
+{ pack 命令：应用 exe + 预览图 + 交付说明（一个可直接整体分发的目录） }
+procedure RunPackApp;
+var
+  exe, stage, readme, preview, single: string;
+  spec: TXuiAppSpec;
+begin
+  if not BuildSelfContainedApp(exe) then
+    Halt(1);
+  spec := GSpec;
+  if spec = nil then
+  begin
+    LogLn('[错误] 内部状态异常：未装配应用清单（--pack-app 需与 --app-root 一起使用）');
+    Halt(1);
+  end;
+  stage := ExcludeTrailingPathDelimiter(ExtractFilePath(exe));
+
+  single := spec.DefaultTheme;
+  if Opt.Theme = 'both' then
+  begin
+    preview := IncludeTrailingPathDelimiter(stage) + 'preview-light.png';
+    if not RenderOne(spec.Entry, preview, Opt.Width, Opt.Height, 'light', Opt.ExtraCss, False) then
+      Halt(1);
+    preview := IncludeTrailingPathDelimiter(stage) + 'preview-dark.png';
+    if not RenderOne(spec.Entry, preview, Opt.Width, Opt.Height, 'dark', Opt.ExtraCss, False) then
+      Halt(1);
+  end
+  else
+  begin
+    single := Opt.Theme;
+    preview := IncludeTrailingPathDelimiter(stage) + 'preview-' + Opt.Theme + '.png';
+    if not RenderOne(spec.Entry, preview, Opt.Width, Opt.Height, Opt.Theme, Opt.ExtraCss, False) then
+      Halt(1);
+  end;
+
+  readme := Format(
+    'lui 应用交付包'#13#10 +
+    '=============='#13#10#13#10 +
+    '应用: %s'#13#10 +
+    '版本: %s'#13#10 +
+    '视口: %dx%d    主题: %s'#13#10 +
+    'lui 运行时: v%s'#13#10#13#10 +
+    '运行（本目录可整体拷走，目标机器不需要任何依赖）:'#13#10 +
+    '  %s              双击运行，或在命令行执行'#13#10#13#10 +
+    '也可以不开窗口，直接出图 / 自检（应用 exe 自带全部资源）:'#13#10 +
+    '  %s -o out.png -t %s     导出界面截图'#13#10 +
+    '  %s --check              逐页脚本自检（有问题退出码 1）'#13#10 +
+    '  %s --list-bundle        列出内嵌的文件'#13#10 +
+    '  %s --help               完整选项'#13#10#13#10 +
+    '目录:'#13#10 +
+    '  %s           自包含应用（运行时 + 页面 + 组件库都在其中）'#13#10 +
+    '  preview-*.png       预览图'#13#10,
+    [spec.Title, spec.Version, Opt.Width, Opt.Height, single, AppVersion,
+     ExtractFileName(exe), ExtractFileName(exe), single,
+     ExtractFileName(exe), ExtractFileName(exe), ExtractFileName(exe), ExtractFileName(exe)]);
+  with TStringList.Create do
+  try
+    Text := readme;
+    SaveToFile(IncludeTrailingPathDelimiter(stage) + 'README.txt');
+  finally
+    Free;
+  end;
+
+  LogLn(Format('[完成] 交付目录: %s', [ExpandFileName(stage)]));
 end;
 
 { ---- M11：--pack（组装交付目录）---- }
@@ -1120,22 +1747,35 @@ type
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
   public
     constructor CreateViewer(const AFile: string; AWidth, AHeight: Integer;
-      const ATheme, AExtraCss: string; AWatch: Boolean);
+      const ATheme, AExtraCss: string; AWatch: Boolean; ASpec: TXuiAppSpec);
     destructor Destroy; override;
   end;
 
+{ ASpec 非空 = 以"应用"的身份开窗：标题、可缩放与居中取自清单，用户改 lui.json 就能改
+  窗口行为（清单里声明了却没人读的字段就是死配置）。空 = 单页预览模式（旧行为）。 }
 constructor TRenderViewerForm.CreateViewer(const AFile: string; AWidth, AHeight: Integer;
-  const ATheme, AExtraCss: string; AWatch: Boolean);
+  const ATheme, AExtraCss: string; AWatch: Boolean; ASpec: TXuiAppSpec);
+var
+  base: string;
 begin
   inherited CreateNew(nil);
   FInputFile := AFile;
   FTheme := ATheme;
   FExtraCss := AExtraCss;
   FWatch := AWatch;
-  Caption := Format('lui 渲染器预览 — %s [%s] (F5: 刷新, T: 切换主题)', [ExtractFileName(AFile), FTheme]);
+  if ASpec <> nil then
+    base := ASpec.Title + ' — ' + ExtractFileName(AFile)
+  else
+    base := ExtractFileName(AFile);
+  Caption := Format('lui 预览 — %s [%s] (F5: 刷新, T: 切换主题)', [base, FTheme]);
   ClientWidth := AWidth;
   ClientHeight := AHeight;
-  Position := poScreenCenter;
+  if (ASpec <> nil) and (not ASpec.Center) then
+    Position := poDesigned
+  else
+    Position := poScreenCenter;
+  if (ASpec <> nil) and (not ASpec.Resizable) then
+    BorderStyle := bsSingle;
   KeyPreview := True;
 
   InitHost;
@@ -1203,7 +1843,7 @@ begin
     FTheme := 'dark'
   else
     FTheme := 'light';
-  Caption := Format('lui 渲染器预览 — %s [%s] (F5: 刷新, T: 切换主题)', [ExtractFileName(FInputFile), FTheme]);
+  Caption := Format('lui 预览 — %s [%s] (F5: 刷新, T: 切换主题)', [ExtractFileName(FInputFile), FTheme]);
   DestroyAll;
   InitHost;
 end;
@@ -1296,10 +1936,28 @@ begin
   // 之后所有输出走 ConWriteLn：目标不可写时不再抛异常（否则诊断输出失败会让工具崩溃）
   XuiConsoleInit;
 
+  // ---- M12：自包含应用 ----
+  // 先看"我自己"身上有没有应用载荷（lui build 追在 exe 尾部的那些文件）。
+  // 有就把它挂载成应用根：于是同一个可执行文件既是运行时又是应用，双击即运行，
+  // 且页面里的相对路径全部锚定到应用根而不是当前工作目录。
+  if XuiBundleMountSelf(GBundleRoot) then
+    XuiAppRootOverride := GBundleRoot;
+
+  GArgs := TStringList.Create;
+  NormalizeArgv;              // 命令 → 选项序列（同时装配应用清单 GSpec）
+
   if not ParseCommandLine then
     Halt(1);
 
-  // ---- M11 项目工具链模式（立即执行后退出）----
+  // ---- 项目工具链模式（立即执行后退出）----
+  if Opt.BuildDir <> '' then
+  begin
+    if Opt.PackApp then
+      RunPackApp   // 交付目录（含预览图与说明）
+    else
+      RunBuild;    // 只要应用 exe
+    Halt(0);
+  end;
   if Opt.InitDir <> '' then
   begin
     RunInit;      // 失败时内部 Halt(1)
@@ -1345,7 +2003,7 @@ begin
       Opt.Theme := 'light';
     Application.Initialize;
     viewer := TRenderViewerForm.CreateViewer(Opt.Inputs[0], Opt.Width, Opt.Height,
-      Opt.Theme, Opt.ExtraCss, Opt.Watch);
+      Opt.Theme, Opt.ExtraCss, Opt.Watch, GSpec);
     viewer.Show;
     Application.Run;
   end;

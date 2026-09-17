@@ -10,7 +10,7 @@ interface
 
 uses
   Classes, SysUtils, Contnrs, Types, StrUtils,
-  xui_types, xui_style, xui_dom, xui_events, xui_render, xui_text, xui_svg;
+  xui_types, xui_style, xui_dom, xui_events, xui_render, xui_text, xui_svg, xui_appspec;
 
 type
   TXuiBehavior = class
@@ -236,14 +236,17 @@ end;
 procedure TXuiSvgBehavior.HandleAttribute(const AName, AValue: string);
 var
   v: Single;
+  src: string;
 begin
   inherited HandleAttribute(AName, AValue);
   if SameText(AName, 'src') then
   begin
     FSrc := AValue;
     EnsureDoc;
-    if FileExists(AValue) then
-      FDoc.LoadFromFile(AValue);
+    // 相对路径先按应用根解析（M12，ADR 49）：打包后的应用不再依赖当前工作目录
+    src := XuiAppResourcePath(AValue);
+    if FileExists(src) then
+      FDoc.LoadFromFile(src);
   end
   else if SameText(AName, 'width') then
   begin
@@ -284,13 +287,15 @@ end;
 function TXuiSvgBehavior.SetRuntimeAttr(const AName, AValue: string): Boolean;
 var
   v: Single;
+  src: string;
 begin
   if SameText(AName, 'src') then
   begin
     FSrc := AValue;
     EnsureDoc;
-    if FileExists(AValue) then
-      FDoc.LoadFromFile(AValue)
+    src := XuiAppResourcePath(AValue);
+    if FileExists(src) then
+      FDoc.LoadFromFile(src)
     else
       FDoc.Clear;
     Result := True;
