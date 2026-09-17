@@ -1780,6 +1780,8 @@ type
       const AArgs: TXuiJsValueArray): TXuiJsValue;
     function NativeWindowStartDrag(AFn: TXuiJsFunction; AThis: TXuiJsValue;
       const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function NativeWindowStartResize(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
   protected
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
   public
@@ -1934,6 +1936,19 @@ begin
     Result := FHost.Script.Undefined;
 end;
 
+function TRenderViewerForm.NativeWindowStartResize(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+const
+  HTBOTTOMRIGHT = 17;
+begin
+  {$IFDEF WINDOWS}
+  WinReleaseCapture;
+  WinSendMessage(Handle, WM_NCLBUTTONDOWN, HTBOTTOMRIGHT, 0);
+  {$ENDIF}
+  if FHost <> nil then
+    Result := FHost.Script.Undefined;
+end;
+
 destructor TRenderViewerForm.Destroy;
 begin
   DestroyAll;
@@ -1966,6 +1981,7 @@ begin
     FHost.Script.RegisterNative('ui.window.close', @NativeWindowClose);
     FHost.Script.RegisterNative('ui.window.isMaximized', @NativeWindowIsMaximized);
     FHost.Script.RegisterNative('ui.window.startDrag', @NativeWindowStartDrag);
+    FHost.Script.RegisterNative('ui.window.startResize', @NativeWindowStartResize);
   end;
 
   if FApp = nil then
