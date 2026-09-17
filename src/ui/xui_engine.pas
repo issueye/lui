@@ -72,6 +72,7 @@ type
     procedure RenderScrollBars(ANode: TXuiNode);
     procedure RenderNode(ANode: TXuiNode; ACanvas: TCanvas; AOpacity: Single);
     procedure RenderShadow(ANode: TXuiNode; AStyle: TXuiStyle);   // R7：box-shadow
+    procedure NotifyStylesComputed(ANode: TXuiNode);              // R7：级联后回调行为
     procedure RenderChildren(ANode: TXuiNode; ACanvas: TCanvas; AOpacity: Single);
     procedure RenderText(ANode: TXuiNode);
     // 记录 XML/include 依赖的时间戳（热重载监测）
@@ -1213,6 +1214,8 @@ begin
   if FDocumentDirty and (FDocument <> nil) and (FDocument.Root <> nil) then
   begin
     ComputeDocumentStyles(FDocument, FStyleSheets);
+    // R7：级联会复位 Style，行为在此补回来自元素属性的固有尺寸（如 SVG 图标宽高）
+    NotifyStylesComputed(FDocument.Root);
     FDocumentDirty := False;
   end;
 end;
@@ -1483,6 +1486,8 @@ begin
     // 过渡：重算前记录显示值 → 重算 → diff 启动/重启 → 立即写回插值
     FTransitions.Capture(FDocument);
     ComputeDocumentStyles(FDocument, FStyleSheets);
+    // R7：级联会复位 Style，行为在此补回来自元素属性的固有尺寸（如 SVG 图标宽高）
+    NotifyStylesComputed(FDocument.Root);
     if FClock = 0 then
       FClock := XuiNowMs; // 宿主尚未提供时间（未 Tick）：用系统时钟兜底
     FTransitions.Resolve(FDocument, FClock);
@@ -1497,6 +1502,20 @@ begin
   end;
 
   RenderNode(FDocument.Root, ACanvas, 1);
+end;
+
+// R7：样式级联会复位 Style，来自元素属性的固有尺寸需要在级联后由行为补回，
+// 否则 SVG 图标在布局中被当作 0×0（绘制却按自身尺寸出图），表现为图标压字/换行。
+procedure TXuiEngine.NotifyStylesComputed(ANode: TXuiNode);
+var
+  i: Integer;
+begin
+  if ANode = nil then
+    Exit;
+  if ANode.Behavior is TXuiBehavior then
+    TXuiBehavior(ANode.Behavior).AfterStyleComputed;
+  for i := 0 to ANode.Count - 1 do
+    NotifyStylesComputed(ANode[i]);
 end;
 
 // R7：box-shadow —— 用多层递减 alpha 的（圆角）矩形近似高斯阴影。

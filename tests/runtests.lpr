@@ -1576,6 +1576,7 @@ end;
 {$I css_constraints.inc}
 {$I text_overflow.inc}
 {$I box_shadow.inc}
+{$I svg_intrinsic_size.inc}
 {$I layout_text_position.inc}
 {$I layout_css_props.inc}
 {$I layout_engine_rendering.inc}
@@ -11698,6 +11699,7 @@ begin
     TestLetterSpacing;
     TestWhiteSpaceAndOverflow;
     TestBoxShadow;
+    TestSvgIntrinsicSize;
 
 
     TestFlexAlign;
