@@ -1557,6 +1557,7 @@ end;
 {$I layout_contract.inc}
 {$I layout_flex.inc}
 {$I layout_flex_advanced.inc}
+{$I css_constraints.inc}
 {$I layout_text_position.inc}
 {$I layout_css_props.inc}
 {$I layout_engine_rendering.inc}
@@ -11671,6 +11672,11 @@ begin
 
 
     TestFlexGrow;
+    TestCssMaxWidth;
+    TestCssMaxHeight;
+    TestFlexShrink;
+    TestFlexWrap;
+    TestFlexShorthandAndWrapStyle;
 
 
     TestFlexAlign;

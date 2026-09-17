@@ -9,7 +9,8 @@ unit xui_layout;
   坐标系：布局结果为绝对像素坐标（根节点原点 = 宿主内容区左上角）。
 
   已知边界（与文档"不支持清单"同步）：
-  - flex 不支持 wrap / shrink / 基线对齐 / 负 margin / order；主轴空间不足时溢出（可被 overflow:hidden 裁剪）
+  - flex 支持 wrap / shrink（R7，仅主轴：row 支持多行、column 支持纵向收缩；column 的 wrap 未实现）
+  - 仍不支持基线对齐 / 负 margin / order
   - auto 外边距仅块级流水平方向生效；纵向 auto 按 0
   - 百分比：宽度对父内容宽；高度对父确定高度（父高不定时回退视口）；relative 偏移的横向百分比对自身宽度近似 }
 
@@ -62,6 +63,14 @@ begin
   Result := AValue;
   if not AMin.IsAuto then
     Result := Max(Result, AMin.Resolve(ABase));
+end;
+
+// R7：尺寸上界（max-width / max-height 共用）
+function ClampMax(AValue: Single; const AMax: TXuiLength; ABase: Single): Single;
+begin
+  Result := AValue;
+  if not AMax.IsAuto then
+    Result := Min(Result, AMax.Resolve(ABase));
 end;
 
 procedure OffsetSubtree(ANode: TXuiNode; ADX, ADY: Integer);
@@ -230,21 +239,147 @@ begin
   Result := y - ATop;
 end;
 
-// flex 主轴 = x
+// flex 主轴 = x 的单行排布（R7：含 shrink 收缩与 max-width 夹取）
+function ArrangeFlexRowLine(AParent: TXuiNode; var AItems: TFlexItems;
+  AFrom, ATo: Integer; ALeft, ATop, AWidth: Single; const ACtx: TLayoutContext;
+  AHeightBase, ADefiniteContentH: Single): Single;
+var
+  i, count: Integer;
+  child: TXuiNode;
+  gap, totalMain, growSum, shrinkSum, free, extra, x, maxCross, containerH, dy, delta: Single;
+
+  procedure RecalcMain;
+  var
+    k: Integer;
+  begin
+    totalMain := 0;
+    for k := AFrom to ATo do
+      totalMain := totalMain + AItems[k].Main + AItems[k].ML + AItems[k].MR;
+    if count > 1 then
+      totalMain := totalMain + gap * (count - 1);
+  end;
+
+begin
+  count := ATo - AFrom + 1;
+  if count <= 0 then
+  begin
+    Result := 0;
+    Exit;
+  end;
+
+  gap := AParent.Style.ColumnGap.Resolve(AWidth);
+  growSum := 0;
+  for i := AFrom to ATo do
+    growSum := growSum + AItems[i].Node.Style.FlexGrow;
+  RecalcMain;
+
+  // R7：主轴空间不足 → 按 shrink × 基准尺寸 加权收缩（CSS 规格），再夹到 min/max
+  if totalMain > AWidth then
+  begin
+    shrinkSum := 0;
+    for i := AFrom to ATo do
+      shrinkSum := shrinkSum + AItems[i].Node.Style.FlexShrink * AItems[i].Main;
+    if shrinkSum > 0 then
+    begin
+      for i := AFrom to ATo do
+      begin
+        delta := (totalMain - AWidth) *
+          (AItems[i].Node.Style.FlexShrink * AItems[i].Main) / shrinkSum;
+        AItems[i].Main := AItems[i].Main - delta;
+        AItems[i].Main := ClampMin(AItems[i].Main, AItems[i].Node.Style.MinWidth, AWidth);
+        AItems[i].Main := ClampMax(AItems[i].Main, AItems[i].Node.Style.MaxWidth, AWidth);
+      end;
+      RecalcMain;
+    end;
+  end;
+
+  // 剩余空间按 grow 分配
+  free := Max(0, AWidth - totalMain);
+  if (free > 0) and (growSum > 0) then
+  begin
+    for i := AFrom to ATo do
+      if AItems[i].Node.Style.FlexGrow > 0 then
+      begin
+        AItems[i].Main := AItems[i].Main + free * AItems[i].Node.Style.FlexGrow / growSum;
+        AItems[i].Main := ClampMax(AItems[i].Main, AItems[i].Node.Style.MaxWidth, AWidth);
+      end;
+    RecalcMain;
+    free := Max(0, AWidth - totalMain);
+  end;
+
+  case AParent.Style.JustifyContent of
+    xjcCenter:
+      begin x := ALeft + free / 2; extra := 0; end;
+    xjcEnd:
+      begin x := ALeft + free; extra := 0; end;
+    xjcSpaceBetween:
+      begin
+        x := ALeft;
+        if count > 1 then extra := free / (count - 1) else extra := 0;
+      end;
+    xjcSpaceAround:
+      begin
+        x := ALeft + free / (2 * count);
+        extra := free / count;
+      end;
+  else
+    x := ALeft;
+    extra := 0;
+  end;
+
+  maxCross := 0;
+  for i := AFrom to ATo do
+  begin
+    x := x + AItems[i].ML;
+    AItems[i].X := x;
+    AItems[i].Cross := ArrangeNode(AItems[i].Node, x, ATop, AItems[i].Main, ACtx, AHeightBase, -1);
+    maxCross := Max(maxCross, AItems[i].Cross + AItems[i].MT + AItems[i].MB);
+    x := x + AItems[i].Main + AItems[i].MR + gap + extra;
+  end;
+
+  if ADefiniteContentH >= 0 then
+    containerH := ADefiniteContentH
+  else
+    containerH := maxCross;
+
+  for i := AFrom to ATo do
+  begin
+    child := AItems[i].Node;
+    dy := AItems[i].MT;
+    case AParent.Style.AlignItems of
+      xaiCenter:
+        dy := AItems[i].MT + (containerH - (AItems[i].Cross + AItems[i].MT + AItems[i].MB)) / 2;
+      xaiEnd:
+        dy := containerH - AItems[i].Cross - AItems[i].MB;
+      xaiStretch:
+        if child.Style.Height.IsAuto and
+           (containerH > AItems[i].Cross + AItems[i].MT + AItems[i].MB) then
+        begin
+          AItems[i].Cross := ArrangeNode(child, AItems[i].X, ATop, AItems[i].Main, ACtx,
+            AHeightBase, Max(0, containerH - AItems[i].MT - AItems[i].MB));
+          dy := AItems[i].MT;
+        end;
+    end;
+    OffsetSubtree(child, 0, Round(dy));
+  end;
+
+  Result := containerH;
+end;
+
+// flex 主轴 = x（R7：支持 flex-wrap 多行；行间用 row-gap）
 function ArrangeFlexRow(AParent: TXuiNode; ALeft, ATop, AWidth: Single;
   const ACtx: TLayoutContext; AHeightBase: Single; ADefiniteContentH: Single): Single;
 var
   items: TFlexItems;
-  n, i: Integer;
+  n, i, lineStart: Integer;
   child: TXuiNode;
   style: TXuiStyle;
-  gap, totalMain, growSum, free, extra, x, maxCross, containerH, dy: Single;
+  gap, crossGap, lineMain, y, lineCross: Single;
 begin
   n := 0;
   SetLength(items, AParent.Count);
   gap := AParent.Style.ColumnGap.Resolve(AWidth);
-  totalMain := 0;
-  growSum := 0;
+  crossGap := AParent.Style.RowGap.Resolve(AWidth);
 
   for i := 0 to AParent.Count - 1 do
   begin
@@ -258,7 +393,7 @@ begin
     items[n].MR := style.Margin.Right.Resolve(AWidth);
     items[n].MB := style.Margin.Bottom.Resolve(AWidth);
 
-    // 主轴尺寸：flex-basis > width > max-content
+    // 主轴尺寸：flex-basis > width > max-content，再夹到 min/max
     if not style.FlexBasis.IsAuto then
       items[n].Main := style.FlexBasis.Resolve(AWidth)
     else if not style.Width.IsAuto then
@@ -266,89 +401,54 @@ begin
     else
       items[n].Main := MeasureNode(child, ACtx).cx;
     items[n].Main := ClampMin(items[n].Main, style.MinWidth, AWidth);
-
-    totalMain := totalMain + items[n].Main + items[n].ML + items[n].MR;
-    growSum := growSum + style.FlexGrow;
+    items[n].Main := ClampMax(items[n].Main, style.MaxWidth, AWidth);
     Inc(n);
   end;
   SetLength(items, n);
-  if n > 1 then
-    totalMain := totalMain + gap * (n - 1);
 
-  free := Max(0, AWidth - totalMain);
-  if (free > 0) and (growSum > 0) then
+  if (n = 0) then
   begin
-    for i := 0 to n - 1 do
-      if items[i].Node.Style.FlexGrow > 0 then
-        items[i].Main := items[i].Main + free * items[i].Node.Style.FlexGrow / growSum;
-    free := 0;
+    Result := 0;
+    Exit;
   end;
 
-  case AParent.Style.JustifyContent of
-    xjcCenter:
-      begin x := ALeft + free / 2; extra := 0; end;
-    xjcEnd:
-      begin x := ALeft + free; extra := 0; end;
-    xjcSpaceBetween:
+  if AParent.Style.FlexWrap <> xfwWrap then
+  begin
+    Result := ArrangeFlexRowLine(AParent, items, 0, n - 1, ALeft, ATop, AWidth, ACtx,
+      AHeightBase, ADefiniteContentH);
+    Exit;
+  end;
+
+  // 换行：按基准主轴尺寸贪心分行；单行放不下的项独占一行（不裁剪，交给 overflow）
+  y := ATop;
+  lineStart := 0;
+  lineMain := items[0].Main + items[0].ML + items[0].MR;
+  i := 1;
+  while True do
+  begin
+    if i < n then
+    begin
+      if lineMain + gap + items[i].Main + items[i].ML + items[i].MR <= AWidth then
       begin
-        x := ALeft;
-        if n > 1 then extra := free / (n - 1) else extra := 0;
+        lineMain := lineMain + gap + items[i].Main + items[i].ML + items[i].MR;
+        Inc(i);
+        Continue;
       end;
-    xjcSpaceAround:
-      begin
-        if n > 0 then
-        begin
-          x := ALeft + free / (2 * n);
-          extra := free / n;
-        end
-        else
-        begin
-          x := ALeft;
-          extra := 0;
-        end;
-      end;
-  else
-    x := ALeft;
-    extra := 0;
-  end;
-
-  maxCross := 0;
-  for i := 0 to n - 1 do
-  begin
-    x := x + items[i].ML;
-    items[i].X := x;
-    items[i].Cross := ArrangeNode(items[i].Node, x, ATop, items[i].Main, ACtx, AHeightBase, -1);
-    maxCross := Max(maxCross, items[i].Cross + items[i].MT + items[i].MB);
-    x := x + items[i].Main + items[i].MR + gap + extra;
-  end;
-
-  if ADefiniteContentH >= 0 then
-    containerH := ADefiniteContentH
-  else
-    containerH := maxCross;
-
-  for i := 0 to n - 1 do
-  begin
-    child := items[i].Node;
-    dy := items[i].MT;
-    case AParent.Style.AlignItems of
-      xaiCenter:
-        dy := items[i].MT + (containerH - (items[i].Cross + items[i].MT + items[i].MB)) / 2;
-      xaiEnd:
-        dy := containerH - items[i].Cross - items[i].MB;
-      xaiStretch:
-        if child.Style.Height.IsAuto and
-           (containerH > items[i].Cross + items[i].MT + items[i].MB) then
-        begin
-          items[i].Cross := ArrangeNode(child, items[i].X, ATop, items[i].Main, ACtx,
-            AHeightBase, Max(0, containerH - items[i].MT - items[i].MB));
-          dy := items[i].MT;
-        end;
     end;
-    OffsetSubtree(child, 0, Round(dy));
+    lineCross := ArrangeFlexRowLine(AParent, items, lineStart, i - 1, ALeft, y, AWidth, ACtx,
+      AHeightBase, -1);
+    y := y + lineCross;
+    if i >= n then
+      Break;
+    lineStart := i;
+    y := y + crossGap;
+    lineMain := items[i].Main + items[i].ML + items[i].MR;
+    Inc(i);
   end;
 
-  Result := containerH;
+  Result := y - ATop;
+  if ADefiniteContentH >= 0 then
+    Result := ADefiniteContentH;
 end;
 
 // flex 主轴 = y
@@ -359,7 +459,7 @@ var
   n, i: Integer;
   child: TXuiNode;
   style: TXuiStyle;
-  gap, totalMain, growSum, free, extra, y, h, dx, startOff: Single;
+  gap, totalMain, growSum, shrinkSum, free, extra, y, h, dx, startOff: Single;
 begin
   n := 0;
   SetLength(items, AParent.Count);
@@ -390,6 +490,7 @@ begin
         Max(0, AWidth - items[n].ML - items[n].MR));
       items[n].Cross := ClampMin(items[n].Cross, style.MinWidth, AWidth);
     end;
+    items[n].Cross := ClampMax(items[n].Cross, style.MaxWidth, AWidth);   // R7
 
     // 主轴（高）：flex-basis > height > 内容（排布后回填）
     if not style.FlexBasis.IsAuto then
@@ -399,7 +500,10 @@ begin
     else
       items[n].Main := -1;
     if items[n].Main >= 0 then
+    begin
       items[n].Main := ClampMin(items[n].Main, style.MinHeight, AHeightBase);
+      items[n].Main := ClampMax(items[n].Main, style.MaxHeight, AHeightBase);   // R7
+    end;
     growSum := growSum + style.FlexGrow;
     Inc(n);
   end;
@@ -423,6 +527,36 @@ begin
 
   if ADefiniteContentH >= 0 then
   begin
+    // R7：主轴空间不足 → 按 shrink × 基准尺寸 加权收缩
+    if totalMain > ADefiniteContentH then
+    begin
+      shrinkSum := 0;
+      for i := 0 to n - 1 do
+        shrinkSum := shrinkSum + items[i].Node.Style.FlexShrink * items[i].Main;
+      if shrinkSum > 0 then
+      begin
+        for i := 0 to n - 1 do
+        begin
+          items[i].Main := items[i].Main - (totalMain - ADefiniteContentH) *
+            (items[i].Node.Style.FlexShrink * items[i].Main) / shrinkSum;
+          items[i].Main := ClampMin(items[i].Main, items[i].Node.Style.MinHeight, AHeightBase);
+          items[i].Main := ClampMax(items[i].Main, items[i].Node.Style.MaxHeight, AHeightBase);
+        end;
+        y := ATop;
+        for i := 0 to n - 1 do
+        begin
+          y := y + items[i].MT;
+          ArrangeNode(items[i].Node, ALeft + items[i].ML, y, items[i].Cross, ACtx,
+            AHeightBase, items[i].Main);
+          items[i].Y := y;
+          y := y + items[i].Main + items[i].MB + gap;
+        end;
+        totalMain := y - ATop;
+        if n > 0 then
+          totalMain := totalMain - gap;
+      end;
+    end;
+
     free := Max(0, ADefiniteContentH - totalMain);
     if (free > 0) and (growSum > 0) then
     begin
@@ -618,6 +752,10 @@ begin
     Exit(0);
   end;
 
+  // R7：max-width 直接夹取传入宽度；max-height 在最终高度处夹取
+  if not style.MaxWidth.IsAuto then
+    AWidth := Min(AWidth, style.MaxWidth.Resolve(ACtx.ViewportWidth));
+
   bw := style.BorderWidth;
   padL := style.Padding.Left.Resolve(AWidth);
   padT := style.Padding.Top.Resolve(AWidth);
@@ -694,6 +832,7 @@ begin
   else
     ownH := contentH + padT + padB + 2 * bw;
   ownH := ClampMin(ownH, style.MinHeight, AParentHeight);
+  ownH := ClampMax(ownH, style.MaxHeight, AParentHeight);
 
   ANode.BoxRect := Types.Rect(Round(AX), Round(AY), Round(AX + AWidth), Round(AY + ownH));
 

@@ -703,6 +703,10 @@ begin
   if prop = 'min-width' then begin AStyle.MinWidth := ParseCssLength(AValue, AEmBase); Exit; end;
   if prop = 'min-height' then begin AStyle.MinHeight := ParseCssLength(AValue, AEmBase); Exit; end;
 
+  // R7：尺寸上界（auto 表示不限制）
+  if prop = 'max-width' then begin AStyle.MaxWidth := ParseCssLength(AValue, AEmBase); Exit; end;
+  if prop = 'max-height' then begin AStyle.MaxHeight := ParseCssLength(AValue, AEmBase); Exit; end;
+
   if prop = 'flex-direction' then
   begin
     // row-reverse / column-reverse 不在 v1 子集内：保持原值
@@ -758,6 +762,19 @@ begin
     AStyle.FlexGrow := StrToFloatDef(vl, AStyle.FlexGrow); Exit;
   end;
 
+  if prop = 'flex-shrink' then
+  begin
+    AStyle.FlexShrink := Max(0, StrToFloatDef(vl, AStyle.FlexShrink)); Exit;
+  end;
+
+  if prop = 'flex-wrap' then
+  begin
+    if vl = 'wrap' then AStyle.FlexWrap := xfwWrap
+    else if vl = 'nowrap' then AStyle.FlexWrap := xfwNoWrap;
+    // wrap-reverse 不在 v1 子集内：保持原值
+    Exit;
+  end;
+
   if prop = 'flex-basis' then
   begin
     AStyle.FlexBasis := ParseCssLength(AValue, AEmBase); Exit;
@@ -765,7 +782,8 @@ begin
 
   if prop = 'flex' then
   begin
-    // 简写：单个数值 → flex-grow=n + flex-basis=0（等价 CSS 的 flex: n，占满剩余空间）
+    // 简写：单个数值 → flex-grow=n + flex-basis=0（等价 CSS 的 flex: n）；
+    // R7：支持 flex: <grow> <shrink> <basis>（basis 可为 auto / 长度）
     words := TStringList.Create;
     try
       SplitValueWords(AValue, words);
@@ -773,6 +791,18 @@ begin
       begin
         AStyle.FlexGrow := StrToFloatDef(words[0], AStyle.FlexGrow);
         AStyle.FlexBasis := XuiLengthPx(0);
+      end
+      else if words.Count >= 2 then
+      begin
+        AStyle.FlexGrow := StrToFloatDef(words[0], AStyle.FlexGrow);
+        AStyle.FlexShrink := Max(0, StrToFloatDef(words[1], AStyle.FlexShrink));
+        if words.Count >= 3 then
+        begin
+          if (words[2] = 'auto') or (words[2] = 'none') then
+            AStyle.FlexBasis := XuiLengthAuto
+          else
+            AStyle.FlexBasis := ParseCssLength(words[2], AEmBase);
+        end;
       end;
     finally
       words.Free;
@@ -796,7 +826,7 @@ begin
     ApplyTransition(AStyle, AValue); Exit;
   end;
 
-  // 仍未实现（M5 后续）：box-sizing(content-box) / max-width / max-height / letter-spacing
+  // 仍未实现：box-sizing(content-box) / letter-spacing / text-overflow / white-space / box-shadow（R7 分步补齐）
 end;
 
 procedure ComputeNodeStyles(ANode: TXuiNode; ASheets: TObjectList;

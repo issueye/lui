@@ -16,6 +16,9 @@ type
     Left, Top, Right, Bottom: TXuiLength;
   end;
 
+  // ---- flex 换行策略（R7）----
+  TXuiFlexWrap = (xfwNoWrap, xfwWrap);
+
   // ---- 过渡动画（M5）：可动画属性白名单 + 时间函数 ----
   TXuiAnimProp = (xapOpacity, xapBgColor, xapTextColor, xapBorderColor, xapBorderRadius);
   TXuiAnimPropSet = set of TXuiAnimProp;
@@ -39,6 +42,7 @@ type
     Position: TXuiPosition;
     Width, Height: TXuiLength;
     MinWidth, MinHeight: TXuiLength;
+    MaxWidth, MaxHeight: TXuiLength;   // R7：尺寸上界（auto = 不限制）
     Inset: TXuiSides;            // top/right/bottom/left；auto 表示未指定
     Margin: TXuiSides;
     Padding: TXuiSides;
@@ -56,6 +60,8 @@ type
     JustifyContent: TXuiJustify;
     AlignItems: TXuiAlign;
     FlexGrow: Single;
+    FlexShrink: Single;                // R7：主轴空间不足时的收缩权重（CSS 默认 1）
+    FlexWrap: TXuiFlexWrap;            // R7：主轴是否换行（row 主轴已实现，见布局单元头注释）
     FlexBasis: TXuiLength;
     RowGap, ColumnGap: TXuiLength;
     Overflow: TXuiOverflow;
@@ -192,6 +198,8 @@ begin
   AStyle.Height := XuiLengthAuto;
   AStyle.MinWidth := XuiLengthAuto;
   AStyle.MinHeight := XuiLengthAuto;
+  AStyle.MaxWidth := XuiLengthAuto;
+  AStyle.MaxHeight := XuiLengthAuto;
   AStyle.Inset := SidesAuto;
   AStyle.Margin := SidesPx(0, 0, 0, 0);
   AStyle.Padding := SidesPx(0, 0, 0, 0);
@@ -208,6 +216,8 @@ begin
   AStyle.JustifyContent := xjcStart;
   AStyle.AlignItems := xaiStretch;
   AStyle.FlexGrow := 0;
+  AStyle.FlexShrink := 1;
+  AStyle.FlexWrap := xfwNoWrap;
   AStyle.FlexBasis := XuiLengthAuto;
   AStyle.RowGap := XuiLengthPx(0);
   AStyle.ColumnGap := XuiLengthPx(0);
@@ -299,6 +309,8 @@ begin
   Height := ASource.Height;
   MinWidth := ASource.MinWidth;
   MinHeight := ASource.MinHeight;
+  MaxWidth := ASource.MaxWidth;
+  MaxHeight := ASource.MaxHeight;
   Inset := ASource.Inset;
   Margin := ASource.Margin;
   Padding := ASource.Padding;
@@ -315,6 +327,8 @@ begin
   JustifyContent := ASource.JustifyContent;
   AlignItems := ASource.AlignItems;
   FlexGrow := ASource.FlexGrow;
+  FlexShrink := ASource.FlexShrink;
+  FlexWrap := ASource.FlexWrap;
   FlexBasis := ASource.FlexBasis;
   RowGap := ASource.RowGap;
   ColumnGap := ASource.ColumnGap;
