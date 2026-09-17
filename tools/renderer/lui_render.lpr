@@ -1833,14 +1833,25 @@ end;
 const
   WM_NCLBUTTONDOWN = $00A1;
   HTCAPTION = 2;
+  SW_MINIMIZE = 6;
+  SW_MAXIMIZE = 3;
+  SW_RESTORE = 9;
+  WM_CLOSE = $0010;
 function WinReleaseCapture: LongBool; stdcall; external 'user32.dll' name 'ReleaseCapture';
 function WinSendMessage(hWnd: HWND; Msg: Cardinal; wParam: PtrInt; lParam: PtrInt): PtrInt; stdcall; external 'user32.dll' name 'SendMessageW';
+function WinPostMessage(hWnd: HWND; Msg: Cardinal; wParam: PtrInt; lParam: PtrInt): LongBool; stdcall; external 'user32.dll' name 'PostMessageW';
+function WinShowWindow(hWnd: HWND; nCmdShow: Integer): LongBool; stdcall; external 'user32.dll' name 'ShowWindow';
+function WinIsZoomed(hWnd: HWND): LongBool; stdcall; external 'user32.dll' name 'IsZoomed';
 {$ENDIF}
 
 function TRenderViewerForm.NativeWindowMinimize(AFn: TXuiJsFunction; AThis: TXuiJsValue;
   const AArgs: TXuiJsValueArray): TXuiJsValue;
 begin
+  {$IFDEF WINDOWS}
+  WinShowWindow(Handle, SW_MINIMIZE);
+  {$ELSE}
   WindowState := wsMinimized;
+  {$ENDIF}
   if FHost <> nil then
     Result := FHost.Script.Undefined;
 end;
@@ -1848,7 +1859,11 @@ end;
 function TRenderViewerForm.NativeWindowMaximize(AFn: TXuiJsFunction; AThis: TXuiJsValue;
   const AArgs: TXuiJsValueArray): TXuiJsValue;
 begin
+  {$IFDEF WINDOWS}
+  WinShowWindow(Handle, SW_MAXIMIZE);
+  {$ELSE}
   WindowState := wsMaximized;
+  {$ENDIF}
   if FHost <> nil then
     Result := FHost.Script.Undefined;
 end;
@@ -1856,7 +1871,11 @@ end;
 function TRenderViewerForm.NativeWindowRestore(AFn: TXuiJsFunction; AThis: TXuiJsValue;
   const AArgs: TXuiJsValueArray): TXuiJsValue;
 begin
+  {$IFDEF WINDOWS}
+  WinShowWindow(Handle, SW_RESTORE);
+  {$ELSE}
   WindowState := wsNormal;
+  {$ENDIF}
   if FHost <> nil then
     Result := FHost.Script.Undefined;
 end;
@@ -1864,10 +1883,17 @@ end;
 function TRenderViewerForm.NativeWindowToggleMaximize(AFn: TXuiJsFunction; AThis: TXuiJsValue;
   const AArgs: TXuiJsValueArray): TXuiJsValue;
 begin
+  {$IFDEF WINDOWS}
+  if WinIsZoomed(Handle) then
+    WinShowWindow(Handle, SW_RESTORE)
+  else
+    WinShowWindow(Handle, SW_MAXIMIZE);
+  {$ELSE}
   if WindowState = wsMaximized then
     WindowState := wsNormal
   else
     WindowState := wsMaximized;
+  {$ENDIF}
   if FHost <> nil then
     Result := FHost.Script.Undefined;
 end;
@@ -1875,7 +1901,11 @@ end;
 function TRenderViewerForm.NativeWindowClose(AFn: TXuiJsFunction; AThis: TXuiJsValue;
   const AArgs: TXuiJsValueArray): TXuiJsValue;
 begin
+  {$IFDEF WINDOWS}
+  WinPostMessage(Handle, WM_CLOSE, 0, 0);
+  {$ELSE}
   Close;
+  {$ENDIF}
   if FHost <> nil then
     Result := FHost.Script.Undefined;
 end;
@@ -1884,7 +1914,13 @@ function TRenderViewerForm.NativeWindowIsMaximized(AFn: TXuiJsFunction; AThis: T
   const AArgs: TXuiJsValueArray): TXuiJsValue;
 begin
   if FHost <> nil then
+  begin
+    {$IFDEF WINDOWS}
+    Result := FHost.Script.Bool(WinIsZoomed(Handle));
+    {$ELSE}
     Result := FHost.Script.Bool(WindowState = wsMaximized);
+    {$ENDIF}
+  end;
 end;
 
 function TRenderViewerForm.NativeWindowStartDrag(AFn: TXuiJsFunction; AThis: TXuiJsValue;
