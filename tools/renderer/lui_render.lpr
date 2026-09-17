@@ -27,7 +27,7 @@ uses
   xui_types, xui_style, xui_dom, xui_xml, xui_layout, xui_render,
   xui_css_parser, xui_css_match, xui_engine, xui_events, xui_widget,
   xui_input, xui_svg, xui_script, xui_script_dom, xui_script_bind, xui_app,
-  xui_scaffold, xui_console,
+  xui_scaffold, xui_console, xui_js_runtime,
   {$IFDEF WINDOWS}xui_render_gdiplus,{$ENDIF}
   xui_host, xui_embed, xui_appspec, xui_bundle
   // 单程序版（-dLUI_EMBED）额外链接构建期生成的内嵌资源单元；
@@ -1766,6 +1766,20 @@ type
     procedure HandleWatchTimer(Sender: TObject);
     procedure DoReload;
     procedure ToggleTheme;
+    function NativeWindowMinimize(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function NativeWindowMaximize(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function NativeWindowRestore(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function NativeWindowToggleMaximize(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function NativeWindowClose(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function NativeWindowIsMaximized(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
+    function NativeWindowStartDrag(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+      const AArgs: TXuiJsValueArray): TXuiJsValue;
   protected
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
   public
@@ -1797,7 +1811,9 @@ begin
     Position := poDesigned
   else
     Position := poScreenCenter;
-  if (ASpec <> nil) and (not ASpec.Resizable) then
+  if (ASpec <> nil) and ASpec.Frameless then
+    BorderStyle := bsNone
+  else if (ASpec <> nil) and (not ASpec.Resizable) then
     BorderStyle := bsSingle;
   KeyPreview := True;
 
@@ -1811,6 +1827,75 @@ begin
     FWatchTimer.OnTimer := @HandleWatchTimer;
     FWatchTimer.Enabled := True;
   end;
+end;
+
+{$IFDEF WINDOWS}
+const
+  WM_NCLBUTTONDOWN = $00A1;
+  HTCAPTION = 2;
+function WinReleaseCapture: LongBool; stdcall; external 'user32.dll' name 'ReleaseCapture';
+function WinSendMessage(hWnd: HWND; Msg: Cardinal; wParam: PtrInt; lParam: PtrInt): PtrInt; stdcall; external 'user32.dll' name 'SendMessageW';
+{$ENDIF}
+
+function TRenderViewerForm.NativeWindowMinimize(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+begin
+  WindowState := wsMinimized;
+  if FHost <> nil then
+    Result := FHost.Script.Undefined;
+end;
+
+function TRenderViewerForm.NativeWindowMaximize(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+begin
+  WindowState := wsMaximized;
+  if FHost <> nil then
+    Result := FHost.Script.Undefined;
+end;
+
+function TRenderViewerForm.NativeWindowRestore(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+begin
+  WindowState := wsNormal;
+  if FHost <> nil then
+    Result := FHost.Script.Undefined;
+end;
+
+function TRenderViewerForm.NativeWindowToggleMaximize(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+begin
+  if WindowState = wsMaximized then
+    WindowState := wsNormal
+  else
+    WindowState := wsMaximized;
+  if FHost <> nil then
+    Result := FHost.Script.Undefined;
+end;
+
+function TRenderViewerForm.NativeWindowClose(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+begin
+  Close;
+  if FHost <> nil then
+    Result := FHost.Script.Undefined;
+end;
+
+function TRenderViewerForm.NativeWindowIsMaximized(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+begin
+  if FHost <> nil then
+    Result := FHost.Script.Bool(WindowState = wsMaximized);
+end;
+
+function TRenderViewerForm.NativeWindowStartDrag(AFn: TXuiJsFunction; AThis: TXuiJsValue;
+  const AArgs: TXuiJsValueArray): TXuiJsValue;
+begin
+  {$IFDEF WINDOWS}
+  WinReleaseCapture;
+  WinSendMessage(Handle, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+  {$ENDIF}
+  if FHost <> nil then
+    Result := FHost.Script.Undefined;
 end;
 
 destructor TRenderViewerForm.Destroy;
@@ -1831,12 +1916,21 @@ begin
   if FHost = nil then
   begin
     FHost := TXuiHost.Create(Self);   // TXuiHost 自建并拥有 Engine/Script/Bridge
-    // 必须挂到窗体上：TXuiHost.Create 不设 Parent，漏掉这行宿主就不在窗体的控件树里，
-    // 客户区永远是空白（窗口出来了、引擎也装配了，就是没有任何像素被画上去）。
-    // demo1 一直有这行；渲染器的预览窗漏了它——由 run-dev.cmd 的实测暴露。
     FHost.Parent := Self;
   end;
   FHost.Align := alClient;
+
+  // 注入原生窗口控制 API 到 ui.window.*
+  if FHost.Script <> nil then
+  begin
+    FHost.Script.RegisterNative('ui.window.minimize', @NativeWindowMinimize);
+    FHost.Script.RegisterNative('ui.window.maximize', @NativeWindowMaximize);
+    FHost.Script.RegisterNative('ui.window.restore', @NativeWindowRestore);
+    FHost.Script.RegisterNative('ui.window.toggleMaximize', @NativeWindowToggleMaximize);
+    FHost.Script.RegisterNative('ui.window.close', @NativeWindowClose);
+    FHost.Script.RegisterNative('ui.window.isMaximized', @NativeWindowIsMaximized);
+    FHost.Script.RegisterNative('ui.window.startDrag', @NativeWindowStartDrag);
+  end;
 
   if FApp = nil then
     FApp := TXuiApp.CreateAttached(FHost.Engine, FHost.Script);

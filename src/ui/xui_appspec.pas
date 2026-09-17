@@ -55,6 +55,7 @@ type
     Theme: string;            // 默认主题 light / dark
     Resizable: Boolean;
     Center: Boolean;
+    Frameless: Boolean;
     Watch: Boolean;           // dev 模式是否默认监听
     BuildOut: string;         // build/pack 输出目录（应用根相对路径）
     Styles: TStringList;      // 清单声明的附加样式（应用根相对路径，与主题无关）
@@ -680,6 +681,7 @@ begin
   Theme := '';
   Resizable := True;
   Center := True;
+  Frameless := False;
   Watch := True;
   BuildOut := '';
 
@@ -711,6 +713,7 @@ begin
       Theme := GetStr('theme', '');
     Resizable := GetFlag('window.resizable', True);
     Center := GetFlag('window.center', True);
+    Frameless := GetFlag('window.frameless', False);
     Watch := GetFlag('dev.watch', True);
     BuildOut := GetStr('build.out', '');
     GetArr('styles', Styles);
