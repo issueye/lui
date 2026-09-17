@@ -47,7 +47,8 @@ type
   public
     Selector: TCssSelector;
     Declarations: array of TCssDeclaration;
-    Order: Integer;       // 全局递增序（同特异性时后者胜）
+    Order: Integer;       // 样式表内递增序（同特异性时后者胜）
+    GlobalOrder: Integer; // R8：跨样式表递增序（规则索引排序用）
     SpecA, SpecB, SpecC: Integer;
     destructor Destroy; override;
   end;

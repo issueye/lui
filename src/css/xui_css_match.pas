@@ -920,11 +920,156 @@ begin
   // 仍未实现：box-sizing(content-box) / box-shadow（R7 分步补齐）；transform 与 ::before/::after 不在计划内
 end;
 
-procedure ComputeNodeStyles(ANode: TXuiNode; ASheets: TObjectList;
-  var AOrder: Integer; AParentStyle: TXuiStyle);
+// R8：CSS 规则索引。
+// 原实现对每个节点遍历「全部规则 × 全部选择器」，节点多时是 O(节点×规则) 的主要开销
+// （实测 stress 页级联占整帧 ~72%）。这里按选择器「最右简单选择器」的 id/class/tag 分桶：
+// 选择器要匹配某节点，其最右 part 必须匹配该节点自身，因此候选集 = 通用桶 + 该节点的
+// id/class/tag 桶，语义与全量遍历完全一致（候选仍需 MatchSelector 复核），但把每节点的
+// 匹配次数从「规则总数」降到「候选数」。桶内保持 (sheet, rule) 源序，用 GlobalOrder 排序，
+// 保证同特异性时的胜出顺序不变。
+type
+  TCssRuleIndex = class
+  private
+    FById: TStringList;     // id → TList(TCssRule)
+    FByClass: TStringList;  // class → TList(TCssRule)
+    FByTag: TStringList;    // tag → TList(TCssRule)
+    FUniversal: TList;      // 无 id/class/tag 键的规则（如 `*`、`[attr]`）
+    procedure AddToBucket(AList: TStringList; const AKey: string; ARule: TCssRule);
+    procedure CollectBucket(AList: TStringList; const AKey: string; AOut: TList);
+  public
+    constructor Create(ASheets: TObjectList);
+    destructor Destroy; override;
+    procedure Collect(ANode: TXuiNode; AOut: TList);
+  end;
+
+constructor TCssRuleIndex.Create(ASheets: TObjectList);
 var
-  sheetIdx, ruleIdx, declIdx, i, j: Integer;
+  sheetIdx, ruleIdx, i, order: Integer;
   sheet: TCssStyleSheet;
+  rule: TCssRule;
+  part: TCssSelectorPart;
+begin
+  inherited Create;
+  FById := TStringList.Create;
+  FById.Sorted := True;
+  FByClass := TStringList.Create;
+  FByClass.Sorted := True;
+  FByTag := TStringList.Create;
+  FByTag.Sorted := True;
+  FUniversal := TList.Create;
+  order := 0;
+  if ASheets = nil then
+    Exit;
+  for sheetIdx := 0 to ASheets.Count - 1 do
+  begin
+    sheet := TCssStyleSheet(ASheets[sheetIdx]);
+    for ruleIdx := 0 to sheet.RuleCount - 1 do
+    begin
+      rule := sheet[ruleIdx];
+      rule.GlobalOrder := order;
+      Inc(order);
+      if (rule.Selector = nil) or (rule.Selector.Parts.Count = 0) then
+        Continue;
+      part := TCssSelectorPart(rule.Selector.Parts[rule.Selector.Parts.Count - 1]);
+      if part.Id <> '' then
+        AddToBucket(FById, part.Id, rule)
+      else if part.Classes.Count > 0 then
+        AddToBucket(FByClass, part.Classes[part.Classes.Count - 1], rule)
+      else if (part.Tag <> '') and (part.Tag <> '*') then
+        AddToBucket(FByTag, part.Tag, rule)
+      else
+        FUniversal.Add(rule);
+    end;
+  end;
+end;
+
+destructor TCssRuleIndex.Destroy;
+var
+  i: Integer;
+  lists: array[0..2] of TStringList;
+begin
+  lists[0] := FById;
+  lists[1] := FByClass;
+  lists[2] := FByTag;
+  for i := Low(lists) to High(lists) do
+  begin
+    while lists[i].Count > 0 do
+    begin
+      TList(lists[i].Objects[0]).Free;
+      lists[i].Delete(0);
+    end;
+    lists[i].Free;
+  end;
+  FUniversal.Free;
+  inherited Destroy;
+end;
+
+procedure TCssRuleIndex.AddToBucket(AList: TStringList; const AKey: string;
+  ARule: TCssRule);
+var
+  idx: Integer;
+  bucket: TList;
+begin
+  idx := AList.IndexOf(AKey);
+  if idx < 0 then
+  begin
+    bucket := TList.Create;
+    AList.AddObject(AKey, bucket);
+  end
+  else
+    bucket := TList(AList.Objects[idx]);
+  bucket.Add(ARule);
+end;
+
+procedure TCssRuleIndex.CollectBucket(AList: TStringList; const AKey: string;
+  AOut: TList);
+var
+  idx, i: Integer;
+  bucket: TList;
+begin
+  idx := AList.IndexOf(AKey);
+  if idx < 0 then
+    Exit;
+  bucket := TList(AList.Objects[idx]);
+  for i := 0 to bucket.Count - 1 do
+    AOut.Add(bucket[i]);
+end;
+
+procedure TCssRuleIndex.Collect(ANode: TXuiNode; AOut: TList);
+var
+  i, j: Integer;
+  tmp: Pointer;
+  rule: TCssRule;
+begin
+  AOut.Clear;
+  for i := 0 to FUniversal.Count - 1 do
+    AOut.Add(FUniversal[i]);
+  CollectBucket(FByTag, ANode.Tag, AOut);
+  CollectBucket(FById, ANode.Id, AOut);
+  if ANode.ClassList <> nil then
+    for i := 0 to ANode.ClassList.Count - 1 do
+      CollectBucket(FByClass, ANode.ClassList[i], AOut);
+
+  // 按全局源序排序（候选数很小，插入排序足够；同特异性时的胜出顺序依赖它）
+  for i := 1 to AOut.Count - 1 do
+  begin
+    tmp := AOut[i];
+    j := i - 1;
+    while (j >= 0) and
+      (TCssRule(AOut[j]).GlobalOrder > TCssRule(tmp).GlobalOrder) do
+    begin
+      AOut[j + 1] := AOut[j];
+      Dec(j);
+    end;
+    AOut[j + 1] := tmp;
+  end;
+end;
+
+procedure ComputeNodeStyles(ANode: TXuiNode; ASheets: TObjectList;
+  var AOrder: Integer; AParentStyle: TXuiStyle; AIndex: TCssRuleIndex);
+var
+  candidateIdx, declIdx, i, j: Integer;
+  candidates: TList;
   rule: TCssRule;
   refs: array of TCssAppliedDecl;
   refCount: Integer;
@@ -935,15 +1080,15 @@ var
   cache: TInlineStyleCache;
   styleAttr: string;
 begin
-  // 收集命中的声明
+  // 收集命中的声明（R8：先取候选规则，再逐个 MatchSelector 复核）
   refCount := 0;
   SetLength(refs, 0);
-  for sheetIdx := 0 to ASheets.Count - 1 do
-  begin
-    sheet := TCssStyleSheet(ASheets[sheetIdx]);
-    for ruleIdx := 0 to sheet.RuleCount - 1 do
+  candidates := TList.Create;
+  try
+    AIndex.Collect(ANode, candidates);
+    for candidateIdx := 0 to candidates.Count - 1 do
     begin
-      rule := sheet[ruleIdx];
+      rule := TCssRule(candidates[candidateIdx]);
       if not MatchSelector(ANode, rule.Selector) then
         Continue;
       for declIdx := 0 to High(rule.Declarations) do
@@ -959,6 +1104,8 @@ begin
         Inc(refCount);
       end;
     end;
+  finally
+    candidates.Free;
   end;
 
   // 排序：(SpecA, SpecB, SpecC, Order) 升序（插入排序：数组小且近乎有序）
@@ -1037,17 +1184,23 @@ begin
   ANode.Style := style;
 
   for i := 0 to ANode.Count - 1 do
-    ComputeNodeStyles(ANode[i], ASheets, AOrder, style);
+    ComputeNodeStyles(ANode[i], ASheets, AOrder, style, AIndex);
 end;
 
 procedure ComputeDocumentStyles(ADoc: TXuiDocument; ASheets: TObjectList);
 var
   order: Integer;
+  index: TCssRuleIndex;
 begin
   if (ADoc = nil) or (ADoc.Root = nil) then
     Exit;
   order := 0;
-  ComputeNodeStyles(ADoc.Root, ASheets, order, nil);
+  index := TCssRuleIndex.Create(ASheets);
+  try
+    ComputeNodeStyles(ADoc.Root, ASheets, order, nil, index);
+  finally
+    index.Free;
+  end;
 end;
 
 end.
