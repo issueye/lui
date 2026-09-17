@@ -56,6 +56,7 @@ type
     FHookedWndProc: Pointer;   // 挂钩前的窗口过程（链尾交还 LCL）
     FWantClientW: Integer;     // LCL 最近一次请求的客户区尺寸（见 SetBounds）
     FWantClientH: Integer;
+    FSizing: Boolean;          // 正在拖拽缩放/移动（WM_ENTERSIZEMOVE..WM_EXITSIZEMOVE）
     {$ENDIF}
     procedure InitDefaults;
     procedure SetFrameless(const AValue: Boolean);
@@ -63,6 +64,7 @@ type
     procedure SetResizeBorder(const AValue: Integer);
     {$IFDEF WINDOWS}
     procedure ApplyFramelessStyle;
+    procedure EnsureFullClient;
     procedure UnpinInheritedFrame(Info: PWINDOWPOS);
     function NcFrameDelta: TSize;
     procedure ApplyDwmFramelessLook;
@@ -331,6 +333,7 @@ var
   Hit: Integer;
   Style: LONG_PTR;
   Info: PWINDOWPOS;
+  R: TRect;
 begin
   Result := False;
   AResult := 0;
@@ -342,18 +345,37 @@ begin
       begin
         FWantClientW := 0;
         FWantClientH := 0;
+        FSizing := True;
       end;
-    WM_SIZE:
-      if (WParam = SIZE_MAXIMIZED) or (WParam = SIZE_MINIMIZED) then
+    WM_EXITSIZEMOVE:
       begin
-        FWantClientW := 0;
-        FWantClientH := 0;
+        FSizing := False;
+        EnsureFullClient;   // 拖拽结束后再校准一次客户区
+      end;
+    WM_SIZE, WM_WINDOWPOSCHANGED:
+      begin
+        // 最大化/最小化后不再干预尺寸
+        if (Msg = WM_SIZE) and ((WParam = SIZE_MAXIMIZED) or (WParam = SIZE_MINIMIZED)) then
+        begin
+          FWantClientW := 0;
+          FWantClientH := 0;
+        end;
+        // 自愈：客户区若被系统按边框内缩过，这里拉回整窗（正常情况直接返回，不产生消息）
+        EnsureFullClient;
       end;
     WM_NCCALCSIZE:
-      // WParam <> 0 时才带 rgrc[0]；返回 0 = 客户区覆盖整个窗口，系统边框变成不可见的
-      // 语义边框（缩放能力由 WS_THICKFRAME + WM_NCHITTEST 提供）
-      if WParam <> 0 then
+      // 客户区恒等于整窗（缩放能力由 WS_THICKFRAME + WM_NCHITTEST 提供）：
+      //  - WParam <> 0：lParam 是 NCCALCSIZE_PARAMS，rgrc[0] 已是整窗矩形，返回 0 即可；
+      //  - WParam  = 0：lParam 是 RECT，必须显式回填整窗矩形。漏掉这一支，系统会按
+      //    "带边框"内缩客户区——窗口四周露出一圈系统绘制的浅色边框，且被 DWM 当成
+      //    有边框窗口加圆角（a_da 实测：四周约 5px 白边 + 左下圆角异常）。
       begin
+        if (WParam = 0) and (LParam <> 0) then
+        begin
+          if not Windows.GetWindowRect(Window, R) then
+            Exit;
+          PRect(LParam)^ := R;
+        end;
         AResult := 0;
         Result := True;
       end;
@@ -433,6 +455,30 @@ begin
   XuiLoadDpiApis;
   ApplyDwmFramelessLook;
   InstallWndProcHook;
+end;
+
+{ 客户区必须等于整窗：一旦发现被系统按边框内缩（会露出系统边框并触发 DWM 圆角），
+  用 SWP_FRAMECHANGED 重跑一遍 WM_NCCALCSIZE 拉回来。客户区已等于整窗时直接返回，
+  不会发出额外消息（因此不会与 WM_WINDOWPOSCHANGED 形成递归）。 }
+procedure TXuiFramelessForm.EnsureFullClient;
+var
+  WR, CR: TRect;
+begin
+  if (not HandleAllocated) or FSizing then
+    Exit;
+  // 拖拽/移动的模态循环里客户区与窗口矩形可能瞬时不同步，此时不能动窗口
+  // （实测在缩放循环中调用会把窗口弹成屏幕高度）
+  if Windows.GetCapture = Handle then
+    Exit;
+  if (not Windows.GetWindowRect(Handle, WR)) or
+     (not Windows.GetClientRect(Handle, CR)) then
+    Exit;
+  if ((CR.Right - CR.Left) = (WR.Right - WR.Left)) and
+     ((CR.Bottom - CR.Top) = (WR.Bottom - WR.Top)) then
+    Exit;
+  Windows.SetWindowPos(Handle, 0, 0, 0, 0, 0,
+    SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE or SWP_FRAMECHANGED);
+  ApplyDwmFramelessLook;   // 边框回来时 DWM 可能同时恢复圆角/描边，这里再压一次
 end;
 
 procedure TXuiFramelessForm.ApplyDwmFramelessLook;
