@@ -1241,6 +1241,9 @@ procedure TXuiScriptIO.SaveStorage;
 begin
   if (FStorageFile <> '') and FStorageDirty then
   begin
+    // 目标目录可能还不存在（首次运行）：不建目录会静默丢掉整份配置
+    if not DirectoryExists(ExtractFileDir(FStorageFile)) then
+      ForceDirectories(ExtractFileDir(FStorageFile));
     FStorage.SaveToFile(FStorageFile);
     FStorageDirty := False;
   end;

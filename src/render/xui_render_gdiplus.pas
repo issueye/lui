@@ -13,7 +13,7 @@ unit xui_render_gdiplus;
 interface
 
 uses
-  Windows, Classes, SysUtils, Types, Graphics, LCLType, Math, IniFiles,
+  Windows, Classes, SysUtils, Types, Graphics, LCLType, Math, IniFiles, LazUTF8,
   xui_types, xui_style, xui_render;
 
 type
@@ -686,9 +686,10 @@ var
   format: PGpStringFormat;
   brush: PGpBrush;
   layout: TGpRectF;
-  wide: UnicodeString;
-  textW, dy: Single;
-  hint, slot: Integer;
+  wide, ch: UnicodeString;
+  textW, dy, cursor: Single;
+  hint, slot, i: Integer;
+  one: TGpRectF;
 begin
   if (FGraphics = nil) or (AText = '') or (FOpacity <= 0.001) then
     Exit;
@@ -742,8 +743,24 @@ begin
     layout.Y := layout.Y + dy;
   end;
 
-  GdipDrawString(FGraphics, PWideChar(wide), Length(wide), font, layout,
-    format, brush);
+  // R7/R8：letter-spacing —— GDI+ 没有字距开关，逐字推进字距绘制；
+  // 推进步长与 MeasureText（宽度 + 字距×(字数-1)）严格一致，否则断行与绘制会错位。
+  if (AStyle <> nil) and (AStyle.LetterSpacing <> 0) then
+  begin
+    cursor := layout.X;
+    for i := 1 to UTF8Length(AText) do
+    begin
+      ch := UnicodeString(UTF8Copy(AText, i, 1));
+      one := layout;
+      one.X := cursor;
+      one.Width := MeasureText(ch, AStyle).cx + 32;
+      GdipDrawString(FGraphics, PWideChar(ch), Length(ch), font, one, format, brush);
+      cursor := cursor + MeasureText(ch, AStyle).cx + AStyle.LetterSpacing;
+    end;
+  end
+  else
+    GdipDrawString(FGraphics, PWideChar(wide), Length(wide), font, layout,
+      format, brush);
   GdipDeleteBrush(brush);
 end;
 
@@ -756,7 +773,7 @@ var
   family: UnicodeString;
   weight: Integer;
   sig: string;
-  slotIdx: Integer;
+  slotIdx, n: Integer;
 begin
   // GDI+ 的 GdipMeasureString 会额外计入两侧内边距（比实际字宽大 5-7px），
   // 直接用于断行会导致文字被过度换行。这里改用 GDI 度量：
@@ -801,6 +818,14 @@ begin
   begin
     Result.cx := size.cx;
     Result.cy := size.cy;
+  end;
+  // R7/R8：letter-spacing —— 与 GDI 后端同一口径（字距 × (字数-1)），
+  // 让断行、测量、绘制三者一致。GDI+ 本身没有字距开关，绘制端逐字推进（见 DrawTextWide）。
+  if (AStyle <> nil) and (AStyle.LetterSpacing <> 0) and (AText <> '') then
+  begin
+    n := UTF8Length(AText);
+    if n > 1 then
+      Result.cx := Result.cx + Round(AStyle.LetterSpacing * (n - 1));
   end;
   SelectObject(FMeasureDC, oldFont);
   DeleteObject(font);

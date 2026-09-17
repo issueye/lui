@@ -35,6 +35,8 @@ type
     constructor CreateOwned;
     constructor CreateAttached(AEngine: TXuiEngine; AScript: TXuiScript);
     destructor Destroy; override;
+    // 让 ui.storage 真的落盘：按应用名放到用户配置目录（没有应用身份时不启用）
+    procedure SetupStorage;
     // 复位并装配样式：组件库主题 + ui/index.ts + 关联/附加 CSS
     procedure ConfigureStyles(const ATheme, AExtraCss, AInputFile: string);
     // 装配样式并加载文档（等价 ConfigureStyles + Engine.LoadFromFile）
@@ -133,6 +135,7 @@ begin
   FBridge.Install;
   FEngine.AttachScript(FScript);
   FindRepoRoot;
+  SetupStorage;
 end;
 
 constructor TXuiApp.CreateAttached(AEngine: TXuiEngine; AScript: TXuiScript);
@@ -143,6 +146,36 @@ begin
   FScript := AScript;
   FBridge := nil;   // 宿主（如 TXuiHost）已自建并 Install 桥
   FindRepoRoot;
+  SetupStorage;
+end;
+
+{ ui.storage 的落盘位置：%APPDATA% 下按应用名分目录。
+  在这之前运行时从不配置 StorageFile，于是 ui.storage 的"持久化"对应用是假的——
+  页面以为存住了，重启就没了。应用名取清单 name，退而取应用根目录名。 }
+procedure TXuiApp.SetupStorage;
+var
+  name, dir: string;
+  spec: TXuiAppSpec;
+begin
+  if FScript = nil then
+    Exit;
+  name := '';
+  if FRoot <> '' then
+  begin
+    spec := TXuiAppSpec.Create;
+    try
+      if spec.Load(FRoot) then
+        name := spec.Name;
+    finally
+      spec.Free;
+    end;
+    if name = '' then
+      name := ExtractFileName(ExcludeTrailingPathDelimiter(FRoot));
+  end;
+  if name = '' then
+    Exit;   // 没有应用身份时不落盘（避免写到莫名其妙的目录）
+  dir := IncludeTrailingPathDelimiter(GetAppConfigDir(False)) + name;
+  FScript.IO.StorageFile := IncludeTrailingPathDelimiter(dir) + 'storage.ini';
 end;
 
 destructor TXuiApp.Destroy;
