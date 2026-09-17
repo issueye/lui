@@ -19,6 +19,10 @@ type
   // ---- flex 换行策略（R7）----
   TXuiFlexWrap = (xfwNoWrap, xfwWrap);
 
+  // ---- 文本溢出与空白处理（R7）----
+  TXuiTextOverflow = (xtoClip, xtoEllipsis);
+  TXuiWhiteSpace = (xwsNormal, xwsNoWrap);
+
   // ---- 过渡动画（M5）：可动画属性白名单 + 时间函数 ----
   TXuiAnimProp = (xapOpacity, xapBgColor, xapTextColor, xapBorderColor, xapBorderRadius);
   TXuiAnimPropSet = set of TXuiAnimProp;
@@ -43,6 +47,12 @@ type
     Width, Height: TXuiLength;
     MinWidth, MinHeight: TXuiLength;
     MaxWidth, MaxHeight: TXuiLength;   // R7：尺寸上界（auto = 不限制）
+    LetterSpacing: Single;             // R7：字距（px，0 = 无额外字距）
+    BoxShadowX, BoxShadowY: Single;    // R7：阴影偏移（px）
+    BoxShadowBlur: Single;             // R7：模糊半径（px，0 = 硬边）
+    BoxShadowColor: TXuiColor;         // R7：A=0 表示无阴影
+    TextOverflow: TXuiTextOverflow;    // R7：单行溢出策略
+    WhiteSpace: TXuiWhiteSpace;        // R7：是否允许软换行
     Inset: TXuiSides;            // top/right/bottom/left；auto 表示未指定
     Margin: TXuiSides;
     Padding: TXuiSides;
@@ -200,6 +210,13 @@ begin
   AStyle.MinHeight := XuiLengthAuto;
   AStyle.MaxWidth := XuiLengthAuto;
   AStyle.MaxHeight := XuiLengthAuto;
+  AStyle.LetterSpacing := 0;
+  AStyle.BoxShadowX := 0;
+  AStyle.BoxShadowY := 0;
+  AStyle.BoxShadowBlur := 0;
+  AStyle.BoxShadowColor := XuiRGBA(0, 0, 0, 0);
+  AStyle.TextOverflow := xtoClip;
+  AStyle.WhiteSpace := xwsNormal;
   AStyle.Inset := SidesAuto;
   AStyle.Margin := SidesPx(0, 0, 0, 0);
   AStyle.Padding := SidesPx(0, 0, 0, 0);
@@ -311,6 +328,13 @@ begin
   MinHeight := ASource.MinHeight;
   MaxWidth := ASource.MaxWidth;
   MaxHeight := ASource.MaxHeight;
+  LetterSpacing := ASource.LetterSpacing;
+  BoxShadowX := ASource.BoxShadowX;
+  BoxShadowY := ASource.BoxShadowY;
+  BoxShadowBlur := ASource.BoxShadowBlur;
+  BoxShadowColor := ASource.BoxShadowColor;
+  TextOverflow := ASource.TextOverflow;
+  WhiteSpace := ASource.WhiteSpace;
   Inset := ASource.Inset;
   Margin := ASource.Margin;
   Padding := ASource.Padding;
@@ -347,6 +371,14 @@ end;
 procedure TXuiStyle.InheritFrom(ASource: TXuiStyle);
 begin
   if ASource = nil then Exit;
+  // R7：letter-spacing / white-space / text-overflow 在 CSS 中属于继承属性
+  LetterSpacing := ASource.LetterSpacing;
+  BoxShadowX := ASource.BoxShadowX;
+  BoxShadowY := ASource.BoxShadowY;
+  BoxShadowBlur := ASource.BoxShadowBlur;
+  BoxShadowColor := ASource.BoxShadowColor;
+  WhiteSpace := ASource.WhiteSpace;
+  TextOverflow := ASource.TextOverflow;
   TextColor := ASource.TextColor;
   FontFamily := ASource.FontFamily;
   FontSize := ASource.FontSize;

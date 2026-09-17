@@ -47,7 +47,7 @@ bin/lui-render.exe demo/ui_gallery.xml
 | `scaffold/` | 项目模板：`lui-render --init` 用它生成工程骨架（含自带 `ui/` 运行时） |
 | `demo/` | 演示页面（login / list / todo / script / m7 / ui / uildg / uidisp / uinav / **agent**） |
 | `tools/renderer` | 独立渲染器 lui-render（CLI + GUI + 项目工具链）与单程序版工程 |
-| `tests/` | 单元测试（`npm test` 运行，当前 835 项） |
+| `tests/` | 单元测试（`npm test` 运行，当前 861 项） |
 
 ## 文档
 

@@ -200,6 +200,31 @@ begin
     Result := 0;
 end;
 
+// R7：按可用宽度把一行截断并追加省略号（逐码点收缩，保证不切多字节字符）
+function EllipsizeLine(const AText: string; AStyle: TXuiStyle;
+  AMaxWidth: Single; AMeasure: TXuiMeasureFunc): string;
+var
+  i, len: Integer;
+  prefix: string;
+begin
+  Result := '…';
+  if UnitWidth(Result, AStyle, AMeasure) > AMaxWidth then
+  begin
+    Result := '';
+    Exit;
+  end;
+  i := 1;
+  while i <= Length(AText) do
+  begin
+    Utf8CodeAt(AText, i, len);
+    Inc(i, len);
+    prefix := Copy(AText, 1, i - 1);
+    if UnitWidth(prefix + '…', AStyle, AMeasure) > AMaxWidth then
+      Break;
+    Result := prefix + '…';
+  end;
+end;
+
 function WrapText(const AText: string; AStyle: TXuiStyle; AMaxWidth: Single;
   AMeasure: TXuiMeasureFunc; out ALines: TXuiLineArray): Single;
 var
@@ -230,6 +255,17 @@ begin
       Exit(LineHeightPx(AStyle));
     end;
     Exit(0);
+  end;
+
+  // R7：white-space:nowrap 不做软换行，整段作为一行，溢出交给 text-overflow / clip
+  if AStyle.WhiteSpace = xwsNoWrap then
+  begin
+    SetLength(ALines, 1);
+    ALines[0] := TrimRight(AText);
+    if (AStyle.TextOverflow = xtoEllipsis) and
+       (UnitWidth(ALines[0], AStyle, AMeasure) > AMaxWidth) then
+      ALines[0] := EllipsizeLine(ALines[0], AStyle, AMaxWidth, AMeasure);
+    Exit(LineHeightPx(AStyle));
   end;
 
   SplitUnits(AText, units);
@@ -267,6 +303,13 @@ begin
   AddLine(TrimRight(cur));
 
   SetLength(ALines, count);
+
+  // R7：text-overflow:ellipsis —— 任何仍超宽的行（含不可断长串）截断并加省略号
+  if AStyle.TextOverflow = xtoEllipsis then
+    for i := 0 to count - 1 do
+      if UnitWidth(ALines[i], AStyle, AMeasure) > AMaxWidth then
+        ALines[i] := EllipsizeLine(ALines[i], AStyle, AMaxWidth, AMeasure);
+
   Result := count * LineHeightPx(AStyle);
 end;
 

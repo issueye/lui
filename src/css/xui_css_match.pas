@@ -135,6 +135,27 @@ begin
       Exit(True);
 end;
 
+// R7：box-shadow 的长度 token 判定（数字 / px / em）；颜色与 rgba(...) 不算
+function IsCssLengthToken(const AToken: string): Boolean;
+var
+  t: string;
+begin
+  t := LowerCase(Trim(AToken));
+  Result := False;
+  if (t = '') or (Pos('(', t) > 0) or (Pos(',', t) > 0) then
+    Exit;
+  if (t = 'auto') or (t = 'none') or (t = 'inset') then
+    Exit;
+  if Copy(t, Length(t) - 1, 2) = 'px' then
+    t := Copy(t, 1, Length(t) - 2)
+  else if Copy(t, Length(t) - 1, 2) = 'em' then
+    t := Copy(t, 1, Length(t) - 2);
+  if Trim(t) = '' then
+    Exit;
+  Result := (t[1] in ['0'..'9', '.', '-', '+']) and
+    (StrToFloatDef(t, -1e30) <> -1e30);
+end;
+
 function ParseCssColor(const AValue: string): TXuiColor;
 var
   s, inner: string;
@@ -491,7 +512,8 @@ procedure ApplyDeclaration(AStyle: TXuiStyle; const AProp, AValue: string;
 var
   prop, vl, first: string;
   words: TStringList;
-  i: Integer;
+  i, lenCount, k: Integer;
+  colorText: string;
   c: TXuiColor;
 begin
   prop := LowerCase(Trim(AProp));
@@ -625,6 +647,75 @@ begin
     if vl = 'center' then AStyle.TextAlign := xtaCenter
     else if vl = 'right' then AStyle.TextAlign := xtaRight
     else AStyle.TextAlign := xtaLeft;
+    Exit;
+  end;
+
+  if prop = 'box-shadow' then
+  begin
+    // R7：支持 none 与 "offsetX offsetY [blur] [spread] [color]"；
+    // inset / 多重阴影不在子集内，spread 接受但不扩展矩形。
+    if (vl = 'none') or (vl = '') then
+    begin
+      AStyle.BoxShadowColor := XuiRGBA(0, 0, 0, 0);
+      AStyle.BoxShadowX := 0;
+      AStyle.BoxShadowY := 0;
+      AStyle.BoxShadowBlur := 0;
+      Exit;
+    end;
+    words := TStringList.Create;
+    try
+      SplitValueWords(AValue, words);
+      lenCount := 0;
+      i := 0;
+      while (i < words.Count) and (lenCount < 4) and IsCssLengthToken(words[i]) do
+      begin
+        case lenCount of
+          0: AStyle.BoxShadowX := ParseCssLength(words[i], AEmBase).Value;
+          1: AStyle.BoxShadowY := ParseCssLength(words[i], AEmBase).Value;
+          2: AStyle.BoxShadowBlur := Max(0, ParseCssLength(words[i], AEmBase).Value);
+        end;
+        Inc(lenCount);
+        Inc(i);
+      end;
+      colorText := '';
+      for k := i to words.Count - 1 do
+      begin
+        if colorText <> '' then
+          colorText := colorText + ' ';
+        colorText := colorText + words[k];
+      end;
+      if colorText <> '' then
+        AStyle.BoxShadowColor := ParseCssColor(colorText)
+      else
+        AStyle.BoxShadowColor := XuiRGBA(0, 0, 0, 90);   // 未指定颜色 → 半透明黑
+    finally
+      words.Free;
+    end;
+    Exit;
+  end;
+
+  if prop = 'letter-spacing' then
+  begin
+    // normal 等价 0；其余按长度解析（px/em）
+    if (vl = 'normal') or (vl = '') then
+      AStyle.LetterSpacing := 0
+    else
+      AStyle.LetterSpacing := ParseCssLength(AValue, AEmBase).Value;
+    Exit;
+  end;
+
+  if prop = 'white-space' then
+  begin
+    // pre / pre-wrap 不在 v1 子集内：按 normal 处理
+    if vl = 'nowrap' then AStyle.WhiteSpace := xwsNoWrap
+    else AStyle.WhiteSpace := xwsNormal;
+    Exit;
+  end;
+
+  if prop = 'text-overflow' then
+  begin
+    if vl = 'ellipsis' then AStyle.TextOverflow := xtoEllipsis
+    else AStyle.TextOverflow := xtoClip;
     Exit;
   end;
 
@@ -826,7 +917,7 @@ begin
     ApplyTransition(AStyle, AValue); Exit;
   end;
 
-  // 仍未实现：box-sizing(content-box) / letter-spacing / text-overflow / white-space / box-shadow（R7 分步补齐）
+  // 仍未实现：box-sizing(content-box) / box-shadow（R7 分步补齐）；transform 与 ::before/::after 不在计划内
 end;
 
 procedure ComputeNodeStyles(ANode: TXuiNode; ASheets: TObjectList;

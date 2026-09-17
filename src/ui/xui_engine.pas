@@ -71,6 +71,7 @@ type
     function MaxScrollLeft(ANode: TXuiNode): Single;
     procedure RenderScrollBars(ANode: TXuiNode);
     procedure RenderNode(ANode: TXuiNode; ACanvas: TCanvas; AOpacity: Single);
+    procedure RenderShadow(ANode: TXuiNode; AStyle: TXuiStyle);   // R7：box-shadow
     procedure RenderChildren(ANode: TXuiNode; ACanvas: TCanvas; AOpacity: Single);
     procedure RenderText(ANode: TXuiNode);
     // 记录 XML/include 依赖的时间戳（热重载监测）
@@ -1498,6 +1499,35 @@ begin
   RenderNode(FDocument.Root, ACanvas, 1);
 end;
 
+// R7：box-shadow —— 用多层递减 alpha 的（圆角）矩形近似高斯阴影。
+// 先画最大的一层，再向内叠加，越靠近盒子越不透明；不引入新的渲染后端能力。
+procedure TXuiEngine.RenderShadow(ANode: TXuiNode; AStyle: TXuiStyle);
+var
+  steps, k: Integer;
+  grow, radius: Single;
+  r: TRect;
+  c: TXuiColor;
+begin
+  if AStyle.BoxShadowColor.A = 0 then
+    Exit;
+  steps := 6;
+  radius := AStyle.BorderRadius;
+  for k := steps downto 1 do
+  begin
+    grow := AStyle.BoxShadowBlur * k / (2 * steps);
+    r := ANode.BoxRect;
+    OffsetRect(r, Round(AStyle.BoxShadowX), Round(AStyle.BoxShadowY));
+    r := Rect(Round(r.Left - grow), Round(r.Top - grow),
+      Round(r.Right + grow), Round(r.Bottom + grow));
+    c := AStyle.BoxShadowColor;
+    c.A := Byte(Max(1, AStyle.BoxShadowColor.A div steps));
+    if radius > 0 then
+      FRenderer.FillRoundRect(r, radius + grow, c)
+    else
+      FRenderer.FillRect(r, c);
+  end;
+end;
+
 procedure TXuiEngine.RenderNode(ANode: TXuiNode; ACanvas: TCanvas; AOpacity: Single);
 var
   style: TXuiStyle;
@@ -1514,6 +1544,8 @@ begin
   // visibility:hidden 不绘制自身，但子级可覆盖回 visible（继承语义）
   if style.Visibility = xvisVisible then
   begin
+    // 阴影先于自身背景绘制（CSS 中 box-shadow 位于盒子之下）
+    RenderShadow(ANode, style);
     if style.BgColor.A > 0 then
     begin
       if style.BorderRadius > 0 then

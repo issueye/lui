@@ -226,10 +226,26 @@ type
 function TFakeMeasurer.Measure(const AText: string; AStyle: TXuiStyle): TSize;
 
 
+var
+
+
+  n: Integer;
+
+
 begin
 
 
-  Result.cx := Utf8CharCount(AText) * 8;
+  n := Utf8CharCount(AText);
+
+
+  Result.cx := n * 8;
+
+
+  // R7：与 GDI 渲染器同一口径（宽度 + 字距×(字数-1)），保证布局断言可信
+  if (AStyle <> nil) and (AStyle.LetterSpacing <> 0) and (n > 1) then
+
+
+    Result.cx := Result.cx + Round(AStyle.LetterSpacing) * (n - 1);
 
 
   Result.cy := 20;
@@ -1558,6 +1574,8 @@ end;
 {$I layout_flex.inc}
 {$I layout_flex_advanced.inc}
 {$I css_constraints.inc}
+{$I text_overflow.inc}
+{$I box_shadow.inc}
 {$I layout_text_position.inc}
 {$I layout_css_props.inc}
 {$I layout_engine_rendering.inc}
@@ -11677,6 +11695,9 @@ begin
     TestFlexShrink;
     TestFlexWrap;
     TestFlexShorthandAndWrapStyle;
+    TestLetterSpacing;
+    TestWhiteSpaceAndOverflow;
+    TestBoxShadow;
 
 
     TestFlexAlign;
