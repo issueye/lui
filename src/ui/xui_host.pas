@@ -20,6 +20,11 @@ const
   XuiWMIMEStartComposition = $010D;
   XuiWMIMEComposition = $010F;
 
+// IME 组合窗锚点：Win32 约定 COMPOSITIONFORM.ptCurrentPos 相对宿主窗口左上角
+// （即客户区坐标），不是屏幕坐标。单独抽出这个纯函数，是为了让坐标系约定可被
+// 单元测试直接锁定（跨平台编译，不依赖 Windows 单元）。
+function XuiImeCompositionPoint(const ACaretRect: TRect): TPoint;
+
 type
   TXuiHost = class(TCustomControl)
   private
@@ -27,6 +32,9 @@ type
     FTimer: TTimer;
     FScript: TXuiScript;
     FBridge: TXuiDomBridge;
+    {$IFDEF WINDOWS}
+    FTraceOn: Boolean; // 构造时读一次 LUI_WINDOW_TRACE，避免每条消息查环境变量
+    {$ENDIF}
     procedure SetXmlFile(const AValue: string);
     procedure SetBackend(const AValue: TXuiBackend);
     function GetBackend: TXuiBackend;
@@ -39,6 +47,10 @@ type
     {$IFDEF WINDOWS}
     // 诊断开关（LUI_WINDOW_TRACE=1）：落盘宿主矩形与父客户区（见实现说明）
     procedure NativeHostTrace(const ATag: string);
+    // 中文输入链路取证（同一开关）：IME 消息 / 上屏字符 / 键码 / 引擎文本快照
+    procedure TraceIme(const ATag, ADetail: string);
+    function ImeSnapshot: string;
+    function ImeCompositionDump(ALParam: PtrUInt): string;
     {$ENDIF}
     procedure HandleEngineChange(Sender: TObject);
     procedure HandleTimer(Sender: TObject);
@@ -113,6 +125,7 @@ uses
 const
   CFS_POINT = $0002;         // 组合窗定位方式：锚点
   GCS_COMPSTR = $0008;       // 组合中字符串变更
+  GCS_RESULTSTR = $0800;     // 上屏结果串变更
   Imm32Dll = 'imm32.dll';
 
 type
@@ -130,7 +143,15 @@ function ImmReleaseContext(AWnd: HWND; AHimc: HIMC): BOOL; stdcall;
   external Imm32Dll name 'ImmReleaseContext';
 function ImmSetCompositionWindow(AHimc: HIMC; var AForm: TImmCompositionForm): BOOL; stdcall;
   external Imm32Dll name 'ImmSetCompositionWindow';
+function ImmGetCompositionStringW(AHimc: HIMC; AIndex: DWORD; ABuf: Pointer;
+  ALen: DWORD): Integer; stdcall; external Imm32Dll name 'ImmGetCompositionStringW';
 {$ENDIF}
+
+function XuiImeCompositionPoint(const ACaretRect: TRect): TPoint;
+begin
+  Result.X := ACaretRect.Left;   // 锚点 = 引擎光标左下角（宿主客户区坐标）
+  Result.Y := ACaretRect.Bottom;
+end;
 
 function XuiShiftStateOf(Shift: TShiftState): TXuiShiftState;
 begin
@@ -176,6 +197,9 @@ begin
   FTimer.Interval := 16;
   FTimer.Enabled := False;
   FTimer.OnTimer := @HandleTimer;
+  {$IFDEF WINDOWS}
+  FTraceOn := SysUtils.GetEnvironmentVariable('LUI_WINDOW_TRACE') <> '';
+  {$ENDIF}
 end;
 
 destructor TXuiHost.Destroy;
@@ -361,13 +385,43 @@ begin
     SetBounds(0, 0, NeedW, NeedH);
 end;
 
+{$IFDEF WINDOWS}
+
+{ 诊断取证公共件：一行一条，字段值一律纯 ASCII + 十六进制字节，
+  避免中文在控制台/日志编码里被二次转码，干扰"到底上屏了什么"的判定。 }
+
+procedure XuiTraceLine(const ALine: string);
+var
+  tf: Text;
+  tp: string;
+begin
+  tp := SysUtils.GetEnvironmentVariable('TEMP') + '\lui-window.log';
+  AssignFile(tf, tp);
+  if FileExists(tp) then Append(tf) else Rewrite(tf);
+  WriteLn(tf, ALine);
+  CloseFile(tf);
+end;
+
+function XuiBytesHex(P: PByte; AN: Integer): string;
+var i: Integer;
+begin
+  Result := '';
+  for i := 0 to AN - 1 do
+  begin
+    if Result <> '' then Result := Result + ' ';
+    Result := Result + IntToHex(P^, 2);
+    Inc(P);
+  end;
+  if Result = '' then Result := '-';
+end;
+
+{$ENDIF}
+
 { 诊断开关（LUI_WINDOW_TRACE=1）：落盘宿主自身 Win32 矩形 / 父窗体真实客户区，
   用于定位"拖动/缩放后界面残留旧版式"——若宿主矩形与父客户区脱节（LCL 缓存 vs
   Win32 真值不同步），这里一眼可见。未设置环境变量时是纯判断，无任何开销。 }
 procedure TXuiHost.NativeHostTrace(const ATag: string);
 var
-  tf: Text;
-  tp: string;
   R: TRect;
   PR: TRect;
 begin
@@ -380,15 +434,83 @@ begin
     Windows.GetClientRect(Handle, R);
   if (Parent <> nil) and Parent.HandleAllocated then
     Windows.GetClientRect(Parent.Handle, PR);
-  tp := SysUtils.GetEnvironmentVariable('TEMP') + '\lui-window.log';
-  AssignFile(tf, tp);
-  if FileExists(tp) then Append(tf) else Rewrite(tf);
-  WriteLn(tf, Format('%s tag=%-16s msg=host hostRect=%dx%d parentClient=%dx%d',
+  XuiTraceLine(Format('%s tag=%-16s msg=host hostRect=%dx%d parentClient=%dx%d',
     [FormatDateTime('hh:nn:ss.zzz', Now), ATag, R.Right, R.Bottom,
      PR.Right, PR.Bottom]));
-  CloseFile(tf);
   {$ENDIF}
 end;
+
+{$IFDEF WINDOWS}
+
+procedure TXuiHost.TraceIme(const ATag, ADetail: string);
+begin
+  if not FTraceOn then Exit;
+  XuiTraceLine(Format('%s tag=%-14s %s',
+    [FormatDateTime('hh:nn:ss.zzz', Now), ATag, ADetail]));
+end;
+
+{ 聚焦节点的当前文本（UTF-8 字节）+ 引擎光标矩形：
+  文本字节与 caret 横坐标对不上，就是"末尾一串空白"的直接证据。 }
+function TXuiHost.ImeSnapshot: string;
+var
+  r: TRect;
+  t: string;
+  hex: string;
+begin
+  r := Types.Rect(0, 0, 0, 0);
+  if FEngine <> nil then
+    FEngine.CaretRect(r);
+  t := '';
+  if (FEngine <> nil) and (FEngine.FocusNode <> nil) then
+    t := FEngine.FocusNode.Text;
+  if t <> '' then
+    hex := XuiBytesHex(PByte(@t[1]), Length(t))
+  else
+    hex := '-';
+  Result := Format('textLen=%d caret=(%d,%d,%d,%d) textHex=%s',
+    [Length(t), r.Left, r.Top, r.Right, r.Bottom, hex]);
+end;
+
+{ 把 IME 交来的组合串/上屏结果串按 UTF-8 字节落盘（未变更时为 '-'） }
+function TXuiHost.ImeCompositionDump(ALParam: PtrUInt): string;
+var
+  ic: HIMC;
+  buf: array[0..511] of WideChar;
+
+  function ReadHex(AIndex: DWORD): string;
+  var
+    w: UnicodeString;
+    u: RawByteString;
+    n: Integer;
+  begin
+    Result := '-';
+    if (ALParam and AIndex) = 0 then Exit;
+    FillChar(buf[0], SizeOf(buf), 0);
+    n := ImmGetCompositionStringW(ic, AIndex, @buf[0], SizeOf(buf));
+    if n <= 0 then Exit;
+    if n > SizeOf(buf) then n := SizeOf(buf);
+    SetLength(w, n div 2);
+    if Length(w) > 0 then
+      Move(buf[0], w[1], Length(w) * SizeOf(WideChar));
+    u := UTF8Encode(w);
+    if Length(u) > 0 then
+      Result := XuiBytesHex(PByte(@u[1]), Length(u));
+  end;
+
+begin
+  Result := 'lp=0 comp=- result=-';
+  if not HandleAllocated then Exit;
+  ic := ImmGetContext(Handle);
+  if ic = 0 then Exit;
+  try
+    Result := Format('lp=%s comp=%s result=%s',
+      [IntToHex(UInt64(ALParam), 8), ReadHex(GCS_COMPSTR), ReadHex(GCS_RESULTSTR)]);
+  finally
+    ImmReleaseContext(Handle, ic);
+  end;
+end;
+
+{$ENDIF}
 
 procedure TXuiHost.Paint;
 var
@@ -436,6 +558,23 @@ procedure TXuiHost.WndProc(var TheMessage: TLMessage);
 var
   Form: TCustomForm;
 begin
+  {$IFDEF WINDOWS}
+  // 中文输入取证（LUI_WINDOW_TRACE=1）：按键/字符/IME 消息全序列
+  if FTraceOn then
+    case TheMessage.Msg of
+      $0100: TraceIme('keydown', 'vk=' + IntToHex(UInt64(TheMessage.WParam), 4));
+      $0102: TraceIme('char', 'ch=' + IntToHex(UInt64(TheMessage.WParam), 4));
+      $0109: TraceIme('unichar', 'ch=' + IntToHex(UInt64(TheMessage.WParam), 4));
+      $010C..$010F, $0281..$028F:
+        begin
+          TraceIme('ime-msg', 'msg=' + IntToHex(UInt64(TheMessage.Msg), 4) +
+            ' lp=' + IntToHex(UInt64(TheMessage.LParam), 8));
+          if TheMessage.Msg = $010F then // WM_IME_COMPOSITION
+            TraceIme('ime-comp',
+              ImeCompositionDump(PtrUInt(TheMessage.LParam)) + ' ' + ImeSnapshot);
+        end;
+    end;
+  {$ENDIF}
   if TheMessage.Msg = LM_NCHITTEST then
   begin
     Form := GetParentForm(Self);
@@ -513,9 +652,24 @@ begin
 end;
 
 procedure TXuiHost.UTF8KeyPress(var UTF8Key: TUTF8Char);
+var
+  consumed: Boolean;
+  inHex: string;
 begin
   // 普通字符与 IME 上屏文本都从这里进入引擎
-  if (FEngine <> nil) and FEngine.HandleTextInput(UTF8Key) then
+  consumed := (FEngine <> nil) and FEngine.HandleTextInput(UTF8Key);
+  {$IFDEF WINDOWS}
+  if FTraceOn then
+  begin
+    if Length(UTF8Key) > 0 then
+      inHex := XuiBytesHex(PByte(@UTF8Key[1]), Length(UTF8Key))
+    else
+      inHex := '-';
+    TraceIme('text-in', 'in=' + inHex +
+      ' consumed=' + BoolToStr(consumed, 'yes', 'no') + ' ' + ImeSnapshot);
+  end;
+  {$ENDIF}
+  if consumed then
   begin
     UTF8Key := ''; // 已被输入框消费
     SyncTimer;
@@ -531,7 +685,6 @@ var
   ic: HIMC;
   form: TImmCompositionForm;
   r: TRect;
-  p: TPoint;
 begin
   if (FEngine = nil) or (not FEngine.CaretRect(r)) then
     Exit;
@@ -539,13 +692,16 @@ begin
   if ic = 0 then
     Exit;
   try
-    p.X := r.Left;                 // 组合窗锚点 = 引擎光标左下角
-    p.Y := r.Bottom;
-    p := Self.ClientToScreen(p);   // 显式走 LCL 方法（Windows 单元同名 API 需要 hWnd 参数）
+    // ptCurrentPos 必须是宿主客户区坐标：曾误传 ClientToScreen 的屏幕坐标，
+    // 组合串会被推到窗口外再被系统裁剪，表现为中文输入"字形移位"。
     form.dwStyle := CFS_POINT;
-    form.ptCurrentPos := p;
+    form.ptCurrentPos := XuiImeCompositionPoint(r);
     form.rcArea := Types.Rect(0, 0, 0, 0);
     ImmSetCompositionWindow(ic, form);
+    if FTraceOn then
+      TraceIme('ime-anchor', Format('caret=(%d,%d,%d,%d) anchor=(%d,%d)',
+        [r.Left, r.Top, r.Right, r.Bottom,
+         form.ptCurrentPos.X, form.ptCurrentPos.Y]));
   finally
     ImmReleaseContext(Handle, ic);
   end;

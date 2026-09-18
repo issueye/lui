@@ -98,6 +98,10 @@ const
   XuiMaskChar = '●';
   XuiCaretWidth = 1;
 
+var
+  // 诊断去重：同一帧元组只落一行（光标闪烁会反复重绘）
+  XuiLastInputRenderTrace: string = '';
+
 function XuiReadClipboard: string;
 begin
   Result := '';
@@ -1011,6 +1015,32 @@ begin
   Result := (FNode <> nil) and (FNode = ANode) and (FCaretRect.Right > FCaretRect.Left);
 end;
 
+{ 诊断（LUI_WINDOW_TRACE=1）：把测量宽与光标列一并对盘。
+  "末尾很多空白" 只有两种成因——文本字节里真混入了空白，或 textW 测得比实绘推进宽
+  （光标/滚动按 textW 走，字形却更窄）。这两个数字并排出现即可当场分辨。 }
+procedure XuiInputRenderTrace(const AText: string;
+  ATextW, APrefixW, AScrollX, ABoxW: Single; ACaretX: Integer);
+var
+  tf: Text;
+  tp, line, body: string;
+begin
+  if SysUtils.GetEnvironmentVariable('LUI_WINDOW_TRACE') = '' then
+    Exit;
+  body := Format('textLen=%d textW=%d prefixW=%d scrollX=%d caretX=%d boxW=%d',
+    [Length(AText), Round(ATextW), Round(APrefixW), Round(AScrollX), ACaretX,
+     Round(ABoxW)]);
+  if body = XuiLastInputRenderTrace then
+    Exit;
+  XuiLastInputRenderTrace := body;
+  line := Format('%s tag=%-14s %s',
+    [FormatDateTime('hh:nn:ss.zzz', Now), 'input-render', body]);
+  tp := SysUtils.GetEnvironmentVariable('TEMP') + '\lui-window.log';
+  AssignFile(tf, tp);
+  if FileExists(tp) then Append(tf) else Rewrite(tf);
+  WriteLn(tf, line);
+  CloseFile(tf);
+end;
+
 function TXuiInputBehavior.RenderContent(ANode: TXuiNode; ARenderer: TXuiCustomRenderer;
   AMeasure: TXuiMeasureFunc; ACaretVisible: Boolean): Boolean;
 var
@@ -1061,6 +1091,7 @@ begin
   caretH := Round(Min(style.FontSize + 4, content.Bottom - content.Top));
   caretY := content.Top + (content.Bottom - content.Top - caretH) div 2;
   caretX := Round(content.Left + alignOff + prefixW - FScrollX);
+  XuiInputRenderTrace(disp, textW, prefixW, FScrollX, boxW, caretX);
 
   ARenderer.PushClip(content);
   try

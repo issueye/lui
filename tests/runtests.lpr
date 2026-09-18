@@ -11858,6 +11858,7 @@ begin
     TestDemoPage;
     TestAgentPage;
     TestPreviewHostWiring;
+    TestImeCompositionAnchor;
     TestConsoleOutput;
     TestScaffold;
     TestAppSpec;

@@ -66,6 +66,56 @@ begin
   end;
 end;
 
+{ IME 组合窗锚点：Win32 约定 ptCurrentPos 相对宿主窗口左上角（客户区坐标）。
+  曾误传 ClientToScreen 的屏幕坐标，组合串被推到窗口外再裁剪，表现为中文输入"字形移位"。 }
+procedure TestImeCompositionAnchor;
+var
+  form: TForm;
+  host: TXuiHost;
+  node: TXuiNode;
+  r: TRect;
+  p: TPoint;
+begin
+  WriteLn('--- IME 组合窗锚点坐标系 ---');
+
+  r := Types.Rect(128, 640, 129, 664);
+  p := XuiImeCompositionPoint(r);
+  Check((p.X = 128) and (p.Y = 664), '锚点取光标矩形左下角（客户区坐标）');
+
+  r := Types.Rect(0, 0, 1, 18);
+  p := XuiImeCompositionPoint(r);
+  Check((p.X = 0) and (p.Y = 18),
+    '零位光标锚点仍在原点（误做 ClientToScreen 会失败）');
+
+  // 真实引擎路径：窗体故意偏离屏幕原点，锚点不得跟着窗口屏幕位置走
+  form := TForm.CreateNew(nil);
+  form.ClientWidth := 320;
+  form.ClientHeight := 240;
+  form.Left := 300;
+  form.Top := 200;
+  host := TXuiHost.Create(form);
+  host.Parent := form;
+  try
+    host.Engine.Renderer := TFakeRenderer.Create; // 渲染器所有权归引擎
+    host.Engine.LoadFromString('<window><input id="ime-target"/></window>');
+    node := host.Engine.Document.FindElementById('ime-target');
+    Check(node <> nil, '页面含目标输入框');
+    Check(host.Engine.FocusNext(True) and (host.Engine.FocusNode = node),
+      '输入框获得焦点');
+    Check(host.Engine.HandleTextInput('你好'), '中文文本进入输入框');
+    host.Engine.Draw(nil, Types.Rect(0, 0, 320, 240));
+    Check(host.Engine.CaretRect(r), '引擎给出光标矩形');
+    p := XuiImeCompositionPoint(r);
+    Check((p.X >= 0) and (p.X < form.ClientWidth) and
+          (p.Y >= 0) and (p.Y <= form.ClientHeight),
+      Format('锚点落在客户区内 (%d,%d)，与窗口屏幕位置无关', [p.X, p.Y]));
+  finally
+    host.Parent := nil;
+    host.Free;
+    form.Free;
+  end;
+end;
+
 procedure TestConsoleOutput;
 var
   ok, sawHighByte: Boolean;
