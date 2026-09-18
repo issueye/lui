@@ -11860,6 +11860,7 @@ begin
     TestPreviewHostWiring;
     TestImeCompositionAnchor;
     TestConsoleOutput;
+    TestGdiPlusCjkCaretAlignment;
     TestScaffold;
     TestAppSpec;
     TestBundle;

@@ -198,7 +198,6 @@ type
     FGraphics: PGpGraphics;
     FMeasureGraphics: PGpGraphics;
     FMeasureImage: Pointer;           // 度量用内存位图（GDI+ fallback 度量只在位图上下文与绘制一致）
-    FMeasureFormat: PGpStringFormat;  // 排版度量 StringFormat（NoWrap|MeasureTrailingSpaces|NoClip）
     FMeasureDC: TGpHDC;
     FClipStack: array of TRect;
     FFonts: TStringList;              // 字体缓存：key → TGpFontEntry（OwnsObjects）
@@ -374,8 +373,6 @@ destructor TGdiPlusRenderer.Destroy;
 begin
   if FFormat <> nil then
     GdipDeleteStringFormat(FFormat);
-  if FMeasureFormat <> nil then
-    GdipDeleteStringFormat(FMeasureFormat);
   FFonts.Free;   // 释放全部缓存字体（含 FFont 指向的对象）
   FFont := nil;
   SetLength(FGpSlots, 0);
@@ -576,14 +573,19 @@ function TGdiPlusRenderer.EnsureFormat(AStyle: TXuiStyle): PGpStringFormat;
 begin
   if FFormat <> nil then
     Exit(FFormat);
-  GdipCreateStringFormat(0, 0, FFormat);
+  // 排版与度量同口径：以原生 GenericTypographic 为底（零 margin 紧致度量与排版），
+  // 消除 GenericDefault 自带的 1/6 em character margins 导致的实绘超前推进缺陷。
+  // 叠加 NoWrap|MeasureTrailingSpaces|NoClip，保证实绘字形推进与文本度量、光标位置严格 100% 同源。
+  if GdipStringFormatGetGenericTypographic(FFormat) <> 0 then
+    FFormat := nil;
   if FFormat = nil then
     Exit(nil);
   // 水平与垂直对齐均保持 Near（起始锚点已在 DrawText 中按 AStyle.TextAlign 手动计算精确像素，
   // 避免 GDI+ 在布局矩形内进行二次居中叠加，防止居中按钮文字向右偏斜）
   GdipSetStringFormatAlign(FFormat, StringAlignmentNear);
   GdipSetStringFormatLineAlign(FFormat, StringAlignmentNear);
-  GdipSetStringFormatFlags(FFormat, StringFormatFlagsNoWrap);
+  GdipSetStringFormatFlags(FFormat, StringFormatFlagsNoWrap or
+    StringFormatFlagsMeasureTrailingSpaces or StringFormatFlagsNoClip);
   Result := FFormat;
 end;
 
@@ -826,20 +828,7 @@ begin
     gpFont := EnsureFont(AStyle);
     if gpFont <> nil then
     begin
-      if FMeasureFormat = nil then
-      begin
-        // 度量必须以原生 GenericTypographic 为底再改 flags：
-        // GdipCreateStringFormat 自建的 format 即便同样带 NoClip 也会附带
-        // 默认 trimming 的省略号预留（实测 14px "用户名：" 62.3 vs 56.0），
-        // 该内部紧致度量状态只能从 GenericTypographic 克隆获得。
-        // flags 在其上补 NoWrap|MeasureTrailingSpaces（尾部空格计入光标推进）。
-        if GdipStringFormatGetGenericTypographic(FMeasureFormat) <> 0 then
-          FMeasureFormat := nil;
-        if FMeasureFormat <> nil then
-          GdipSetStringFormatFlags(FMeasureFormat, StringFormatFlagsNoWrap or
-            StringFormatFlagsMeasureTrailingSpaces or StringFormatFlagsNoClip);
-      end;
-      if FMeasureFormat <> nil then
+      if EnsureFormat(AStyle) <> nil then
       begin
         layout.X := 0;
         layout.Y := 0;
@@ -847,7 +836,7 @@ begin
         layout.Height := Max(4, Round(AStyle.FontSize * 3));
         wide := UnicodeString(AText);
         if GdipMeasureString(FMeasureGraphics, PWideChar(wide), Length(wide),
-          gpFont, layout, FMeasureFormat, bounds, nil, nil) = 0 then
+          gpFont, layout, FFormat, bounds, nil, nil) = 0 then
         begin
           Result.cx := Round(bounds.Width);
           gpOk := True;

@@ -162,3 +162,41 @@ begin
     end;
   Check(sawHighByte and (highCount > 0), '中文经统一路径输出（含高位字节）');
 end;
+
+procedure TestGdiPlusCjkCaretAlignment;
+var
+  bmp: TBitmap;
+  rend: TGdiPlusRenderer;
+  style: TXuiStyle;
+  text: string;
+  sz: TSize;
+begin
+  WriteLn('--- GDI+ 长中文紧致排版与度量回归 ---');
+  bmp := TBitmap.Create;
+  try
+    bmp.SetSize(1200, 100);
+    rend := TGdiPlusRenderer.Create(bmp.Canvas);
+    try
+      style := TXuiStyle.Create;
+      try
+        style.FontFamily := 'Segoe UI';
+        style.FontSize := 13;
+
+        // 测试包含 45 个 CJK 字符的长文本（与用户反馈用例完全一致）
+        text := '啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊水水水水水顶顶顶，，，啊实打实的啊实打实大苏打';
+        sz := rend.MeasureText(text, style);
+        Check(sz.cx > 500, Format('长中文度量有效 (cx=%d)', [sz.cx]));
+        // 在新紧致排版（GenericTypographic，0 margins）下，13px Segoe UI fallback CJK 45字测量值约为 613px；
+        // 若退化为旧 GenericDefault 排版，会带额外字符 margins 累积达到 635px（导致光标偏左 22px）
+        Check((sz.cx >= 605) and (sz.cx <= 620),
+          Format('紧致排版度量符合 GenericTypographic (实际 %d px，在 [605..620] 区间内)', [sz.cx]));
+      finally
+        style.Free;
+      end;
+    finally
+      rend.Free;
+    end;
+  finally
+    bmp.Free;
+  end;
+end;
