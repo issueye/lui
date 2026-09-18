@@ -64,6 +64,7 @@ type
     procedure SetResizeBorder(const AValue: Integer);
     {$IFDEF WINDOWS}
     procedure ApplyFramelessStyle;
+    procedure DisableOwnScrollBars;
     procedure EnsureFullClient;
     procedure RedrawFramelessContent;
     procedure UnpinInheritedFrame(Info: PWINDOWPOS);
@@ -125,6 +126,7 @@ begin
   FDefaultsReady := True;
   FFramelessResize := True;
   FResizeBorder := XuiDefaultResizeBorder;
+  DisableOwnScrollBars;
 end;
 
 procedure TXuiFramelessForm.SetFrameless(const AValue: Boolean);
@@ -458,6 +460,7 @@ var
 begin
   if not HandleAllocated then
     Exit;
+  DisableOwnScrollBars;
   // WS_THICKFRAME：User32 的 SC_SIZE 分支要求该样式，缺了它鼠标拖边与
   // WM_NCLBUTTONDOWN(HT*) 都不会进入缩放循环
   Style := Windows.GetWindowLongPtrW(Handle, GWL_STYLE);
@@ -470,6 +473,16 @@ begin
   XuiLoadDpiApis;
   ApplyDwmFramelessLook;
   InstallWndProcHook;
+end;
+
+{ 整窗自绘的窗口不该有自己的滚动条。TForm 继承自 TScrollingWinControl，AutoScroll 默认开启：
+  一旦客户区小于它记账的滚动范围（缩窗、或范围因历史尺寸被抬高）就会冒出系统滚动条，
+  与页面里自绘滚动的内容叠成"双滚动条"（a_da 实测：窗口缩小后右侧出现两条滚动条）。 }
+procedure TXuiFramelessForm.DisableOwnScrollBars;
+begin
+  AutoScroll := False;
+  HorzScrollBar.Visible := False;
+  VertScrollBar.Visible := False;
 end;
 
 { 无边框窗口激活/非激活切换后重绘：引擎整窗重绘，盖掉系统可能画上的非客户区边框残影。 }
