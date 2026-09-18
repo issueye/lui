@@ -794,8 +794,31 @@ end;
 procedure TXuiEngine.RenderScrollBars(ANode: TXuiNode);
 var
   bars: TXuiScrollBarLayout;
+  {$IFDEF WINDOWS}
+  tf: Text;
+  tp: string;
+  {$ENDIF}
 begin
   bars := XuiScrollBarLayout(ANode);
+  {$IFDEF WINDOWS}
+  // 诊断开关（LUI_SCROLL_TRACE=1）：把每个被画滚动条的节点（id/class、容器矩形、轨道/滑块矩形）
+  // 追加到 %TEMP%\lui-scrollbars.log。整窗自绘的应用里"多出一条滚动条"时用它一眼定位归属；
+  // 未设置环境变量时是纯判断，无任何开销。a_da 侧配套脚本：scripts\diagnose-scrollbars.cmd
+  if (bars.ShowV or bars.ShowH) and
+     (SysUtils.GetEnvironmentVariable('LUI_SCROLL_TRACE') <> '') then
+  begin
+    tp := SysUtils.GetEnvironmentVariable('TEMP') + '\lui-scrollbars.log';
+    AssignFile(tf, tp);
+    if FileExists(tp) then Append(tf) else Rewrite(tf);
+    WriteLn(tf, Format('node id=%s class=%s tag=%s pad=%d,%d,%d,%d vtrack=%d,%d,%d,%d vthumb=%d,%d,%d,%d showV=%d showH=%d',
+      [ANode.AttributeValue('id'), ANode.AttributeValue('class'), ANode.Tag,
+       ANode.PaddingBox.Left, ANode.PaddingBox.Top, ANode.PaddingBox.Right, ANode.PaddingBox.Bottom,
+       bars.VTrack.Left, bars.VTrack.Top, bars.VTrack.Right, bars.VTrack.Bottom,
+       bars.VThumb.Left, bars.VThumb.Top, bars.VThumb.Right, bars.VThumb.Bottom,
+       Ord(bars.ShowV), Ord(bars.ShowH)]));
+    CloseFile(tf);
+  end;
+  {$ENDIF}
   if bars.ShowV then
   begin
     FRenderer.FillRect(bars.VTrack, XuiScrollbarTrackColor);
