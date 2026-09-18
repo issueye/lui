@@ -1747,7 +1747,7 @@ begin
   arrV := EvalOn(ABinding.Expr, ABinding.Scope);
   if not ((arrV.Kind = jvObject) and (arrV.Obj is TXuiJsArray)) then
   begin
-    FScript.ReportError('', 'x-for 的表达式必须是数组', ssRuntime);
+    FScript.ReportError('', 'x-for 的表达式必须是数组 [' + ABinding.Expr + ']', ssRuntime);
     Exit;
   end;
   arr := TXuiJsArray(arrV.Obj);
