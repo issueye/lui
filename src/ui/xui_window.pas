@@ -67,12 +67,16 @@ type
     procedure DisableOwnScrollBars;
     procedure EnsureFullClient;
     procedure RedrawFramelessContent;
+    procedure SyncLclClientRectCache;
     procedure UnpinInheritedFrame(Info: PWINDOWPOS);
     function NcFrameDelta: TSize;
     procedure ApplyDwmFramelessLook;
     procedure InstallWndProcHook;
     procedure UninstallWndProcHook;
     procedure ApplyMaximizedBounds(AInfo: PMinMaxInfo);
+    { 诊断开关（LUI_WINDOW_TRACE=1）：把关键原生消息的窗口/客户区矩形落盘，
+      用于定位"拖动/缩放后界面残留旧版式"这类时序问题；未设置时零开销。 }
+    procedure NativeWindowTrace(const ATag: string; Msg: UINT);
     { 顶层窗口的原生消息处理：返回 True 表示已给出 AResult，不再向下传递 }
     function HandleNativeMessage(Window: HWND; Msg: UINT; WParam: WPARAM;
       LParam: LPARAM; out AResult: LRESULT): Boolean; virtual;
@@ -329,6 +333,36 @@ begin
   end;
 end;
 
+{ 诊断开关（LUI_WINDOW_TRACE=1）：把关键原生消息发生时的窗口/客户区矩形追加到
+  %TEMP%\lui-window.log（时间戳 + 消息号 + 两个矩形），用于定位"拖动/缩放后界面
+  残留旧版式"这类时序问题——本地实窗复现时能直接看到客户区是否被谁内缩过。
+  未设置环境变量时是纯判断，无任何开销。 }
+procedure TXuiFramelessForm.NativeWindowTrace(const ATag: string; Msg: UINT);
+var
+  tf: Text;
+  tp: string;
+  WR, CR: Windows.TRect;
+begin
+  if SysUtils.GetEnvironmentVariable('LUI_WINDOW_TRACE') = '' then
+    Exit;
+  WR := Types.Rect(0, 0, 0, 0);
+  CR := WR;
+  if HandleAllocated then
+  begin
+    Windows.GetWindowRect(Handle, WR);
+    Windows.GetClientRect(Handle, CR);
+  end;
+  tp := SysUtils.GetEnvironmentVariable('TEMP') + '\lui-window.log';
+  AssignFile(tf, tp);
+  if FileExists(tp) then Append(tf) else Rewrite(tf);
+  WriteLn(tf, Format('%s tag=%-16s msg=%-4d win=%d,%d,%d,%d client=%dx%d lclClient=%dx%d',
+    [FormatDateTime('hh:nn:ss.zzz', Now), ATag, Msg,
+     WR.Left, WR.Top, WR.Right, WR.Bottom,
+     CR.Right - CR.Left, CR.Bottom - CR.Top,
+     ClientWidth, ClientHeight]));
+  CloseFile(tf);
+end;
+
 function TXuiFramelessForm.HandleNativeMessage(Window: HWND; Msg: UINT;
   WParam: WPARAM; LParam: LPARAM; out AResult: LRESULT): Boolean;
 var
@@ -346,17 +380,28 @@ begin
     WM_ENTERSIZEMOVE:
       // 用户开始拖边/拖标题缩放：撤掉待校正尺寸，之后一切尺寸变更都不再干预
       begin
+        NativeWindowTrace('entersizemove', Msg);
         FWantClientW := 0;
         FWantClientH := 0;
         FSizing := True;
       end;
     WM_EXITSIZEMOVE:
       begin
+        NativeWindowTrace('exitsizemove', Msg);
         FSizing := False;
-        EnsureFullClient;   // 拖拽结束后再校准一次客户区
+        // 拖拽结束后校准客户区并强制整窗重绘：移动循环里客户区可能被系统按边框
+        // 内缩过又拉回，新并入的条带是"新暴露区"，只靠系统更新区重绘会在其余部分
+        // 残留循环期间旧版式的自绘内容（a_da 实测：拖顶栏移动后右侧并排两条滚动条，
+        // 缩放一次才消失——那条"多出来的"就是旧版式残影）。
+        SyncLclClientRectCache;   // LCL 客户区缓存可能被留在"整窗-边框增量"，先对账
+        RedrawFramelessContent;
       end;
     WM_SIZE, WM_WINDOWPOSCHANGED:
       begin
+        if Msg = WM_SIZE then
+          NativeWindowTrace('size wparam=' + IntToStr(PtrUInt(WParam)), Msg)
+        else
+          NativeWindowTrace('windowposchanged', Msg);
         // 最大化/最小化后不再干预尺寸
         if (Msg = WM_SIZE) and ((WParam = SIZE_MAXIMIZED) or (WParam = SIZE_MINIMIZED)) then
         begin
@@ -365,6 +410,9 @@ begin
         end;
         // 自愈：客户区若被系统按边框内缩过，这里拉回整窗（正常情况直接返回，不产生消息）
         EnsureFullClient;
+        // LCL 客户区缓存对账：移动循环里 LCL 可能把缓存留在"整窗-边框增量"，
+        // 及时纠偏，避免 alClient 自绘画布被对齐到错值（残影源头）
+        SyncLclClientRectCache;
       end;
     WM_NCACTIVATE:
       // 无边框窗口自己负责"激活/非激活"外观：直接返回 TRUE 并重绘，不走 DefWindowProc。
@@ -386,7 +434,16 @@ begin
       //    有边框窗口加圆角（a_da 实测：四周约 5px 白边 + 左下圆角异常）。
       begin
         if LParam = 0 then
-          Exit;   // 没有矩形可谈（非系统来路），交回默认处理
+        begin
+          // 没有矩形可谈（非系统来路），交回默认处理——注意默认处理会按"带边框"
+          // 内缩客户区，这里落一条诊断痕迹便于发现这类旁路
+          NativeWindowTrace('nccalc-norect->default', Msg);
+          Exit;
+        end;
+        if WParam = 0 then
+          NativeWindowTrace('nccalc-w0', Msg)
+        else
+          NativeWindowTrace('nccalc-w1', Msg);
         if WParam = 0 then
         begin
           if not Windows.GetWindowRect(Window, R) then
@@ -500,12 +557,42 @@ begin
       Controls[i].Invalidate;
 end;
 
+{ LCL 表单的客户区缓存对账：无边框窗口的客户区恒等于整窗，但 LCL 在拖拽/移动过程中
+  会把它的表单客户区缓存留在"整窗 - 系统边框增量"（a_da 实测 1080x720 的窗口拖一次
+  顶栏后缓存变成 1066x706），随后 alClient 的自绘画布被 LCL 对齐到这个错值 —— 画布
+  比真实客户区窄/矮一圈，右侧/底部露出的旧像素残影正是"双滚动条"的来源。
+  这里在缓存与 Win32 真值出现偏差时强制缓存失效并重新对齐子控件；平时零开销。 }
+procedure TXuiFramelessForm.SyncLclClientRectCache;
+var
+  CR: TRect;
+begin
+  if (not HandleAllocated) or FSizing then
+    Exit;
+  // 与 EnsureFullClient 同款守卫：缩放/移动的模态循环进行中绝不动窗口与子控件
+  // （实测在循环里 ReAlign 会干扰原生缩放循环，把本次拖拽顶掉）
+  if Windows.GetCapture = Handle then
+    Exit;
+  if not Windows.GetClientRect(Handle, CR) then
+    Exit;
+  if (ClientWidth = CR.Right) and (ClientHeight = CR.Bottom) then
+    Exit;
+  {$IFDEF WINDOWS}
+  NativeWindowTrace('lcl-sync', 0);
+  {$ENDIF}
+  InvalidateClientRectCache(False);   // 下一次查询按 Win32 真值重算
+  ReAlign;                            // 立即按正确客户区重新对齐 alClient 子控件
+end;
+
 { 客户区必须等于整窗：一旦发现被系统按边框内缩（会露出系统边框并触发 DWM 圆角），
   用 SWP_FRAMECHANGED 重跑一遍 WM_NCCALCSIZE 拉回来。客户区已等于整窗时直接返回，
-  不会发出额外消息（因此不会与 WM_WINDOWPOSCHANGED 形成递归）。 }
+  不会发出额外消息（因此不会与 WM_WINDOWPOSCHANGED 形成递归）。
+  校正确实发生时再整窗失效一次：刚扩进来的右/下条带属于"新暴露区"，其后 WM_PAINT
+  的更新区只覆盖这一条，客户区其余部分会残留旧版式的自绘内容；整窗失效保证下一次
+  绘制按真实客户区尺寸重排并覆盖全部（a_da 实测：拖顶栏移动后双滚动条即源于此）。 }
 procedure TXuiFramelessForm.EnsureFullClient;
 var
   WR, CR: TRect;
+  i: Integer;
 begin
   if (not HandleAllocated) or FSizing then
     Exit;
@@ -520,9 +607,15 @@ begin
   if ((CR.Right - CR.Left) = (WR.Right - WR.Left)) and
      ((CR.Bottom - CR.Top) = (WR.Bottom - WR.Top)) then
     Exit;
+  NativeWindowTrace('ensure-correct-before', 0);
   Windows.SetWindowPos(Handle, 0, 0, 0, 0, 0,
     SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE or SWP_FRAMECHANGED);
+  NativeWindowTrace('ensure-correct-after', 0);
   ApplyDwmFramelessLook;   // 边框回来时 DWM 可能同时恢复圆角/描边，这里再压一次
+  Invalidate;
+  for i := 0 to ControlCount - 1 do
+    if Controls[i] <> nil then
+      Controls[i].Invalidate;
 end;
 
 procedure TXuiFramelessForm.ApplyDwmFramelessLook;

@@ -297,9 +297,29 @@ begin
 end;
 
 procedure TXuiEngine.SetViewport(AWidth, AHeight: Integer);
+var
+  {$IFDEF WINDOWS}
+  tf: Text;
+  tp: string;
+  {$ENDIF}
 begin
   if (AWidth <> FViewportWidth) or (AHeight <> FViewportHeight) then
   begin
+    {$IFDEF WINDOWS}
+    // 诊断开关（LUI_WINDOW_TRACE=1）：视口切换会触发整页重排，"拖动/缩放后界面
+    // 残留旧版式"这类问题时，配合 xui_window/xui_host 的 trace 能看到每一次
+    // 视口变更的来源与数值；未设置环境变量时是纯判断，无任何开销。
+    if SysUtils.GetEnvironmentVariable('LUI_WINDOW_TRACE') <> '' then
+    begin
+      tp := SysUtils.GetEnvironmentVariable('TEMP') + '\lui-window.log';
+      AssignFile(tf, tp);
+      if FileExists(tp) then Append(tf) else Rewrite(tf);
+      WriteLn(tf, Format('%s tag=engine  msg=viewport %dx%d -> %dx%d',
+        [FormatDateTime('hh:nn:ss.zzz', Now),
+         FViewportWidth, FViewportHeight, AWidth, AHeight]));
+      CloseFile(tf);
+    end;
+    {$ENDIF}
     FViewportWidth := AWidth;
     FViewportHeight := AHeight;
     FNeedsLayout := True;

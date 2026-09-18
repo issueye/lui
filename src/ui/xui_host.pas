@@ -36,6 +36,10 @@ type
     function RealClientRect: TRect;
     // 自愈：宿主画布必须铺满父客户区（alClient 偶发没跟上时会出现没被绘制的空白）
     procedure EnsureCoversParent;
+    {$IFDEF WINDOWS}
+    // 诊断开关（LUI_WINDOW_TRACE=1）：落盘宿主矩形与父客户区（见实现说明）
+    procedure NativeHostTrace(const ATag: string);
+    {$ENDIF}
     procedure HandleEngineChange(Sender: TObject);
     procedure HandleTimer(Sender: TObject);
     procedure HandleScriptError(const AFile, AMessage: string;
@@ -357,17 +361,48 @@ begin
     SetBounds(0, 0, NeedW, NeedH);
 end;
 
+{ 诊断开关（LUI_WINDOW_TRACE=1）：落盘宿主自身 Win32 矩形 / 父窗体真实客户区，
+  用于定位"拖动/缩放后界面残留旧版式"——若宿主矩形与父客户区脱节（LCL 缓存 vs
+  Win32 真值不同步），这里一眼可见。未设置环境变量时是纯判断，无任何开销。 }
+procedure TXuiHost.NativeHostTrace(const ATag: string);
+var
+  tf: Text;
+  tp: string;
+  R: TRect;
+  PR: TRect;
+begin
+  {$IFDEF WINDOWS}
+  if SysUtils.GetEnvironmentVariable('LUI_WINDOW_TRACE') = '' then
+    Exit;
+  R := Types.Rect(0, 0, 0, 0);
+  PR := R;
+  if HandleAllocated then
+    Windows.GetClientRect(Handle, R);
+  if (Parent <> nil) and Parent.HandleAllocated then
+    Windows.GetClientRect(Parent.Handle, PR);
+  tp := SysUtils.GetEnvironmentVariable('TEMP') + '\lui-window.log';
+  AssignFile(tf, tp);
+  if FileExists(tp) then Append(tf) else Rewrite(tf);
+  WriteLn(tf, Format('%s tag=%-16s msg=host hostRect=%dx%d parentClient=%dx%d',
+    [FormatDateTime('hh:nn:ss.zzz', Now), ATag, R.Right, R.Bottom,
+     PR.Right, PR.Bottom]));
+  CloseFile(tf);
+  {$ENDIF}
+end;
+
 procedure TXuiHost.Paint;
 var
   R: TRect;
 begin
   if FEngine = nil then Exit;
+  NativeHostTrace('host-paint-in');
   EnsureCoversParent;
   // 每次绘制前把视口校到客户区真值：双保险，杜绝"用旧尺寸绘制"留下空白边
   R := RealClientRect;
   FEngine.SetViewport(R.Right, R.Bottom);
   // 引擎自绘全部内容
   FEngine.Draw(Canvas, R);
+  NativeHostTrace('host-paint-out');
 end;
 
 procedure TXuiHost.Resize;
@@ -375,6 +410,7 @@ var
   R: TRect;
 begin
   inherited Resize;
+  NativeHostTrace('host-resize');
   // 注意：构造函数中设置初始尺寸时引擎尚未创建
   if FEngine = nil then Exit;
   R := RealClientRect;
