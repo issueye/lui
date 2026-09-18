@@ -601,6 +601,84 @@ begin
   end;
 end;
 
+{$IFDEF WINDOWS}
+function IsValidUtf8Bytes(const S: string): Boolean;
+var
+  i, n, b: Integer;
+begin
+  Result := True;
+  n := Length(S);
+  i := 1;
+  while i <= n do
+  begin
+    b := Byte(S[i]);
+    if b <= $7F then
+      Inc(i)
+    else if (b >= $C2) and (b <= $DF) then
+    begin
+      if (i + 1 > n) or ((Byte(S[i + 1]) and $C0) <> $80) then
+        Exit(False);
+      Inc(i, 2);
+    end
+    else if (b >= $E0) and (b <= $EF) then
+    begin
+      if (i + 2 > n) or
+         ((Byte(S[i + 1]) and $C0) <> $80) or
+         ((Byte(S[i + 2]) and $C0) <> $80) then
+        Exit(False);
+      if (b = $E0) and (Byte(S[i + 1]) < $A0) then Exit(False);
+      if (b = $ED) and (Byte(S[i + 1]) > $9F) then Exit(False);
+      Inc(i, 3);
+    end
+    else if (b >= $F0) and (b <= $F4) then
+    begin
+      if (i + 3 > n) or
+         ((Byte(S[i + 1]) and $C0) <> $80) or
+         ((Byte(S[i + 2]) and $C0) <> $80) or
+         ((Byte(S[i + 3]) and $C0) <> $80) then
+        Exit(False);
+      if (b = $F0) and (Byte(S[i + 1]) < $90) then Exit(False);
+      if (b = $F4) and (Byte(S[i + 1]) > $8F) then Exit(False);
+      Inc(i, 4);
+    end
+    else
+      Exit(False);
+  end;
+end;
+
+function NormalizeToUtf8(const S: string): string;
+var
+  cp: UINT;
+  wideLen: Integer;
+  wideBuf: UnicodeString;
+begin
+  if S = '' then
+    Exit('');
+  if IsValidUtf8Bytes(S) then
+    Exit(S);
+
+  cp := GetConsoleOutputCP;
+  if (cp = 0) or (cp = 65001) then
+    cp := GetOEMCP;
+  if cp = 0 then
+    cp := CP_ACP;
+
+  wideLen := MultiByteToWideChar(cp, 0, PAnsiChar(S), Length(S), nil, 0);
+  if wideLen > 0 then
+  begin
+    SetLength(wideBuf, wideLen);
+    MultiByteToWideChar(cp, 0, PAnsiChar(S), Length(S), PWideChar(wideBuf), wideLen);
+    Exit(UTF8Encode(wideBuf));
+  end;
+  Result := S;
+end;
+{$ELSE}
+function NormalizeToUtf8(const S: string): string;
+begin
+  Result := S;
+end;
+{$ENDIF}
+
 { 外部命令执行（工作线程上下文）。
 
   与 shell 的分工：不做命令行词法解析（引号/管道/重定向交给系统 shell），不做命令
@@ -720,8 +798,8 @@ begin
     proc.Free;
   end;
 
-  ARes.StdOut := outAcc;
-  ARes.StdErr := errAcc;
+  ARes.StdOut := NormalizeToUtf8(outAcc);
+  ARes.StdErr := NormalizeToUtf8(errAcc);
   ARes.Truncated := truncOut or truncErr;
   ARes.DurationMs := Int64(GetTickCount64 - started);
   ARes.Ok := True;   // 跑起来即成功：退出码非 0 / 超时都通过字段回报，由调用方判定

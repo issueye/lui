@@ -216,6 +216,7 @@ type
     function MakeBrush(const AColor: TXuiColor): PGpBrush;
     function MakePen(const AColor: TXuiColor; AWidth: Single): PGpPen;
     function EnsureFont(AStyle: TXuiStyle): PGpFont;
+    function EnsureEmojiFont(AStyle: TXuiStyle): PGpFont;
     function FontSigOf(AStyle: TXuiStyle): string;
     procedure CacheFontInSig(AStyle: TXuiStyle; AFont: PGpFont);
     function MeasureSlotIndex(const ASig, AText: string): Integer;
@@ -530,6 +531,151 @@ begin
   Result := FFont;
 end;
 
+function TGdiPlusRenderer.EnsureEmojiFont(AStyle: TXuiStyle): PGpFont;
+var
+  key: string;
+  idx: Integer;
+  entry: TGpFontEntry;
+  fam, fallback: UnicodeString;
+begin
+  key := 'Segoe UI Emoji|' + IntToStr(Round(AStyle.FontSize * 4)) + '|R';
+  if FFonts = nil then
+  begin
+    FFonts := TStringList.Create;
+    FFonts.OwnsObjects := True;
+  end;
+  idx := FFonts.IndexOf(key);
+  if idx >= 0 then
+    Exit(TGpFontEntry(FFonts.Objects[idx]).Font);
+
+  entry := TGpFontEntry.Create;
+  fam := 'Segoe UI Emoji';
+  if GdipCreateFontFamilyFromName(PWideChar(fam), nil, entry.Family) <> 0 then
+  begin
+    entry.Family := nil;
+    fallback := 'Segoe UI Symbol';
+    GdipCreateFontFamilyFromName(PWideChar(fallback), nil, entry.Family);
+  end;
+
+  if entry.Family = nil then
+  begin
+    entry.Free;
+    Exit(EnsureFont(AStyle));
+  end;
+
+  if GdipCreateFont(entry.Family, Max(1, AStyle.FontSize), FontStyleRegular, UnitPixel, entry.Font) <> 0 then
+  begin
+    entry.Free;
+    Exit(EnsureFont(AStyle));
+  end;
+
+  FFonts.AddObject(key, entry);
+  Result := entry.Font;
+end;
+
+type
+  TXuiTextRun = record
+    Start: Integer; // 1-based index in UnicodeString
+    Len: Integer;
+    IsEmoji: Boolean;
+  end;
+
+function IsEmojiAt(const W: UnicodeString; Idx: Integer; out NextIdx: Integer): Boolean;
+var
+  w1, w2: Word;
+  cp: LongWord;
+begin
+  NextIdx := Idx + 1;
+  w1 := Word(W[Idx]);
+  // 1. 代理对判定（SMP: U+10000..U+10FFFF，涵盖主要 Emoji 象形字）
+  if (w1 >= $D800) and (w1 <= $DBFF) and (Idx < Length(W)) then
+  begin
+    w2 := Word(W[Idx + 1]);
+    if (w2 >= $DC00) and (w2 <= $DFFF) then
+    begin
+      NextIdx := Idx + 2;
+      cp := $10000 + LongWord(w1 - $D800) * $400 + LongWord(w2 - $DC00);
+      if (cp >= $1F000) and (cp <= $1FAFF) then
+        Exit(True);
+      if (cp >= $10000) and (cp <= $20000) then
+        Exit(True);
+    end;
+  end;
+  // 2. 常用 BMP Emoji 符号区
+  if ((w1 >= $2600) and (w1 <= $27BF)) or
+     ((w1 >= $2300) and (w1 <= $23FF)) or
+     ((w1 >= $2B00) and (w1 <= $2BFF)) then
+    Exit(True);
+  Result := False;
+end;
+
+function HasAnyEmoji(const W: UnicodeString): Boolean;
+var
+  i, nextI: Integer;
+begin
+  i := 1;
+  while i <= Length(W) do
+  begin
+    if IsEmojiAt(W, i, nextI) then
+      Exit(True);
+    i := nextI;
+  end;
+  Result := False;
+end;
+
+type
+  TXuiTextRunArray = array of TXuiTextRun;
+
+procedure SplitTextRuns(const W: UnicodeString; var Runs: TXuiTextRunArray; out RunCount: Integer);
+var
+  i, nextI, curStart, cap: Integer;
+  isEmoji, curIsEmoji: Boolean;
+begin
+  RunCount := 0;
+  if Length(W) = 0 then
+    Exit;
+  cap := Length(Runs);
+  if cap < 16 then
+  begin
+    cap := 16;
+    SetLength(Runs, cap);
+  end;
+  curIsEmoji := IsEmojiAt(W, 1, nextI);
+  curStart := 1;
+  i := nextI;
+  while i <= Length(W) do
+  begin
+    isEmoji := IsEmojiAt(W, i, nextI);
+    if isEmoji <> curIsEmoji then
+    begin
+      if RunCount >= cap then
+      begin
+        cap := cap * 2;
+        SetLength(Runs, cap);
+      end;
+      Runs[RunCount].Start := curStart;
+      Runs[RunCount].Len := i - curStart;
+      Runs[RunCount].IsEmoji := curIsEmoji;
+      Inc(RunCount);
+      curStart := i;
+      curIsEmoji := isEmoji;
+    end;
+    i := nextI;
+  end;
+  if curStart <= Length(W) then
+  begin
+    if RunCount >= cap then
+    begin
+      cap := cap + 1;
+      SetLength(Runs, cap);
+    end;
+    Runs[RunCount].Start := curStart;
+    Runs[RunCount].Len := Length(W) - curStart + 1;
+    Runs[RunCount].IsEmoji := curIsEmoji;
+    Inc(RunCount);
+  end;
+end;
+
 function TGdiPlusRenderer.GpSlotFor(AFont: PGpFont; AHint: Integer;
   const ALayout: TGpRectF; AFormat: PGpStringFormat; const AText: string): Integer;
 var
@@ -701,14 +847,15 @@ end;
 procedure TGdiPlusRenderer.DrawText(const R: TRect; const AText: string;
   AStyle: TXuiStyle);
 var
-  font: PGpFont;
+  font, emojiFont, rf: PGpFont;
   format: PGpStringFormat;
   brush: PGpBrush;
-  layout: TGpRectF;
-  wide, ch: UnicodeString;
-  textW, dy, cursor: Single;
-  hint, slot, i: Integer;
+  layout, runLayout, drawBox, bounds: TGpRectF;
+  wide, ch, sub: UnicodeString;
+  textW, dy, cursor, runW: Single;
+  hint, slot, i, runCount, runIdx: Integer;
   one: TGpRectF;
+  runs: TXuiTextRunArray;
 begin
   if (FGraphics = nil) or (AText = '') or (FOpacity <= 0.001) then
     Exit;
@@ -777,6 +924,34 @@ begin
       cursor := cursor + MeasureText(ch, AStyle).cx + AStyle.LetterSpacing;
     end;
   end
+  else if HasAnyEmoji(wide) then
+  begin
+    emojiFont := EnsureEmojiFont(AStyle);
+    SplitTextRuns(wide, runs, runCount);
+    cursor := layout.X;
+    for runIdx := 0 to runCount - 1 do
+    begin
+      sub := Copy(wide, runs[runIdx].Start, runs[runIdx].Len);
+      if runs[runIdx].IsEmoji then
+        rf := emojiFont
+      else
+        rf := font;
+      runLayout := layout;
+      runLayout.X := 0;
+      runLayout.Y := 0;
+      runLayout.Width := 10000000;
+      runW := 0;
+      if GdipMeasureString(FMeasureGraphics, PWideChar(sub), Length(sub),
+           rf, runLayout, format, bounds, nil, nil) = 0 then
+        runW := bounds.Width;
+
+      drawBox := layout;
+      drawBox.X := cursor;
+      drawBox.Width := runW + 32;
+      GdipDrawString(FGraphics, PWideChar(sub), Length(sub), rf, drawBox, format, brush);
+      cursor := cursor + runW;
+    end;
+  end
   else
     GdipDrawString(FGraphics, PWideChar(wide), Length(wide), font, layout,
       format, brush);
@@ -792,10 +967,13 @@ var
   family: UnicodeString;
   weight: Integer;
   sig: string;
-  slotIdx, n: Integer;
-  gpFont: PGpFont;
+  slotIdx, n, mRunCount, mRunIdx: Integer;
+  gpFont, emojiFont, rf: PGpFont;
   layout, bounds: TGpRectF;
   gpOk: Boolean;
+  mRuns: TXuiTextRunArray;
+  sub: UnicodeString;
+  totalW: Single;
 begin
   // 度量与绘制必须同引擎：DrawText 经 GdipDrawString 按字体 fallback 推进绘制
   //（"Segoe UI" 无 CJK 字形，fallback 后 ~13.6px/字），而 GDI GetTextExtentPoint32W
@@ -835,10 +1013,32 @@ begin
         layout.Width := 10000000;
         layout.Height := Max(4, Round(AStyle.FontSize * 3));
         wide := UnicodeString(AText);
-        if GdipMeasureString(FMeasureGraphics, PWideChar(wide), Length(wide),
-          gpFont, layout, FFormat, bounds, nil, nil) = 0 then
+        if not HasAnyEmoji(wide) then
         begin
-          Result.cx := Round(bounds.Width);
+          if GdipMeasureString(FMeasureGraphics, PWideChar(wide), Length(wide),
+            gpFont, layout, FFormat, bounds, nil, nil) = 0 then
+          begin
+            Result.cx := Round(bounds.Width);
+            gpOk := True;
+          end;
+        end
+        else
+        begin
+          emojiFont := EnsureEmojiFont(AStyle);
+          SplitTextRuns(wide, mRuns, mRunCount);
+          totalW := 0;
+          for mRunIdx := 0 to mRunCount - 1 do
+          begin
+            sub := Copy(wide, mRuns[mRunIdx].Start, mRuns[mRunIdx].Len);
+            if mRuns[mRunIdx].IsEmoji then
+              rf := emojiFont
+            else
+              rf := gpFont;
+            if GdipMeasureString(FMeasureGraphics, PWideChar(sub), Length(sub),
+                 rf, layout, FFormat, bounds, nil, nil) = 0 then
+              totalW := totalW + bounds.Width;
+          end;
+          Result.cx := Round(totalW);
           gpOk := True;
         end;
       end;
