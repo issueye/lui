@@ -509,6 +509,7 @@ var
 begin
   if (not HandleAllocated) or FSizing then
     Exit;
+  DisableOwnScrollBars;   // 幂等：任何路径把系统滚动条放回来都会被立刻纠正
   // 拖拽/移动的模态循环里客户区与窗口矩形可能瞬时不同步，此时不能动窗口
   // （实测在缩放循环中调用会把窗口弹成屏幕高度）
   if Windows.GetCapture = Handle then
