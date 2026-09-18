@@ -32,6 +32,10 @@ type
     function GetBackend: TXuiBackend;
     function GetEventTarget: TObject;
     procedure SetEventTarget(const AValue: TObject);
+    // 控件客户区真值（见实现说明）
+    function RealClientRect: TRect;
+    // 自愈：宿主画布必须铺满父客户区（alClient 偶发没跟上时会出现没被绘制的空白）
+    procedure EnsureCoversParent;
     procedure HandleEngineChange(Sender: TObject);
     procedure HandleTimer(Sender: TObject);
     procedure HandleScriptError(const AFile, AMessage: string;
@@ -319,19 +323,62 @@ begin
   end;
 end;
 
+{ 控件客户区真值。LCL 的 ClientWidth/ClientHeight 是缓存值，在 resize 回调触发的那一刻
+  可能还是旧尺寸；拿它设引擎视口/绘制区域，就会留下一块没被引擎绘制的空白
+  （a_da 实测：深色主题下窗口右侧/底部偶发一条白边）。Windows 下直接问窗口要真值。 }
+function TXuiHost.RealClientRect: TRect;
+begin
+  Result := Types.Rect(0, 0, ClientWidth, ClientHeight);
+  {$IFDEF WINDOWS}
+  if HandleAllocated then
+    Windows.GetClientRect(Handle, Result);
+  {$ENDIF}
+end;
+
+{ alClient 铺满的宿主画布偶发没跟上父客户区（例如客户区在边框层面刚变大、LCL 排布尚未重跑），
+  此时画布右侧/底部会露出一条没被绘制的空白。这里在绘制前校准一次自己的边界。 }
+procedure TXuiHost.EnsureCoversParent;
+var
+  PR: TRect;
+  NeedW, NeedH: Integer;
+begin
+  if (Parent = nil) or (Align <> alClient) or (not HandleAllocated) then
+    Exit;
+  NeedW := Parent.ClientWidth;
+  NeedH := Parent.ClientHeight;
+  {$IFDEF WINDOWS}
+  if Parent.HandleAllocated and Windows.GetClientRect(Parent.Handle, PR) then
+  begin
+    NeedW := PR.Right;
+    NeedH := PR.Bottom;
+  end;
+  {$ENDIF}
+  if (Left <> 0) or (Top <> 0) or (Width <> NeedW) or (Height <> NeedH) then
+    SetBounds(0, 0, NeedW, NeedH);
+end;
+
 procedure TXuiHost.Paint;
+var
+  R: TRect;
 begin
   if FEngine = nil then Exit;
+  EnsureCoversParent;
+  // 每次绘制前把视口校到客户区真值：双保险，杜绝"用旧尺寸绘制"留下空白边
+  R := RealClientRect;
+  FEngine.SetViewport(R.Right, R.Bottom);
   // 引擎自绘全部内容
-  FEngine.Draw(Canvas, ClientRect);
+  FEngine.Draw(Canvas, R);
 end;
 
 procedure TXuiHost.Resize;
+var
+  R: TRect;
 begin
   inherited Resize;
   // 注意：构造函数中设置初始尺寸时引擎尚未创建
   if FEngine = nil then Exit;
-  FEngine.SetViewport(ClientWidth, ClientHeight);
+  R := RealClientRect;
+  FEngine.SetViewport(R.Right, R.Bottom);
   Invalidate;
 end;
 

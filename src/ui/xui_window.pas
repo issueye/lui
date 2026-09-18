@@ -65,6 +65,7 @@ type
     {$IFDEF WINDOWS}
     procedure ApplyFramelessStyle;
     procedure EnsureFullClient;
+    procedure RedrawFramelessContent;
     procedure UnpinInheritedFrame(Info: PWINDOWPOS);
     function NcFrameDelta: TSize;
     procedure ApplyDwmFramelessLook;
@@ -363,6 +364,18 @@ begin
         // 自愈：客户区若被系统按边框内缩过，这里拉回整窗（正常情况直接返回，不产生消息）
         EnsureFullClient;
       end;
+    WM_NCACTIVATE:
+      // 无边框窗口自己负责"激活/非激活"外观：直接返回 TRUE 并重绘，不走 DefWindowProc。
+      // 否则系统会按 WS_THICKFRAME 重画一圈非客户区边框——a_da 实测：切换到别的窗口再切回来，
+      // 窗口四周就出现一圈浅色边框（约 4px），而且不会自愈（客户区尺寸其实没变）。
+      begin
+        RedrawFramelessContent;
+        AResult := 1;
+        Result := True;
+      end;
+    WM_ACTIVATE, WM_ACTIVATEAPP:
+      // 激活状态变化后重绘一次，盖掉任何残影（引擎整窗重绘，代价可控）
+      RedrawFramelessContent;
     WM_NCCALCSIZE:
       // 客户区恒等于整窗（缩放能力由 WS_THICKFRAME + WM_NCHITTEST 提供）：
       //  - WParam <> 0：lParam 是 NCCALCSIZE_PARAMS，rgrc[0] 已是整窗矩形，返回 0 即可；
@@ -370,7 +383,9 @@ begin
       //    "带边框"内缩客户区——窗口四周露出一圈系统绘制的浅色边框，且被 DWM 当成
       //    有边框窗口加圆角（a_da 实测：四周约 5px 白边 + 左下圆角异常）。
       begin
-        if (WParam = 0) and (LParam <> 0) then
+        if LParam = 0 then
+          Exit;   // 没有矩形可谈（非系统来路），交回默认处理
+        if WParam = 0 then
         begin
           if not Windows.GetWindowRect(Window, R) then
             Exit;
@@ -455,6 +470,21 @@ begin
   XuiLoadDpiApis;
   ApplyDwmFramelessLook;
   InstallWndProcHook;
+end;
+
+{ 无边框窗口激活/非激活切换后重绘：引擎整窗重绘，盖掉系统可能画上的非客户区边框残影。 }
+procedure TXuiFramelessForm.RedrawFramelessContent;
+var
+  i: Integer;
+begin
+  if not HandleAllocated then
+    Exit;
+  EnsureFullClient;
+  ApplyDwmFramelessLook;
+  Invalidate;
+  for i := 0 to ControlCount - 1 do
+    if Controls[i] <> nil then
+      Controls[i].Invalidate;
 end;
 
 { 客户区必须等于整窗：一旦发现被系统按边框内缩（会露出系统边框并触发 DWM 圆角），
