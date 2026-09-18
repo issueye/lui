@@ -62,6 +62,9 @@ const
   StringAlignmentCenter = 1;
   StringAlignmentFar = 2;
   StringFormatFlagsNoWrap = $1000;
+  StringFormatFlagsMeasureTrailingSpaces = $0800;
+  StringFormatFlagsNoClip = $4000;
+  PixelFormat32bppARGB = $0026200A;
   FillModeAlternate = 0;
   CombineModeReplace = 0;
 
@@ -122,6 +125,8 @@ function GdipCreateFont(AFamily: PGpFontFamily; AEmSize: Single; AStyle,
 function GdipDeleteFont(AFont: PGpFont): GpStatus; stdcall; external 'gdiplus.dll';
 function GdipCreateStringFormat(AFormatAttributes: Integer; ALanguage: Word;
   out AFormat: PGpStringFormat): GpStatus; stdcall; external 'gdiplus.dll';
+function GdipStringFormatGetGenericTypographic(
+  out AFormat: PGpStringFormat): GpStatus; stdcall; external 'gdiplus.dll';
 function GdipDeleteStringFormat(AFormat: PGpStringFormat): GpStatus;
   stdcall; external 'gdiplus.dll';
 function GdipSetStringFormatAlign(AFormat: PGpStringFormat;
@@ -142,6 +147,13 @@ function GdipMeasureString(AGraphics: PGpGraphics; AText: PWideChar;
 function GdipSetClipRect(AGraphics: PGpGraphics; AX, AY, AWidth, AHeight: Single;
   ACombineMode: Integer): GpStatus; stdcall; external 'gdiplus.dll';
 function GdipResetClip(AGraphics: PGpGraphics): GpStatus;
+  stdcall; external 'gdiplus.dll';
+function GdipCreateBitmapFromScan0(AWidth, AHeight, AStride: Integer;
+  AFormat: Integer; AScan0: Pointer; out ABitmap: Pointer): GpStatus;
+  stdcall; external 'gdiplus.dll';
+function GdipGetImageGraphicsContext(AImage: Pointer;
+  out AGraphics: PGpGraphics): GpStatus; stdcall; external 'gdiplus.dll';
+function GdipDisposeImage(AImage: Pointer): GpStatus;
   stdcall; external 'gdiplus.dll';
 
 type
@@ -185,6 +197,8 @@ type
     FCanvas: TCanvas;
     FGraphics: PGpGraphics;
     FMeasureGraphics: PGpGraphics;
+    FMeasureImage: Pointer;           // 度量用内存位图（GDI+ fallback 度量只在位图上下文与绘制一致）
+    FMeasureFormat: PGpStringFormat;  // 排版度量 StringFormat（NoWrap|MeasureTrailingSpaces|NoClip）
     FMeasureDC: TGpHDC;
     FClipStack: array of TRect;
     FFonts: TStringList;              // 字体缓存：key → TGpFontEntry（OwnsObjects）
@@ -360,12 +374,16 @@ destructor TGdiPlusRenderer.Destroy;
 begin
   if FFormat <> nil then
     GdipDeleteStringFormat(FFormat);
+  if FMeasureFormat <> nil then
+    GdipDeleteStringFormat(FMeasureFormat);
   FFonts.Free;   // 释放全部缓存字体（含 FFont 指向的对象）
   FFont := nil;
   SetLength(FGpSlots, 0);
   SetLength(FSlots, 0);
   if FMeasureGraphics <> nil then
     GdipDeleteGraphics(FMeasureGraphics);
+  if FMeasureImage <> nil then
+    GdipDisposeImage(FMeasureImage);
   if FMeasureDC <> 0 then
     DeleteDC(FMeasureDC);
   if FGraphics <> nil then
@@ -406,18 +424,17 @@ end;
 
 function TGdiPlusRenderer.MeasureGraphics: PGpGraphics;
 begin
-  if FMeasureDC = 0 then
-    FMeasureDC := TGpHDC(CreateCompatibleDC(0));
-  if (FMeasureGraphics = nil) and (FMeasureDC <> 0) then
+  // GdipMeasureString 的字体 fallback 推进与 Graphics 上下文相关：DC（屏/内存 DC）
+  // 上下文会得到未按 fallback 行高缩放的偏大宽度（实测 13px "Segoe UI" 你好=32.4），
+  // 只有内存位图上下文与 GdipDrawString 的实际绘制推进一致（实测 27.2）。
+  if FMeasureImage = nil then
   begin
-    GdipCreateFromHDC(FMeasureDC, FMeasureGraphics);
-    if FMeasureGraphics <> nil then
-    begin
-      GdipSetTextRenderingHint(FMeasureGraphics, TextRenderingHintClearTypeGridFit);
-      GdipSetPixelOffsetMode(FMeasureGraphics, PixelOffsetModeHalf);
-      GdipSetTextContrast(FMeasureGraphics, 3);
-    end;
+    if GdipCreateBitmapFromScan0(64, 64, 0, PixelFormat32bppARGB, nil,
+      FMeasureImage) <> 0 then
+      Exit(nil);
   end;
+  if FMeasureGraphics = nil then
+    GdipGetImageGraphicsContext(FMeasureImage, FMeasureGraphics);
   Result := FMeasureGraphics;
 end;
 
@@ -774,22 +791,22 @@ var
   weight: Integer;
   sig: string;
   slotIdx, n: Integer;
+  gpFont: PGpFont;
+  layout, bounds: TGpRectF;
+  gpOk: Boolean;
 begin
-  // GDI+ 的 GdipMeasureString 会额外计入两侧内边距（比实际字宽大 5-7px），
-  // 直接用于断行会导致文字被过度换行。这里改用 GDI 度量：
-  // 与 TGdiRenderer（TCanvas.TextWidth → GetTextExtentPoint32）完全一致，
-  // 保证两套后端的换行结果相同。
+  // 度量与绘制必须同引擎：DrawText 经 GdipDrawString 按字体 fallback 推进绘制
+  //（"Segoe UI" 无 CJK 字形，fallback 后 ~13.6px/字），而 GDI GetTextExtentPoint32W
+  // 对同一样式走 font-linking（16px/字），光标/断行/滚动随 CJK 字数持续超前（末尾空白）。
+  // 因此 cx 统一用 GdipMeasureString（同一 EnsureFont 字体对象 + 基于
+  // GenericTypographic 的紧致度量 format）；cy 仍取 GDI 行高，行距口径不变。
   Result.cx := 0;
   Result.cy := 0;
   if AText = '' then
     Exit;
-  if FMeasureDC = 0 then
-    MeasureGraphics;
-  if FMeasureDC = 0 then
-    Exit;
 
   // 测量结果 memo：断行布局对同一段文本反复度量（前缀/逐词），
-  // 同字体签名下结果恒定，命中即免去 GDI 调用。
+  // 同字体签名下结果恒定，命中即免去度量调用。
   // 实现为直接映射表（签名 + 文本 → 宽高）：不拼长 key、不做 locale 比较。
   sig := FontSigOf(AStyle);
   if FSlots = nil then
@@ -802,23 +819,71 @@ begin
     Exit;
   end;
 
-  family := UnicodeString(ResolveFontFamilyName(AStyle.FontFamily));
-  if AStyle.FontBold then
-    weight := 700
-  else
-    weight := 400;
-  font := CreateFontW(-Round(Max(1, AStyle.FontSize)), 0, 0, 0, weight, 0, 0, 0,
-    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-    DEFAULT_PITCH or FF_DONTCARE, PWideChar(family));
-  if font = 0 then
-    Exit;
-  oldFont := SelectObject(FMeasureDC, font);
-  wide := UnicodeString(AText);
-  if GetTextExtentPoint32W(FMeasureDC, PWideChar(wide), Length(wide), size) then
+  // cx：GDI+ 排版度量（与绘制同字体对象、同排版引擎）
+  gpOk := False;
+  if MeasureGraphics <> nil then
   begin
-    Result.cx := size.cx;
-    Result.cy := size.cy;
+    gpFont := EnsureFont(AStyle);
+    if gpFont <> nil then
+    begin
+      if FMeasureFormat = nil then
+      begin
+        // 度量必须以原生 GenericTypographic 为底再改 flags：
+        // GdipCreateStringFormat 自建的 format 即便同样带 NoClip 也会附带
+        // 默认 trimming 的省略号预留（实测 14px "用户名：" 62.3 vs 56.0），
+        // 该内部紧致度量状态只能从 GenericTypographic 克隆获得。
+        // flags 在其上补 NoWrap|MeasureTrailingSpaces（尾部空格计入光标推进）。
+        if GdipStringFormatGetGenericTypographic(FMeasureFormat) <> 0 then
+          FMeasureFormat := nil;
+        if FMeasureFormat <> nil then
+          GdipSetStringFormatFlags(FMeasureFormat, StringFormatFlagsNoWrap or
+            StringFormatFlagsMeasureTrailingSpaces or StringFormatFlagsNoClip);
+      end;
+      if FMeasureFormat <> nil then
+      begin
+        layout.X := 0;
+        layout.Y := 0;
+        layout.Width := 10000000;
+        layout.Height := Max(4, Round(AStyle.FontSize * 3));
+        wide := UnicodeString(AText);
+        if GdipMeasureString(FMeasureGraphics, PWideChar(wide), Length(wide),
+          gpFont, layout, FMeasureFormat, bounds, nil, nil) = 0 then
+        begin
+          Result.cx := Round(bounds.Width);
+          gpOk := True;
+        end;
+      end;
+    end;
   end;
+
+  // cy：GDI 行高口径不变；GDI+ 度量不可用时 cx 也退回 GDI 兜底
+  if FMeasureDC = 0 then
+    FMeasureDC := TGpHDC(CreateCompatibleDC(0));
+  if FMeasureDC <> 0 then
+  begin
+    family := UnicodeString(ResolveFontFamilyName(AStyle.FontFamily));
+    if AStyle.FontBold then
+      weight := 700
+    else
+      weight := 400;
+    font := CreateFontW(-Round(Max(1, AStyle.FontSize)), 0, 0, 0, weight, 0, 0, 0,
+      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+      DEFAULT_PITCH or FF_DONTCARE, PWideChar(family));
+    if font <> 0 then
+    begin
+      oldFont := SelectObject(FMeasureDC, font);
+      wide := UnicodeString(AText);
+      if GetTextExtentPoint32W(FMeasureDC, PWideChar(wide), Length(wide), size) then
+      begin
+        if not gpOk then
+          Result.cx := size.cx;
+        Result.cy := size.cy;
+      end;
+      SelectObject(FMeasureDC, oldFont);
+      DeleteObject(font);
+    end;
+  end;
+
   // R7/R8：letter-spacing —— 与 GDI 后端同一口径（字距 × (字数-1)），
   // 让断行、测量、绘制三者一致。GDI+ 本身没有字距开关，绘制端逐字推进（见 DrawTextWide）。
   if (AStyle <> nil) and (AStyle.LetterSpacing <> 0) and (AText <> '') then
@@ -827,8 +892,6 @@ begin
     if n > 1 then
       Result.cx := Result.cx + Round(AStyle.LetterSpacing * (n - 1));
   end;
-  SelectObject(FMeasureDC, oldFont);
-  DeleteObject(font);
 
   FSlots[slotIdx].Sig := sig;
   FSlots[slotIdx].Text := AText;
