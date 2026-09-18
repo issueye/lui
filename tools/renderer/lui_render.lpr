@@ -1767,6 +1767,7 @@ type
     procedure DestroyAll;
     procedure InitHost;
     procedure HandleWatchTimer(Sender: TObject);
+    procedure HandleViewerClose(Sender: TObject; var CloseAction: TCloseAction);
     procedure DoReload;
     procedure ToggleTheme;
     function NativeWindowMinimize(AFn: TXuiJsFunction; AThis: TXuiJsValue;
@@ -1828,6 +1829,8 @@ begin
   else if (ASpec <> nil) and (not ASpec.Resizable) then
     BorderStyle := bsSingle;
   KeyPreview := True;
+  // 关闭窗口 = 结束进程（见 HandleViewerClose 的说明）
+  OnClose := @HandleViewerClose;
 
   InitHost;
 
@@ -2057,6 +2060,15 @@ begin
   Caption := Format('lui 预览 — %s [%s] (F5: 刷新, T: 切换主题)', [ExtractFileName(FInputFile), FTheme]);
   DestroyAll;
   InitHost;
+end;
+
+{ 窗口关闭（顶栏 ✕ 走脚本 ui.window.close()、Alt+F4、任务栏“关闭窗口”）一律结束进程。
+  本窗体由 CreateViewer 直接创建、不是 Application.MainForm，LCL 默认只把它隐藏，
+  消息循环与脚本定时器会继续跑下去——外部子进程（如 a_da 的 Agent Core）在窗口已经
+  消失后仍被持续轮询，永远不会自行退出。这里统一收口到 Application.Terminate。 }
+procedure TRenderViewerForm.HandleViewerClose(Sender: TObject; var CloseAction: TCloseAction);
+begin
+  Application.Terminate;
 end;
 
 procedure TRenderViewerForm.KeyDown(var Key: Word; Shift: TShiftState);
