@@ -290,6 +290,10 @@ begin
     ui := uiv.Obj
   else
     ui := FInterp.CreateHostObject('Object');
+  // 宿主可执行文件所在目录（无尾分隔符）。
+  // 应用根在打包运行时是内嵌资源的解包目录，脚本拿不到"exe 旁边"的位置；
+  // 需要与宿主并排分发的附属可执行文件（sidecar）时用这个绝对路径定位。
+  ui.SetOwn('exeDir', FInterp.Str(ExcludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0)))));
   httpObj := FInterp.CreateHostObject('Object');
   httpObj.SetOwn('get', FInterp.CreateHostFunction('get', @NativeHttp));
   httpObj.SetOwn('post', FInterp.CreateHostFunction('post', @NativeHttp));

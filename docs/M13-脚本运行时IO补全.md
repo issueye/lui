@@ -86,7 +86,24 @@ const r = await ui.exec.run('npm run build', { cwd: 'workspace', timeout: 60000,
 脚本里写 `ui.fs.appendText('logs/events.jsonl', ...)` 时，意图显然是"应用目录下的 logs"，
 而不是"碰巧是当前工作目录的某个 logs"。这与 `<svg src>` 那类资源解析用的是同一个基准。
 
-### 2.4 Array 补齐 5 个方法
+### 2.4 `ui.exeDir` — 宿主可执行文件所在目录（2026-09-19 补）
+
+字符串属性，值是运行时自身的可执行文件所在目录（无尾分隔符），如 `E:\app\dist`。
+
+为什么需要它：打包成自包含应用后，**应用根是内嵌资源的解包临时目录**
+（`%TEMP%\lui-embed-appXXXX`），而"与宿主 exe 并排分发的附属文件"根本不在那里——
+脚本用任何相对路径都够不着它。需要拉起 sidecar 可执行文件（例如 a_da 的
+`a_da_core.exe` 与 `a_da.exe` 同目录分发）时，用 `ui.exeDir` 拼绝对路径即可：
+
+```ts
+const core = ui.exeDir + '\\a_da_core.exe';
+if (await ui.fs.exists(core)) { await ui.exec.run('start "" /b "' + core + '" --port 9820'); }
+```
+
+开发态（`lui start .`）下 `ui.exeDir` 是运行时自己的 bin 目录，因此应用应把
+"exe 目录"与"应用根"两条候选都试一遍再判定失败。
+
+### 2.5 Array 补齐 5 个方法
 
 `find` / `findIndex` / `some` / `every` / `sort`（原地排序，可带比较函数；无比较函数时按
 字符串比较，与 JS 一致）。语义细节与 JS 对齐：空数组 `some=false`、`every=true`、
